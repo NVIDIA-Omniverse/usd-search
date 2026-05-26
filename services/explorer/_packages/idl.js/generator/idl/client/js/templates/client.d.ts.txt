@@ -1,0 +1,30 @@
+{%+ for line in copyright -%}
+// {{ line -}}
+{%+ if loop.last +%}
+
+{%+ endif -%}
+{%+ endfor -%}
+import Client from "@omniverse/idl/connection/transport";
+{% if spec|has_methods_with_multiple_responses %}import Stream from "@omniverse/idl/stream";{% endif %}
+import { InterfaceName, InterfaceOrigin, InterfaceCapabilities } from "@omniverse/idl/schema";
+import * as data from "./data";
+{% for interface in interfaces.values() %}
+export class {{ interface.name }} {
+  public readonly transport: Client;
+  {%- for field in interface.fields %}
+  {% if not field.is_const %}public {{ field.name }}: {{ field|schema_dtype }}{% endif %}
+  {%- endfor %}
+  constructor(transport: Client);
+
+  {% for func in interface.functions %}
+  /*
+    {{ func.comment|format_doc(indent=4) }}
+   */
+  public {{ func.name|camelcase }}(request{% if not func|has_user_params(interface) or func|has_all_optional_params(interface) %}?{% endif %}: data.{{ func|request(interface) }}): {% if func.returns.is_many %}Promise<Stream<data.{{ func.returns.type|schema_dtype_name }}>>{% else %}Promise<data.{{ func.returns.type|schema_dtype_name }}>{% endif %};
+  {% endfor %}
+
+  public static readonly [InterfaceName]: string;
+  public static readonly [InterfaceOrigin]: string;
+  public static readonly [InterfaceCapabilities]?: { [method: string]: number };
+}
+{% endfor %}

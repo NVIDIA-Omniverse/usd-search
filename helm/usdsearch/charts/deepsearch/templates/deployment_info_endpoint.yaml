@@ -1,0 +1,228 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $serviceName := "info-endpoint" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $license := include "deepsearch.license" . -}}
+{{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}
+  labels:
+    deepsearch.service.name: {{ $serviceName }}
+    {{- include "deepsearch.MainDeploymentlabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.microservices.info_endpoint.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      deepsearch.service.name: {{ $serviceName }}
+      {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ include (print $.Template.BasePath "/env_config_map.yaml") . | sha256sum }}
+        checksum/plugin-config-config-map: {{ include (print $.Template.BasePath "/plugin_config.yaml") . | sha256sum }}
+        checksum/storage-backend-config: {{ include (print $.Template.BasePath "/storage_backend_config.yaml") . | sha256sum }}
+        checksum/logging-config: {{ include (print $.Template.BasePath "/logging_config_map.yaml") . | sha256sum }}
+      labels:
+        deepsearch.service.name: {{ $serviceName }}
+        {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      hostname: {{ $fullName }}
+      volumes:
+      - name: logging-config
+        configMap:
+          name: {{ $fullName }}-logging
+          items:
+            - key: logging.yaml
+              path: logging.yaml
+      - name: pluginconfig
+        configMap:
+          name: {{ $fullName }}-plugin-config
+      {{- if eq .Values.global.storage_backend_type "multi" }}
+      - name: storage-backend-config
+        configMap:
+          name: {{ $fullName }}-storage-backend-config
+      {{- end }}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      serviceAccountName: {{ include "deepsearch.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      dnsConfig:
+        searches:
+          {{- range .Values.global.dnsConfig.searches }}
+          - {{ . }}
+          {{- end }}
+      containers:
+        - name: info-endpoint
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          workingDir: /monitor/src
+          command:
+          - python
+          - -m
+          - uvicorn 
+          - info_endpoint.src.main:app 
+          - --host=0.0.0.0
+          ports:
+          - name: http
+            containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /health/healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health/healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 10
+          volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - name: pluginconfig
+            mountPath: /plugin_config
+          {{- if eq .Values.global.storage_backend_type "multi" }}
+          - name: storage-backend-config
+            mountPath: /storage-backend-settings
+          {{- end }}
+          - name: logging-config
+            mountPath: /logging.yaml
+            subPath: logging.yaml
+          resources:
+            {{- toYaml .Values.microservices.info_endpoint.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: LOGGING_CONFIG
+              value: /logging.yaml
+            - name: USER_AGENT
+              value: "DeepSearch.InfoEndpoint/{{ .Values.microservices.monitor.image.tag | default .Chart.AppVersion }}"
+            - name: ACCEPT_EULA
+              value: {{ required "Please accept the license agreement: '--set global.accept_eula=true'" $license | quote}}
+          {{- if eq .Values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+          {{- end}}
+            {{- include "deepsearch-global.searchBackendComplete" . | nindent 12 }}
+            - name: OV_INSTANCE
+              value: {{ $fullName }}
+            - name: PLUGINS_CONFIG_PATH
+              value: /plugin_config/plugin.config.yaml
+            {{- if eq .Values.global.storage_backend_type "multi" }}
+            - name: MULTI_BACKEND_STORAGE_SETTINGS_FILE
+              value: /storage-backend-settings/settings.yaml
+              {{- range $name, $backend := .Values.global.multi }}
+                {{- if eq $backend.storage_backend_type "nucleus"}}
+            - name: "{{ $name | upper }}-OV_USERNAME"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $backend.config.service_account_secret }}
+                  key: {{ $backend.config.username_key }}
+            - name: "{{ $name | upper }}-OV_PASSWORD"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $backend.config.service_account_secret }}
+                  key: {{ $backend.config.password_key }}
+                {{- end }}
+                {{- if eq $backend.storage_backend_type "azure"}}
+                  {{- if $backend.config.azure_credentials_secret_name }}
+            - name: "{{ $name | upper }}-AZURE_STORAGE_ACCESS_KEY"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $backend.config.azure_credentials_secret_name }}
+                  key: {{ $backend.config.azure_storage_access_key_key }}
+            - name: "{{ $name | upper }}-AZURE_STORAGE_ACCOUNT_NAME"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $backend.config.azure_credentials_secret_name }}
+                  key: {{ $backend.config.azure_storage_account_name_key }}
+                  {{- end }}
+                {{- end }}
+                {{- if eq $backend.storage_backend_type "s3"}}
+                  {{- if $backend.config.aws_credentials_secret_name }}
+            - name: "{{ $name | upper }}-AWS_ACCESS_KEY_ID"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $backend.config.aws_credentials_secret_name }}
+                  key: {{ $backend.config.aws_access_key_id_key }}
+            - name: "{{ $name | upper }}-AWS_SECRET_ACCESS_KEY"
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $backend.config.aws_credentials_secret_name }}
+                  key: {{ $backend.config.aws_secret_access_key_key }}
+                  {{- end }}
+                {{- end }}
+              {{- end }}
+            {{- end }}
+      {{- if .Values.microservices.info_endpoint.enableLivenessChecks }}
+      initContainers:
+        - name: redis-liveness-check
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command:
+          - python
+          - -m
+          - search_utils.redis.wait_ready
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+        {{- include "deepsearch-global.searchBackendCheck" (dict "ctx" . "image" $monitorDockerImage "fullName" $fullName) | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}

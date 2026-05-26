@@ -1,0 +1,207 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for asset-graph-service.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+
+global:
+    registry:
+
+verifyAccess: {}
+  # By default, the verify access is disabled for S3 storage and enabled for nucleus and multi-backend
+#  enabled: true
+
+  # By default, the verify access endpoint is set to use the default access check of the USD Search REST API
+#  endpoint: "http://deepsearch-ngsearch-ngsearch-rest-api:8000/v2/authorization/verify_access"
+
+# By default AGS runs the unified `usdsearch` image (see
+# `global.image.usdsearch`). Override `name`/`tag` here to pin a different
+# image for AGS only.
+image:
+  name: ""
+  pullPolicy: IfNotPresent
+  tag: ""
+
+graphdb:
+  neo4jURI: bolt://neo4j:7687
+  neo4jTCPURI: http://neo4j:7474
+  neo4jUsername: neo4j
+  neo4jPassword: password
+  # passwordFromSecret: Use this to get password from a Kubernetes secret instead of neo4jPassword
+  passwordFromSecret:
+  n_workers: 5
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8000
+  nodePort:
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 10Gi
+  requests:
+    cpu: 2000m
+    memory: 10Gi
+
+# environment variables
+env:
+  # You can provide additional environment variables as follows
+  #  - name: 'VARIABLE NAME'
+  #    value: 'VARIABLE VALUE'
+
+# Enable liveness check before container start-up. This liveness checks verifies that
+# all resources that microservice depends on a ready before initialization. These 
+# resources include:
+#  * Redis
+enableLivenessChecks: true
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 10
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - neo4j
+          topologyKey: kubernetes.io/hostname
+
+# additional telemetry configuration
+telemetry:
+  log_requests: "false"
+  log_headers: "false"
+
+loggingConfig:
+  version: 1
+  disable_existing_loggers: False
+  filters:
+    healthcheck_exclude:
+      (): asset_graph_service.logging.HealthCheckFilter
+    correlation_id:
+      (): asgi_correlation_id.CorrelationIdFilter
+      uuid_length: 32
+      default_value: '-'
+  formatters:
+    default:
+      "()": uvicorn.logging.DefaultFormatter
+      format: '%(levelprefix)s %(asctime)s [%(correlation_id)s] %(name)s - %(message)s'
+    access:
+      "()": uvicorn.logging.AccessFormatter
+      format: '%(levelprefix)s %(asctime)s [%(correlation_id)s] %(name)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
+  handlers:
+    default:
+      formatter: default
+      class: logging.StreamHandler
+      stream: ext://sys.stderr
+      filters:
+        - correlation_id
+    access:
+      formatter: access
+      class: logging.StreamHandler
+      stream: ext://sys.stdout
+      filters:
+        - correlation_id
+        - healthcheck_exclude
+  loggers:
+    root:
+      level: INFO
+      handlers:
+        - default
+    neo4j:
+      level: INFO
+      handlers:
+        - default
+    asset_graph_service.db.neo4j:
+      #    level: DEBUG
+      level: INFO
+      handlers:
+        - default
+    asset_graph_service.api.request_duration_logger:
+      #    level: CRITICAL
+      level: INFO
+      handlers:
+        - default
+      propagate: no
+    uvicorn.error:
+      level: INFO
+      handlers:
+        - default
+      propagate: no
+    uvicorn.access:
+      level: INFO
+      handlers:
+        - access
+      propagate: no

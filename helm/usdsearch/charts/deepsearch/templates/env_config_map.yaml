@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-env-config
+  labels:
+    {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 4 }}
+data:
+  OV_CONN_PING_S: "-1"
+  STORAGE_BACKEND_TYPE: "{{ .Values.global.storage_backend_type }}"
+  ASSETDB_PATH: "/tmp"
+  ENABLE_TRACING: "{{ (.Values.global.tracing).enabled | default "False" }}"
+  EXTENDED_TRACING: "{{ (.Values.global.tracing).extended_tracing | default "False" }}"
+  LS_ACCESS_TOKEN: "{{ (.Values.global.tracing).ls_access_token | default "" }}"
+  TRACING_BACKEND: "{{ (.Values.global.tracing).tracing_backend | default "otlp" }}"
+  OV_INSTANCE: {{ $fullName }}
+  MONITOR_CACHE_HOST: {{ $fullName }}-monitor-cache
+  CACHE_URI: "redis://{{ .Release.Name }}-redis-master.{{ .Release.Namespace }}.svc.cluster.local"
+  REDIS_URL: "redis://{{ .Release.Name }}-redis-master.{{ .Release.Namespace }}.svc.cluster.local"
+  REDIS_STREAM_URL: "redis://{{ .Release.Name }}-redis-master.{{ .Release.Namespace }}.svc.cluster.local"
+  PYTHONOPTIMIZE: "1"
+  PYTHONUNBUFFERED: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  EMBEDDING_CLIENT_CONFIG_CLIENT_TYPE: embedding_service
+  {{- if not .Values.global.embedding_deployment.endpoint }}
+  TRITON_SERVER_URL: "{{ .Release.Name }}-deepsearch-embedding-inference.{{ .Release.Namespace }}.svc.cluster.local:8001"
+  SIGLIP2_TRITON_SERVER_URL: "{{ .Release.Name }}-deepsearch-embedding-inference.{{ .Release.Namespace }}.svc.cluster.local:8001"
+  {{- else }}
+  TRITON_SERVER_URL: {{ .Values.global.embedding_deployment.endpoint | quote }}
+  SIGLIP2_TRITON_SERVER_URL: {{ .Values.global.embedding_deployment.endpoint | quote }}
+    {{- if .Values.global.embedding_deployment.triton_server.ssl.enabled }}
+  TRITON_SERVER_SSL: "true"
+    {{- end }}
+    {{- if .Values.global.embedding_deployment.triton_server.headers }}
+  TRITON_SERVER_HEADERS: {{ .Values.global.embedding_deployment.triton_server.headers | toJson | quote }}
+    {{- end }}
+  {{- end }}
+  BASE_LOGGING_ENABLE_JSON_LOGGING: {{ .Values.global.enable_structured_logging | quote}}
+  {{- with .Values.cache_settings }}
+  FARM_JOB_AUTOCLAIM_MIN_IDLE_TIME: {{ .farm_job_autoclaim_min_idle_time | quote }}
+  NON_FARM_JOB_AUTOCLAIM_MIN_IDLE_TIME: {{ .non_farm_job_autoclaim_min_idle_time | quote }}
+  RESULTS_AUTOCLAIM_MIN_IDLE_TIME: {{ .results_autoclaim_min_idle_time | quote }}
+  JOB_AUTOCLAIM_N_RETRIES: {{ .job_autoclaim_n_retries | quote }}
+  {{- end }}
+  LOGGING_CONFIG: /logging.yaml

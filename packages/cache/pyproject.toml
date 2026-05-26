@@ -1,0 +1,45 @@
+[project]
+name = "ngsearch-cache"
+dynamic = ["version"]
+description = "Redis-backed job/result cache for the DeepSearch processing pipeline"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+    {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "deepsearch-utils",
+    "search-utils",
+    "redis>=4.5.0",
+    "orjson>=3.9.0",
+    "xxhash>=3.0.0",
+    "prometheus-client>=0.11.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.6.1",
+    "typing-extensions>=4.9.0",
+    # ngsearch-plugins is a runtime workspace dep (circular declaration avoided)
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+deepsearch-utils = { workspace = true }
+search-utils = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cache"]

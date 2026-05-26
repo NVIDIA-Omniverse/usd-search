@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  if and .Values.global.checks.ags.enabled ( ne .Values.global.storage_backend_type "multi" ) }}
+{{- $releaseName := include "asset-graph-service.releaseName" . -}}
+{{- $dockerImage := include "asset-graph-service.dockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $releaseName }}-ags-api-verification
+  labels:
+    {{- include "deepsearch-global.labels" . | nindent 4 }}
+  annotations:
+  {{- toYaml .Values.global.checks.ags.annotations | nindent 4}}
+spec:
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 3600
+  backoffLimit: {{ .Values.global.checks.ags.backoff_limit }}
+  template:
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      restartPolicy: "OnFailure"
+      containers:
+        - name: connection-check
+          image: {{ $dockerImage }}
+          command:
+          - python
+          - -c
+          - |
+            import requests, time
+            response = requests.get('http://{{ include "asset-graph-service.fullname" . }}:{{ .Values.service.port }}/readyz')
+            assert response.status_code == 200
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+{{- end }}

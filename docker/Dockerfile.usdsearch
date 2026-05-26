@@ -1,0 +1,141 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Multi-stage build:
+#   - builder-base: python:3.13-bookworm — common preparation (apt deps, uv, source,
+#                   build_pytinyexr.sh, build_search_utils.sh). Reused by `builder`
+#                   and `test-runner` so the expensive prep is shared via BuildKit cache.
+#   - builder:      production .venv only — wheel-built, no editable installs, no test/dev/lint
+#                   groups, minimal extras.
+#   - test-runner:  bookworm-based image used to run pytest. Has bash, uv, git, the workspace
+#                   source kept on disk, and `uv sync --all-extras --all-groups` so test deps
+#                   are pre-installed. Used by services/deepsearch_api/test_in_docker_compose.sh
+#                   (and any other CI script that needs to exec pytest inside the image).
+#   - runtime:      nvcr.io/nvidia/distroless/python:3.13-v4.0.6-dev — hardened
+#                   security-approved base; ships only python + busybox + libc/
+#                   libstdc++/libgomp/openssl/CA certs. The .venv from `builder` is
+#                   copied in; its bin/python symlinks resolve to the distroless
+#                   image's own /usr/local/bin/python3.13 (same minor version).
+#                   This is the LAST stage so a default `docker build` produces it.
+FROM python:3.13-bookworm AS builder-base
+
+RUN apt-get update && apt-get install -y -qq git p7zip-full && rm -rf /var/lib/apt/lists/*
+
+RUN pip install uv --no-cache-dir
+
+WORKDIR /app
+
+# Workspace root config — copied first so dep-only changes don't invalidate source layers
+COPY pyproject.toml uv.lock ./
+COPY build/ build/
+COPY tools/ tools/
+COPY packages/ packages/
+# Copy only included services — siglip2-triton (model weights), rendering-job, and
+# asset-graph-builder are excluded; they ship in their own separate images.
+COPY services/deepsearch_api/        services/deepsearch_api/
+COPY services/deepsearch-crawler/    services/deepsearch-crawler/
+COPY services/deepsearch-monitor/    services/deepsearch-monitor/
+COPY services/info-endpoint/         services/info-endpoint/
+COPY services/storage/               services/storage/
+COPY services/crawlers/              services/crawlers/
+COPY services/asset-graph/           services/asset-graph/
+COPY logging.yml /logging.yml
+
+# Copy any pre-built wheels so the build script can skip versions already present.
+# Must precede any `uv` invocation: pyproject.toml declares `find-links = ["wheels/"]`,
+# and uv errors out if the directory is missing.
+COPY wheels/ wheels/
+
+# Build pytinyexr wheel for the current Python version and place it in wheels/
+# so that the subsequent uv sync can resolve it via find-links.
+RUN ./build/build_pytinyexr.sh
+
+# Download IDL protos and generate gRPC client code under packages/search-utils/_build/
+RUN ./build/build_search_utils.sh
+
+
+# ── builder ──────────────────────────────────────────────────────────────
+# Production .venv: non-editable wheel installs, no dev/test/lint groups.
+FROM builder-base AS builder
+
+# Install all workspace packages as non-editable built wheels.
+# --no-editable causes hatch to build the search-utils wheel, which bundles the
+# generated gRPC/IDL packages from _build/ (idl, omni.*) into site-packages via
+# the hatch sources mapping — no .pth files or PYTHONPATH tricks needed.
+# Extras enabled:
+#   search-backend  — OpenSearch/Elasticsearch clients (storage, crawlers, deepsearch-api)
+#   storage-api     — Nucleus/Omniverse gRPC client (deepsearch-crawler, deepsearch-monitor)
+#   pillow          — Image processing (deepsearch-monitor, vision-endpoint)
+#   tools           — CLI helpers (tqdm)
+# Not included: siglip2 (pulls transformers, ~1 GB); add --extra siglip2 if needed.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync \
+        --no-editable \
+        --no-group dev \
+        --no-group lint \
+        --no-group test \
+        --extra search-backend \
+        --extra storage-api \
+        --extra pillow \
+        --extra tools
+
+
+# ── test-runner ──────────────────────────────────────────────────────────
+# Used by docker-compose-driven unit tests (services/deepsearch_api/test_in_docker_compose.sh).
+# Editable workspace install with all extras + all groups so pytest, pytest-asyncio,
+# pytest-xdist, etc. are available. Source stays on disk so volume-mounted test
+# directories overlay the right paths.
+FROM builder-base AS test-runner
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --all-extras --all-groups
+
+ENV PATH=/app/.venv/bin:${PATH}
+ENV PYTHONUNBUFFERED=1
+
+
+# ── runtime ──────────────────────────────────────────────────────────────
+# Hardened distroless final image — the default target.
+FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.6-dev AS runtime
+
+WORKDIR /app
+
+# Bring in the prepared virtualenv and the logging config. Owned by `nvs`
+# (UID 1000), the default user of the distroless image.
+COPY --from=builder --chown=nvs:nvs /app/.venv /app/.venv
+COPY --from=builder /logging.yml /logging.yml
+# tools/openapi-merge ships in its own image (docker/Dockerfile.openapi-merge);
+# it must NOT leak into this runtime image — its deps (httpx, pyyaml,
+# openapi-spec-validator) are dev/CI-only.
+
+# Override the default ENTRYPOINT (/busybox/sh) so docker-compose `command:`
+# arrays (e.g. ["uvicorn", "deepsearch_api.main:app", ...]) execute directly.
+ENTRYPOINT []
+
+ENV PATH=/app/.venv/bin:${PATH}
+ENV PYTHONUNBUFFERED=1
+
+USER nvs
+
+# No default CMD — override per service at runtime or via docker-compose:
+#
+#   deepsearch-api      uvicorn deepsearch_api.main:app --host 0.0.0.0 --port 8000
+#   info-endpoint       uvicorn info_endpoint.src.main:app --host 0.0.0.0 --port 8000
+#   asset-graph         uvicorn asset_graph_service.api:app --host 0.0.0.0 --port 8000
+#   deepsearch-crawler  python -m deepsearch_crawler.main
+#   deepsearch-monitor  python -m monitor.src.monitor_worker
+#   storage             python -m storage.src.run_cron
+#   crawlers (tag)      python -m crawlers.src.tag_crawler_cron
+#   crawlers (index)    python -m crawlers.src.indexing_cron

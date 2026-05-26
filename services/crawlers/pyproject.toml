@@ -1,0 +1,48 @@
+[project]
+name = "ngsearch-crawlers"
+dynamic = ["version"]
+description = "NGSearch tag and indexing crawlers — consume Redis stream and index assets"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+    {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "search-utils[search-backend,storage-api]",
+    "ngsearch-backend",
+    "ngsearch-storage",
+    "deepsearch-crawler",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.6.1",
+    "prometheus-client>=0.11.0",
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "pyyaml>=6.0.2",
+    "aiohttp>=3.13",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+search-utils = { workspace = true }
+ngsearch-backend = { workspace = true }
+ngsearch-storage = { workspace = true }
+deepsearch-crawler = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crawlers"]

@@ -1,0 +1,33 @@
+{%+ for line in copyright -%}
+// {{ line -}}
+{%+ if loop.last +%}
+
+{%+ endif -%}
+{%+ endfor -%}
+import Schema from "@omniverse/idl/schema";
+import * as _data from "./data";
+{% for interface in interfaces.values() %}
+export class {{ interface.name }} {
+  constructor(transport) {
+    this.transport = transport;
+  }
+  {% for func in interface.functions %}
+  /*
+    {{ func.comment|format_doc(indent=4) }}
+   */
+  async {{ func.name|camelcase }}({% if func|has_user_params(interface) %}{ {%- for param in func.params -%}{%- if not param.is_const %}{{ param.name }}, {% endif %}{% endfor -%}{%- for field in interface.fields %}{%- if not field.is_const %}{{ field.name }}, {%- endif %}{% endfor -%} }{% if func|has_all_optional_params(interface) %} = {}{% endif %}{% endif %}) {
+    const _request = { {%- for param in func.params -%}{{ param.name }}{% if param.is_const %}: _data.{{ param.type }}.value{% endif %}, {% endfor -%}{%- for field in interface.fields %}{{ field.name }}{% if field.is_const %}: _data.{{ field.type }}.value{% endif %}, {% endfor -%} };
+    if (!_data.{{ func|request(interface) }}.validate(_request)) {
+      throw new Error("Invalid {{ func|request(interface) }}.");
+    }
+    return await this.transport.{%- if func.returns.is_many %}callMany{%- else -%}call{%- endif %}({ interfaceName: "{{ interface.name }}", methodName: "{{ func.name }}", request: _request, schemas: { request: _data.{{ func|request(interface) }}, response: _data.{{ func.returns.type }} }});
+  }
+  {% endfor %}
+}
+{{ interface.name }}[Schema.InterfaceName] = "{{ interface.name }}";
+{{ interface.name }}[Schema.InterfaceOrigin] = "{{ spec.origin }}";
+{%- set capabilities = interface.name|capabilities.find(side="client") -%}
+{%- if capabilities %}
+{{ interface.name }}[Schema.InterfaceCapabilities] = _data.{{ capabilities.name }}.value;
+{%- endif %}
+{% endfor %}

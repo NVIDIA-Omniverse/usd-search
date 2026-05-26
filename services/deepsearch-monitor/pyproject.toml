@@ -1,0 +1,69 @@
+[project]
+name = "deepsearch-monitor"
+dynamic = ["version"]
+description = "DeepSearch monitor worker and crawlers"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+    {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "base-logging",
+    "usdsearch",
+    "ngsearch-cache",
+    "ngsearch-plugins",
+    "search-utils[search-backend,storage-api]",
+    "ngsearch-storage",
+    "ngsearch-crawlers",
+    "deepsearch-crawler",
+    "deepsearch-utils",
+    "vision-endpoint>=0.12.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.6.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "redis>=4.5.0",
+    "orjson>=3.9.0",
+    "xxhash>=3.0.0",
+    "aiohttp>=3.13",
+    "prometheus-client>=0.11.0",
+    "prometheus-fastapi-instrumentator>=6.1.0",
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "numpy>=1.26.4,<2",
+    "pillow>=10.2.0",
+    "pyyaml>=6.0.2",
+    "fire>=0.6.0",
+    "setuptools>=65.5.1",
+    "typing-extensions>=4.9.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+usdsearch = { workspace = true }
+ngsearch-cache = { workspace = true }
+ngsearch-plugins = { workspace = true }
+search-utils = { workspace = true }
+ngsearch-storage = { workspace = true }
+ngsearch-crawlers = { workspace = true }
+deepsearch-crawler = { workspace = true }
+deepsearch-utils = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["monitor"]

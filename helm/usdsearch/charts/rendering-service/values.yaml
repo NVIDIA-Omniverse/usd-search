@@ -1,0 +1,268 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for rendering-service.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+replicaCount: 1
+
+# By default the rendering service runs the unified `rendering-job` (Kit)
+# image (see `global.image.rendering_job`). Override `name`/`tag` here to
+# pin a different image for the rendering service only.
+image:
+  name: ""
+  pullPolicy: IfNotPresent
+  tag: ""
+
+# side car containers
+sidecars: []
+
+# High Speed Static Cache (HSSC) configuration
+hssc:
+  # -- (bool)
+  # @raw
+  #
+  # Enable High Speed Static Cache (HSSC) for the rendering service.
+  # @notationType -- yaml
+  enabled: false
+
+  # -- (string)
+  # @raw
+  #
+  # URI of the HSSC server.
+  # @notationType -- yaml
+  uri: 
+  
+  # -- (bool)
+  # @raw
+  #
+  # Enable shader cache for the rendering service.
+  # @notationType -- yaml
+  enable_shader_cache_wrapper: true
+
+# This is for the secretes for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+imagePullSecrets: []
+# This is to override the chart name.
+nameOverride: ""
+fullnameOverride: ""
+
+# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# This is for setting Kubernetes Annotations to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+podAnnotations: {}
+# This is for setting Kubernetes Labels to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsUser: 1000
+  runAsNonRoot: true
+  capabilities:
+    drop:
+    - ALL
+  privileged: false
+  readOnlyRootFilesystem: true
+
+# This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+service:
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  type: ClusterIP
+  # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
+  port: 8000
+
+settings:
+  # It is possible to increase the number of parallel Kit workers that would process 
+  # assets on a single GPU
+  n_parallel_kit_workers: 1
+  
+  # It is possible to specify the number of assets that are processed by a Kit worker, 
+  # before it is being re-created.
+  # 
+  # Setting this parameter to a negative value will make all items to be processed by 
+  # a single Kit worker
+  n_assets_per_worker: 1
+
+  # -- (int)
+  # @raw
+  #
+  # Memory limit for a Kit worker in MB.
+  # @notationType -- yaml 
+  kit_worker_memory_limit: 
+
+  # -- (int)
+  # @raw
+  #
+  # Limit the number of waiting requests that can be processed by the rendering service to avoid the situation, when a lot of requests are hanging in the queue while rendering service is processing an asset. If the number of waiting requests is greater or equal to this value, the rendering service will start to reject new requests with 429 status code.
+  #
+  # Setting this parameter to a negative value will disable this functionality and all incoming requests will be stored in the queue and processed in the order of arrival.
+  # @notationType -- yaml 
+  n_allowed_waiting_requests: 
+
+  # -- (list)
+  # @raw
+  #
+  # Extra arguments for the Kit worker.
+  #
+  # By default the Kit worker is configured to use the local data store with a 
+  # large chunk disk budget of 30GB. Depending on the available disk space of the node 
+  # this can be adjusted by setting the 
+  # /UJITSO/datastore/localDataStore/largeChunkDiskBudgetMB argument.
+  #
+  # @notationType -- yaml
+  kit_extra_args: 
+    /UJITSO/enabled: true
+    /UJITSO/geometry: true
+    /UJITSO/textures: true
+    /UJITSO/datastore/localDataStore/largeChunkDiskBudgetMB: "30720"
+
+
+  # -- (bool)
+  # @raw
+  #
+  # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
+  load_asset_as_reference: true
+
+# --
+# extra environment variables
+# @notationType -- yaml
+env:
+
+# This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  successThreshold: 1
+  failureThreshold: 3
+
+# This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+
+# Shader cache, cache, and tmp volumes - easy to enable/disable and customize per volume.
+# Each entry can override the volume spec (e.g. use persistentVolumeClaim) and volumeMount (mountPath, readOnly).
+cacheVolumes:
+  shader_cache:
+    enabled: true
+    volume:
+      emptyDir:
+        sizeLimit: 5Gi
+        # medium: Memory  # uncomment for RAM-backed shader cache
+    volumeMount:
+      mountPath: "/cache/shaders"
+      readOnly: false
+  cache:
+    enabled: true
+    volume:
+      emptyDir:
+        sizeLimit: 100Gi
+    volumeMount:
+      mountPath: "/cache"
+      readOnly: false
+  tmp:
+    enabled: true
+    volume:
+      emptyDir: {}
+    volumeMount:
+      mountPath: "/tmp"
+
+# Optional: additional volumes and volumeMounts (appended after the cacheVolumes above).
+# Use for extra mounts without changing shader/cache/tmp config.
+extraVolumes: []
+extraVolumeMounts: []
+
+nodeSelector: {}
+
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+affinity: {}
+
+loggingConfig:
+  version: 1
+  disable_existing_loggers: False
+  filters: {}
+  formatters:
+    default:
+      format: '%(levelname)s %(asctime)s %(name)s - %(message)s'
+  handlers:
+    default:
+      formatter: default
+      class: logging.StreamHandler
+      stream: ext://sys.stderr
+  loggers:
+    root:
+      level: INFO
+      handlers:
+        - default

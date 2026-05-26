@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  # Info Endpoint service — built from the unified docker/Dockerfile.
+  # Lifespan blocks on Redis (cache client) and instantiates a storage client;
+  # we point the storage backend at S3 with mock creds so spec extraction does
+  # not require Nucleus or a real bucket.
+  info-endpoint:
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile.usdsearch
+    container_name: info-endpoint
+    command: ["uvicorn", "info_endpoint.src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOGGING_CONFIG=/logging.yml
+      - BASE_LOGGING_ENABLE_JSON_LOGGING=False
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - STORAGE_BACKEND_TYPE=${STORAGE_BACKEND_TYPE:-s3}
+      - S3_STORAGE_BUCKET_NAME=${S3_STORAGE_BUCKET_NAME:-mock-bucket}
+      - S3_STORAGE_REGION_NAME=${S3_STORAGE_REGION_NAME:-us-east-1}
+      - S3_STORAGE_AWS_ACCESS_KEY_ID=${S3_STORAGE_AWS_ACCESS_KEY_ID:-}
+      - S3_STORAGE_AWS_SECRET_ACCESS_KEY=${S3_STORAGE_AWS_SECRET_ACCESS_KEY:-}
+      - OTEL_SDK_DISABLED=true
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json')"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s

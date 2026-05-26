@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Dockerfile for pre-built ONNX models (faster build, requires models to be exported first)
+FROM nvcr.io/nvidia/tritonserver:26.04-py3
+
+WORKDIR /workspace
+
+# Create model repository structure
+RUN mkdir -p /models
+
+# Copy exported model_repo into container under /models
+COPY model_repo/ensemble_image_model /models/ensemble_image_model
+COPY model_repo/ensemble_text_model /models/ensemble_text_model
+COPY model_repo/image_preprocessing /models/image_preprocessing
+COPY model_repo/siglip2_vision_encoder_onnx /models/siglip2_vision_encoder_onnx
+COPY model_repo/siglip2_text_encoder_onnx /models/siglip2_text_encoder_onnx
+COPY model_repo/tokenizer /models/tokenizer
+
+# Install Python dependencies for the tokenizer and preprocessing models
+ADD docker/requirements.txt /workspace/requirements.txt
+RUN pip install --no-cache-dir -r /workspace/requirements.txt
+
+COPY docker/PACKAGE-LICENSES /PACKAGE-LICENSES
+COPY _licenses /PACKAGE-LICENSES
+
+# Expose Triton ports
+EXPOSE 8000 8001 8002
+
+RUN rm -rf /usr/local/cuda-13.2/NsightSystems-cli-2026.2.1
+
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/v2/health/ready || exit 1
+
+# Start Triton Server with optimizations
+CMD ["tritonserver", \
+     "--model-repository=/models", \
+     "--log-verbose=0", \
+     "--strict-model-config=true", \
+     "--backend-config=onnxruntime,default-max-batch-size=32", \
+     "--response-cache-byte-size=536870912", \
+     "--exit-on-error=false"]

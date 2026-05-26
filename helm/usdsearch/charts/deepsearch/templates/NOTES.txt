@@ -1,0 +1,46 @@
+{{ $plugins := include "deepsearch.plugin-config" . }}
+{{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
+{{- $esEndPoint := include "deepsearch.ESEndPoint" . -}}
+{{- $farmRecevierEndPoint := include "deepsearch.farmRecevierEndPoint" . -}}
+{{- $embeddingDockerImage := include "deepsearch.embeddingDockerImage" . -}}
+{{- $DeepSearchEmbeddingEndPoint := include "deepsearch.DeepSearchEmbeddingEndPoint" . -}}
+
+
+
+Deployment of {{ .Chart.Description | quote }}:
+ > version: {{ .Chart.AppVersion }}
+ > license agreement accepted: {{ .Values.global.accept_eula }}
+
+Services:
+  Monitor service:
+    > image: {{ $monitorDockerImage }}
+    > Farm data receiving endpoint: {{ $farmRecevierEndPoint }}
+  Embedding:
+    > image: {{ $embeddingDockerImage }}
+    > endpoint(s): {{ $DeepSearchEmbeddingEndPoint }}
+    > number of processes: {{ .Values.microservices.embedding.n_workers | quote }}
+    {{- with .Values.microservices.embedding.autoscaling }}
+     {{- if .enabled }}
+    > autoscaling:
+      {{- toYaml . | nindent 6 }}
+     {{- end }}
+    {{- end }}
+
+
+Plugins:
+  > Active:
+{{- range $plugin_name, $plugin_config := .Values.plugins }}
+{{- if $plugin_config.active }}
+    > {{ $plugin_name }}
+{{- end }}
+{{- end }}
+  > Disabled:
+{{- range $plugin_name, $plugin_config := .Values.plugins }}
+{{- if $plugin_config.active }}
+{{- else }}
+    > {{ $plugin_name }}
+{{- end }}
+{{- end }}
+
+Storage:
+{{/*TODO: Add note*/}}

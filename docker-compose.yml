@@ -1,0 +1,441 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# USD Search — Local Development Stack
+#
+# Starts a complete USD Search stack with:
+#   - Search API (text + hybrid vector search)
+#   - SigLIP2 Triton (embedding inference)
+#   - Asset Graph Service + Neo4j
+#   - Indexing pipeline (crawler → Redis → OpenSearch)
+#   - Plugin processing pipeline (monitor-crawler → per-plugin queues → omni-writer)
+#   - S3 backend: public omniverse-content-production bucket (no creds needed)
+#
+# Without overlays, the stack exposes the API + Swagger docs only; bare "/"
+# at the gateway redirects to "/docs/".
+#
+# Optional Explorer WebUI (React SPA, served at /ui/):
+#   docker compose -f docker-compose.yml -f docker-compose.web-ui.yml up
+#
+# Optional GPU plugins (embedding + rendering):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml up
+#
+# Optional VLM plugins (vision-language metadata):
+#   docker compose -f docker-compose.yml -f docker-compose.vlm-plugins.yml up
+#
+# Full pipeline (WebUI + all plugins):
+#   docker compose -f docker-compose.yml -f docker-compose.web-ui.yml -f docker-compose.gpu-plugins.yml -f docker-compose.vlm-plugins.yml up
+#
+# Local S3 (index assets from a local directory via MinIO):
+#   docker compose -f docker-compose.yml -f docker-compose.local-s3.yml up
+#   (place files in ./local-assets/ or set LOCAL_S3_DATA_DIR to a custom path)
+#   Note: MinIO copies files at startup — closer to prod S3, can be scaled later.
+#
+# Local filesystem (transparent local-path experience via s3proxy):
+#   LOCAL_FS_DATA_DIR=/path/to/assets \
+#     docker compose -f docker-compose.yml -f docker-compose.local-fs.yml up --build
+#   Files are mounted directly — no copy step. API responses show local paths.
+#   A filesystem watcher triggers reindexing when you add/change files.
+#
+# Prerequisites:
+#   1. Build the usdsearch image:
+#      docker build --platform linux/amd64 \
+#        -f docker/Dockerfile.usdsearch -t usdsearch:latest .
+#      (or use docker/Dockerfile.usdsearch.python.3.12-bookworm-base for a
+#       single-stage debian-based build with python 3.12)
+#   2. Ensure Git LFS is enabled (SigLIP2 model weights are LFS-tracked):
+#      git lfs pull --include="services/siglip2-triton/model_repo"
+#   3. Docker Compose >= v2.26 is required. Earlier versions (incl. the v2.20
+#      shipped with Ubuntu 22.04) fail with "services.siglip2-triton conflicts
+#      with imported resource" when the gpu-plugins overlay extends the
+#      siglip2-triton service brought in via `include:` below.
+#
+# Usage:
+#   docker compose up --build
+#   Open http://localhost:8080/docs/   (Swagger UI for the API)
+#   Add the web-ui overlay to also get the Explorer at /ui/.
+
+# ─── Infrastructure (from infra/compose/, with quickstart overrides) ─────────
+include:
+  - path:
+      - infra/compose/opensearch.yml
+      - infra/compose/quickstart/opensearch.override.yml
+  - path:
+      - infra/compose/redis.yml
+      - infra/compose/quickstart/redis.override.yml
+  - path:
+      - infra/compose/neo4j.yml
+      - infra/compose/quickstart/neo4j.override.yml
+  - path:
+      - infra/compose/siglip2-triton.yml
+      - infra/compose/quickstart/siglip2-triton.override.yml
+
+x-common-env: &common-env
+  # Storage backend — overridable from the host shell so /quickstart and
+  # downstream users can switch backends or buckets without editing this file.
+  # Defaults target the public Omniverse content bucket (anonymous access).
+  STORAGE_BACKEND_TYPE: ${STORAGE_BACKEND_TYPE:-s3}
+  S3_STORAGE_BUCKET_NAME: ${S3_STORAGE_BUCKET_NAME:-omniverse-content-production}
+  S3_STORAGE_REGION_NAME: ${S3_STORAGE_REGION_NAME:-us-west-2}
+  # Credentials are passed through only if set in the host environment.
+  # YAML-null form (`KEY:` with no value) means: pass from host if set,
+  # OMIT entirely from the container if unset. This is critical for
+  # anonymous S3 access — pydantic-settings reads an empty string as `""`
+  # (not `None`), and the S3 client only registers `disable_signing` when
+  # `aws_access_key_id is None`, so an empty-string env var would force
+  # signed requests against a public bucket and fail with NoCredentialsError.
+  # Names are prefixed (S3_STORAGE_*) because `S3StorageClientConfig`
+  # declares `env_prefix="s3_storage_"` — bare AWS_* names are silently
+  # ignored by pydantic-settings.
+  S3_STORAGE_AWS_ACCESS_KEY_ID:
+  S3_STORAGE_AWS_SECRET_ACCESS_KEY:
+  # Custom S3 endpoint (for MinIO, s3proxy, or other S3-compatible backends).
+  # Same null-pass-through pattern — forwarded only when set on the host.
+  S3_STORAGE_AWS_ENDPOINT_URL:
+  # Nucleus credentials (used when STORAGE_BACKEND_TYPE=nucleus). Same
+  # null-pass-through pattern so unset host vars don't shadow defaults.
+  OV_SERVER:
+  OV_USERNAME:
+  OV_PASSWORD:
+  ASSERT_ADMIN_USER: false
+  LOGGING_CONFIG: /logging.yml
+  PYTHONUNBUFFERED: "1"
+
+x-usdsearch-image: &usdsearch-image
+  image: usdsearch:latest
+  pull_policy: build
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.usdsearch
+    platforms:
+      - linux/amd64
+  # Restart on crash/exit so transient failures during quickstart bring-up
+  # (e.g. dependency not ready, OOM, code error) self-heal without manual
+  # `docker compose up`. Respects explicit `docker compose stop`/`down`.
+  restart: unless-stopped
+
+services:
+  # ─── Bootstrap (run-once) ───────────────────────────────────────────────────
+
+  # opensearch-init:
+  #   image: curlimages/curl:latest
+  #   container_name: usdsearch-opensearch-init
+  #   depends_on:
+  #     opensearch:
+  #       condition: service_healthy
+  #   environment:
+  #     OPENSEARCH_HOST: opensearch:9200
+  #   volumes:
+  #     - ./infra/quickstart/init-opensearch.sh:/init-opensearch.sh:ro
+  #   entrypoint: ["sh", "/init-opensearch.sh"]
+  #   restart: "no"
+
+  # ─── Application Services ──────────────────────────────────────────────────
+
+  deepsearch-api:
+    <<: *usdsearch-image
+    container_name: usdsearch-api
+    command: ["uvicorn", "deepsearch_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *common-env
+      # OpenSearch
+      opensearch_host: http://opensearch:9200
+      opensearch_index_name: usdsearch-quickstart-ver5.0
+      opensearch_image_cache_index_name: usdsearch-quickstart-ver4.0-image-cache
+      opensearch_use_ssl: "false"
+      # Embedding
+      TRITON_SERVER_URL: "siglip2-triton:8001"
+      MOCK_EMBEDDING: "${MOCK_EMBEDDING:-false}"
+      # Asset Graph Service
+      DEEPSEARCH_BACKEND_ASSET_GRAPH_SERVICE_URL: http://asset-graph-service:8000
+      ASSET_GRAPH_SERVICE_ENDPOINT: http://asset-graph-service:8000
+      # Auth
+      ENABLE_ACCESS_VERIFICATION: "False"
+      DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY: quickstart-admin
+      # Disable VLM validation (no VLM service in quickstart)
+      VLM_VALIDATION_ENABLED: "false"
+      # Telemetry
+      OTEL_SDK_DISABLED: "true"
+      # Search config
+      BACKEND_CONFIG_STR: "backend_name: es-sample"
+      DEFAULT_CUTOFF_THRESHOLD: "0"
+      # Hybrid search scoring (parsed as JSON by pydantic-settings;
+      # populates ScoringConfig at services/deepsearch_api/.../search_backend/models.py)
+      HYBRID_SEARCH_SCORING_CONFIG_RRF_CONFIG: '{"rank_constant":60,"query_rank_constants":{}}'
+      HYBRID_SEARCH_SCORING_CONFIG_HYBRID_TEXT: '{"enabled":true,"weight":1.2,"fields":[{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":true,"analyzer":"standard"},{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":false,"analyzer":"whitespace"},{"field":"name","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.simple","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.standard","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.key","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.tag","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree_reverse","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"__VISION_METADATA_FIELDS__","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true}],"cross_field_operator":"or"}'
+      HYBRID_SEARCH_SCORING_CONFIG_VECTOR_FIELDS: '{"siglip2-embedding.embedding":{"enabled":true,"weight":1,"field_name":"siglip2-embedding.embedding","dimension":1536}}'
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      # opensearch-init:
+      #   condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      siglip2-triton:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  info-endpoint:
+    <<: *usdsearch-image
+    container_name: usdsearch-info-endpoint
+    command: ["uvicorn", "info_endpoint.src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379
+      # Search backend (uses YAML config file via NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE)
+      NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE: /app/settings.yaml
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./infra/quickstart/settings.yaml:/app/settings.yaml:ro
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  asset-graph-service:
+    <<: *usdsearch-image
+    container_name: usdsearch-ags
+    command: ["uvicorn", "asset_graph_service.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DB_URI: neo4j://neo4j:7687
+      DB_USERNAME: neo4j
+      DB_PASSWORD: password
+      N_WORKERS: "1"
+      ACCEPT_EULA: "Y"
+      OTEL_SDK_DISABLED: "true"
+      LOGGING_CONFIG: /logging.yml
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  # Kit-based USD graph extractor for the asset_graph_generation plugin.
+  # Runs the same Kit image as rendering-job but with MODE=graph-builder
+  # (no rendering, no GPU reservation — just USD parsing + graph emit).
+  graph-builder:
+    image: usdsearch-graph-builder:latest
+    pull_policy: build
+    build:
+      context: ./services/rendering-job
+      dockerfile: ../../docker/Dockerfile.kit
+      additional_contexts:
+        graph-builder: ./services/asset-graph-builder
+    container_name: usdsearch-graph-builder
+    restart: unless-stopped
+    environment:
+      MODE: graph-builder
+      ACCEPT_EULA: "Y"
+      LOGGING_CONFIG: /logging.yml
+      # Null-pass-through: omits the var from the container when unset on
+      # the host, so the public bucket can be accessed anonymously.
+      S3_STORAGE_AWS_ACCESS_KEY_ID:
+      S3_STORAGE_AWS_SECRET_ACCESS_KEY:
+      S3_STORAGE_AWS_ENDPOINT_URL:
+      OV_USERNAME:
+      OV_PASSWORD:
+      INDEXED_PROPERTY_PREFIXES: "semantic:,isaac:,physics:"
+      USE_SEMANTICS_API: "False"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import httpx; httpx.get('http://localhost:8000/openapi.json').raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ─── Indexing Pipeline ─────────────────────────────────────────────────────
+
+  deepsearch-crawler:
+    <<: *usdsearch-image
+    container_name: usdsearch-crawler
+    command: ["python", "-m", "deepsearch_crawler.main"]
+    environment:
+      <<: *common-env
+      REDIS_STREAM_URL: redis://redis:6379
+      # Crawler scan root — overridable from the host shell. Default scans
+      # the entire bucket; /quickstart narrows this to /Assets/Isaac/6.0/Isaac/
+      # by default to avoid building a multi-million-doc OpenSearch index.
+      DEEPSEARCH_CRAWLER_PATH: ${DEEPSEARCH_CRAWLER_PATH:-/}
+      DEEPSEARCH_CRAWLER_STREAM_NAME: deepsearch-crawler
+      DEEPSEARCH_CRAWLER_RESET_ON_STARTUP: "false"
+      S3_STORAGE_RE_SCAN_TIMEOUT: "3600"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  indexing-crawler:
+    <<: *usdsearch-image
+    container_name: usdsearch-indexing
+    command: ["python", "-m", "crawlers.src.indexing"]
+    environment:
+      <<: *common-env
+      OV_SERVICE: deepsearch-nucleus-indexing
+      OV_INSTANCE: indexing-service
+      REDIS_URL: redis://redis:6379
+      REDIS_STREAM_URL: redis://redis:6379
+      REDIS_STREAM_NAME: deepsearch-crawler
+      # NGSearchStorage reads config from settings.yaml
+      NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE: /app/settings.yaml
+      ES_HOST: opensearch
+      ES_PORT: "9200"
+      ES_NAME: usdsearch-quickstart
+      DS_EMBEDDING_DIM: "1536"
+    volumes:
+      - ./infra/quickstart/settings.yaml:/app/settings.yaml:ro
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      # opensearch-init:
+      #   condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # ─── Plugin Processing Pipeline ─────────────────────────────────────────
+
+  monitor-crawler:
+    <<: *usdsearch-image
+    container_name: usdsearch-monitor-crawler
+    command: ["python", "-m", "monitor.src.monitor_crawler"]
+    volumes:
+      - ./infra/quickstart/settings.yaml:/app/settings.yaml:ro
+      - ./infra/quickstart/plugin.config.yaml:/app/plugin.config.yaml:ro
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379
+      REDIS_STREAM_URL: redis://redis:6379
+      REDIS_STREAM_NAME: deepsearch-crawler
+      NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE: /app/settings.yaml
+      PLUGINS_CONFIG_PATH: /app/plugin.config.yaml
+      OTEL_SDK_DISABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      deepsearch-crawler:
+        condition: service_started
+
+  monitor-worker-image-to-embedding:
+    <<: *usdsearch-image
+    container_name: usdsearch-worker-img2emb
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=image_to_embedding"]
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: image_to_embedding
+      # Process every queued job regardless of priority — leaving "priority"
+      # off the default ([normal, none]) silently drops priority jobs.
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+      SIGLIP2_TRITON_SERVER_URL: siglip2-triton:8001
+      OTEL_SDK_DISABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      siglip2-triton:
+        condition: service_healthy
+
+  monitor-worker-thumbnail-to-embedding:
+    <<: *usdsearch-image
+    container_name: usdsearch-worker-thumb2emb
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=thumbnail_to_embedding"]
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: thumbnail_to_embedding
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+      SIGLIP2_TRITON_SERVER_URL: siglip2-triton:8001
+      OTEL_SDK_DISABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      siglip2-triton:
+        condition: service_healthy
+
+  monitor-worker-asset-graph-generation:
+    <<: *usdsearch-image
+    container_name: usdsearch-worker-ags
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=asset_graph_generation"]
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: asset_graph_generation
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+      # AGSPluginConfig fields use field-level aliases that override env_prefix
+      # — these are read as bare names (no AGS_PLUGIN_ prefix).
+      ASSET_GRAPH_SERVICE_ENDPOINT: http://asset-graph-service:8000
+      KIT_WORKER_SERVICE_ENDPOINT: http://graph-builder:8000
+      OTEL_SDK_DISABLED: "true"
+    depends_on:
+      redis:
+        condition: service_healthy
+      asset-graph-service:
+        condition: service_healthy
+      graph-builder:
+        condition: service_healthy
+
+  omni-writer:
+    <<: *usdsearch-image
+    container_name: usdsearch-omni-writer
+    command: ["python", "-m", "monitor.src.monitor_omni_writer"]
+    environment:
+      <<: *common-env
+      REDIS_URL: redis://redis:6379
+      NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE: /app/settings.yaml
+      OTEL_SDK_DISABLED: "true"
+    volumes:
+      - ./infra/quickstart/settings.yaml:/app/settings.yaml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+      opensearch:
+        condition: service_healthy
+      # opensearch-init:
+      #   condition: service_completed_successfully
+
+  # ─── Gateway ────────────────────────────────────────────────────────────
+
+  gateway:
+    image: nginx:alpine
+    container_name: usdsearch-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/quickstart/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./helm/usdsearch/docs/index.html:/usr/share/nginx/docs/index.html:ro
+      - ./helm/usdsearch/docs/openapi.json:/usr/share/nginx/docs/openapi.json:ro
+    healthcheck:
+      # /docs/ is served as a static file directly by nginx — no upstream
+      # dependency, so this only fails if the gateway itself is down.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/docs/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

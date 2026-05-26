@@ -1,0 +1,45 @@
+[project]
+name = "ngsearch-backend"
+dynamic = ["version"]
+description = "CLIP/SigLIP search backend for NGSearch (Elasticsearch, OpenSearch, Triton)"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+    {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
+]
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "search-utils[search-backend]",
+    "siglip2-triton-client>=0.3.0",
+    "opensearch-py>=3.0.0",
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-instrumentation-aiohttp-client>=0.46b0",
+    "pillow>=10.2.0",
+    "numpy>=1.26.4,<2",
+    "urllib3>=2.7.0",
+    "typing-extensions>=4.9.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+search-utils = { workspace = true }
+siglip2-triton-client = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ngsearch_backend"]

@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $metrics := include "deepsearch.metrics" . -}}
+{{- $mainLabels := include "deepsearch.MainDeploymentlabels" . }}
+{{- $mainSelectorLabels := include "deepsearch.MainDeploymentSelectorlabels" . }}
+{{- $EmbeddingDeploymentSelectorlabels := include "deepsearch.EmbeddingDeploymentSelectorlabels" . }}
+{{- $values := .Values -}}
+{{- $releaseName := include "ngsearch.releaseName" . }}
+{{- $chartVersion := .Chart.Version -}}
+{{- $serviceName := "worker" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $deploymentLabels := include "deepsearch.MainDeploymentlabels" . }}
+{{- $deploymentSelectorLabels := include "deepsearch.MainDeploymentSelectorlabels" . }}
+
+---
+
+{{- if not .Values.global.embedding_deployment.endpoint }}
+
+{{- with .Values.microservices.embedding.service.inference }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-embedding-inference
+  labels:
+    {{- $mainLabels | nindent 4 }}
+    deepsearch.service.name: embedding
+  {{- template "deepsearch.template.service.annotations" ( .annotations ) }}
+spec:
+  type: {{ template "deepsearch.template.service.type" .type }}
+  {{- if eq (lower .type) "loadbalancer" }}
+    {{- template "deepsearch.template.service.loadBalancerSourceRanges" ( .loadBalancerSourceRanges | default $values.global.service.loadBalancerSourceRanges) }}
+  {{- end }}
+  ports:
+    - port: {{ .port | default 8001 }}
+      targetPort: grpc
+      name: deepsearch-embedding-grpc
+      {{- if eq (lower .type) "nodeport" }}
+      nodePort: {{ .nodeport }}
+      {{- end}}
+    - port: 8000
+      targetPort: http
+      name: deepsearch-embedding-http
+  selector:
+    {{- $EmbeddingDeploymentSelectorlabels | nindent 4 }}
+  {{- end }}
+
+---
+
+{{- end }}
+
+{{- range $plugin_name, $plugin_config := $values.plugins }}
+  {{- if (and $plugin_config.active ($plugin_config.requires_rendering | default false)) }}
+    {{- range $worker_name, $worker_config := $values.microservices.plugin_worker.worker_config }}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullServiceName }}-{{ $plugin_config.preview_name | replace "_" "-" }}-{{ $worker_name }}
+  labels:
+    deepsearch.service.name: worker-{{ $plugin_name }}
+    deepsearch.worker.type.name: {{ $worker_name }}
+    {{- $deploymentLabels | nindent 4 }}
+  {{- template "deepsearch.template.service.annotations" ( .annotations ) }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8765
+      targetPort: 8765
+      protocol: TCP
+  selector:
+    deepsearch.service.name: worker-{{ $plugin_name }}
+    deepsearch.worker.type.name: {{ $worker_name }}
+    {{- $deploymentSelectorLabels | nindent 4 }}
+
+---
+
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+
+{{- with $values.microservices.info_endpoint.service }}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-info-endpoint
+  labels:
+    {{- $mainLabels | nindent 4 }}
+    deepsearch.service.name: info-endpoint
+  {{- template "deepsearch.template.service.annotations" ( .annotations ) }}
+spec:
+  type: {{ template "deepsearch.template.service.type" .type }}
+  {{- if eq (lower .type) "loadbalancer" }}
+    {{- template "deepsearch.template.service.loadBalancerSourceRanges" ( .loadBalancerSourceRanges | default $values.global.service.loadBalancerSourceRanges) }}
+  {{- end }}
+  ports:
+    - port: {{ .port | default 8000 }}
+      targetPort: 8000
+      protocol: TCP
+      {{- if eq (lower .type) "nodeport" }}
+      nodePort: {{ .nodeport }}
+      {{- end}}
+  selector:
+    deepsearch.service.name: info-endpoint
+    {{- $mainSelectorLabels | nindent 4 }}
+
+---
+
+{{- end }}
+

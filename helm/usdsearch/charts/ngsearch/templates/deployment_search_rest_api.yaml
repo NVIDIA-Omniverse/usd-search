@@ -1,0 +1,398 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "ngsearch.fullname" . -}}
+{{- $serviceName := "search-rest-api" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $ngsearchRestAPIDockerImage := include "ngsearch.ngsearchRestAPIDockerImage" . -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $values := .Values -}}
+{{- $releaseName := .Release.Name -}}
+{{- $vlm_service := .Values.microservices.search_rest_api.validation.vlm_service -}}
+
+
+{{- if or ( .Values.microservices.search_rest_api.enabled ) (eq ( .Values.microservices.search_rest_api.enabled | toString) "<nil>") }}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}
+  labels:
+    {{- include "ngsearch.MainDeploymentlabels" . | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}
+spec:
+  replicas: {{ .Values.microservices.search_rest_api.replicas }}
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "ngsearch.MainDeploymentSelectorlabels" . | nindent 6 }}
+      ngsearch.service.name: {{ $serviceName }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ include (print $.Template.BasePath "/env_config_map.yaml") . | sha256sum }}
+        checksum/backend-config-map: {{ include (print $.Template.BasePath "/backend_config.yaml") . | sha256sum }}
+        checksum/query-config-config-map: {{ include (print $.Template.BasePath "/query_config.yaml") . | sha256sum }}
+        checksum/rest_api_config: {{ include (print $.Template.BasePath "/rest_api_config.yaml") . | sha256sum }}
+        {{- with .Values.microservices.search_rest_api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "ngsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
+        ngsearch.service.name: {{ $serviceName }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      hostname: {{ $fullName }}
+      subdomain: {{ $fullName }}-subdomain
+      volumes:
+      {{ with .Values.microservices.search_rest_api.extraVolumes }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
+      - name: rest-api-config
+        configMap:
+          name: {{ $fullName }}-rest-api-config
+          items:
+            - key: logging.yaml
+              path: logging.yaml
+            - key: validation_domain_context.txt
+              path: validation_domain_context.txt
+      - name: query-config
+        configMap:
+          name: {{ $fullName }}-query-config
+      - name: backend
+        configMap:
+          name: {{ $fullName }}-backend-config
+      - name: tmp
+        {{- toYaml .Values.microservices.search_rest_api.tmpDir | nindent 8 }}
+      serviceAccountName: {{ include "ngsearch.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      dnsConfig:
+        searches:
+          {{- range .Values.global.dnsConfig.searches }}
+          - {{ . }}
+          {{- end }}
+      containers:
+        - name: search
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $ngsearchRestAPIDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command:
+          - uvicorn
+          - deepsearch_api.main:app
+          - --host=0.0.0.0
+          - --port=8000
+          {{- if eq .Values.microservices.search_rest_api.service.type "ingress" }}
+          args:
+          - --root-path={{ .Values.microservices.search_rest_api.service.path }}
+          {{- end }}
+          ports:
+          - name: http
+            containerPort: 8000
+          {{ with .Values.microservices.search_rest_api.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{ with .Values.microservices.search_rest_api.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+          {{- with .Values.microservices.search_rest_api.extraVolumeMounts }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+          - mountPath: /logging.yaml
+            name: rest-api-config
+            subPath: logging.yaml
+          {{- if .Values.microservices.search_rest_api.validation.enabled }}
+          - mountPath: /validation_domain_context.txt
+            name: rest-api-config
+            subPath: validation_domain_context.txt
+          {{- end }}
+          - name: backend
+            mountPath: /ngsearch/src/configuration
+          - name: query-config
+            mountPath: /query_config
+          - mountPath: /tmp
+            name: tmp
+            subPath: tmp
+          - mountPath: /run
+            name: tmp
+            subPath: run
+          - mountPath: /run/lock
+            name: tmp
+            subPath: run-lock
+          resources:
+            {{- toYaml .Values.microservices.search_rest_api.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ngsearch.fullname" . }}-env-config
+          env:
+            {{- if .Values.global.embedding_deployment.authentication.enabled }}
+            - name: TRITON_SERVER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.embedding_deployment.authentication.secret_name }}
+                  key: {{ .Values.global.embedding_deployment.authentication.secret_key }}
+            {{- end }}
+            - name: VLM_VALIDATION_ENABLED
+              value: {{ .Values.microservices.search_rest_api.validation.enabled | quote }}
+            {{- if .Values.microservices.search_rest_api.validation.enabled }}
+            - name: VLM_VALIDATION_MAX_CONCURRENT
+              value: {{ .Values.microservices.search_rest_api.validation.max_concurrent_requests | quote }}
+            - name: VLM_VALIDATION_VLM_SERVICE
+              value: {{ required "Please provide the VLM service type: --set ngsearch.microservices.search_rest_api.validation.vlm_service=<VLM Service type>" $vlm_service }} 
+            - name: VLM_VALIDATION_DOMAIN_CONTEXT_FILEPATH
+              value: /validation_domain_context.txt
+            {{- with .Values.microservices.search_rest_api.validation }}  
+              {{- if eq $vlm_service "azure_openai" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .azure_openai) | nindent 12 }}
+              {{- else if eq $vlm_service "openai" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .openai) | nindent 12 }}
+              {{- else if eq $vlm_service "anthropic" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .anthropic) | nindent 12 }}
+              {{- else if eq $vlm_service "mistralai" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .mistralai) | nindent 12 }}
+              {{- else if eq $vlm_service "google" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .google) | nindent 12 }}
+              {{- else if eq $vlm_service "nim" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .nim) | nindent 12 }}
+              {{- else if eq $vlm_service "qwen" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .qwen) | nindent 12 }}
+              {{- else if eq $vlm_service "inference_hub" -}}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .inference_hub) | nindent 12 }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+            - name: LOGGING_CONFIG
+              value: /logging.yaml
+            - name: TELEMETRY_LOG_PROPAGATE
+              value: "False"
+            - name: QUERY_CONFIG_PATH
+              value: /query_config/query_config.yaml
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            - name: OTEL_SDK_DISABLED
+              value: "{{ .Values.global.tracing.OTEL_SDK_DISABLED }}"
+            - name: OTEL_TRACES_EXPORTER
+              value: "{{ .Values.global.tracing.OTEL_TRACES_EXPORTER }}"
+            - name: SENTRY_DSN
+              value: {{ .Values.microservices.search_rest_api.sentry_dsn | default .Values.global.sentry_dsn | default "" }}
+            - name: OMNI_SEARCH_GRAMMAR_EXPLICIT_NAME_WILDCARD
+              value: "True"
+            - name: deepsearch_backend_asset_graph_service_url
+              value: http://{{ $releaseName }}-asset-graph-service:8000
+            {{- with .Values.global.search_backend_config }}
+{{/*            Search Backend V2 config*/}}
+            - name: OPENSEARCH_HOST
+              value: {{ .host }}:{{ .port }}
+            - name: OPENSEARCH_INDEX_NAME
+              value: "{{ .index_name }}-ver5.0"
+            - name: OPENSEARCH_IMAGE_CACHE_INDEX_NAME
+              value: "{{ .index_name }}-ver4.0-image-cache"
+            - name: OPENSEARCH_USE_SSL
+              value: "{{ .use_ssl }}"
+            {{- if .auth_secret_name }}
+            - name: OPENSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: username
+                  optional: true
+            - name: OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: password
+                  optional: true
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: username
+                  optional: true
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: password
+                  optional: true
+            - name: ES_CLOUD_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: cloud_id
+                  optional: true
+            - name: ES_BEARER_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: bearer_auth
+                  optional: true
+            - name: ES_OPAQUE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: opaque_id
+                  optional: true
+            - name: ES_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .auth_secret_name }}
+                  key: api_key
+                  optional: true
+            {{- end }}
+            {{- if .hosts }}
+            - name: ES_HOSTS
+              value: {{ .hosts }}
+            {{- end }}
+            {{- end }}
+            - name: DEFAULT_CUTOFF_THRESHOLD
+              value: {{ .Values.microservices.search_rest_api.default_cutoff_threshold | quote}}
+            - name: SERVICE_VERSION
+              value: "{{ .Values.microservices.search_rest_api.image.tag | default .Chart.AppVersion }}"
+            - name: ENABLE_ACCESS_VERIFICATION
+              value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
+            - name: STORAGE_REQUIRE_AUTH
+              value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
+            - name: VERIFY_ASSET_EXISTENCE
+              value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
+            - name: OV_SERVICE
+              value: "ngsearch-rest-api"
+            - name: USER_AGENT
+              value: "NGSearch.SearchRestAPI/{{ .Values.microservices.search_rest_api.image.tag | default .Chart.AppVersion }}"
+            - name: IDL_SERIALIZER
+              value: "orjson"
+            {{- if eq .Values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
+            {{- else if eq .Values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" . | nindent 12 }}
+            {{- else if eq .Values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
+            {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+            {{- end}}
+            - name: USE_SEARCH_TELEMETRY
+              value: {{ .Values.microservices.search_rest_api.use_search_telemetry | quote }}
+            - name: SEARCH_TELEMETRY_STDOUT
+              value: {{ .Values.microservices.search_rest_api.search_telemetry_stdout | quote }}
+            - name: ASSETDB_PATH
+              value: /data
+            - name: DEEPSEARCH_BACKEND_CONFIG
+              value: /ngsearch/src/configuration/backend.yaml
+            - name: DEFAULT_SEARCH_SIZE
+              value: {{ .Values.microservices.search_rest_api.default_search_size | quote }}
+            - name: ES_PROTOCOL
+              value: {{ .Values.global.search_backend_config.schema | default "http" | quote }}
+            - name: HYBRID_SEARCH_SCORING_CONFIG_RRF_CONFIG
+              value: {{ .Values.microservices.search_rest_api.hybrid_search.scoring_config.rrf_config | toJson | quote }}
+            - name: HYBRID_SEARCH_SCORING_CONFIG_HYBRID_TEXT
+              value: {{ .Values.microservices.search_rest_api.hybrid_search.scoring_config.hybrid_text | toJson | quote }}
+            - name: HYBRID_SEARCH_SCORING_CONFIG_VECTOR_FIELDS
+              value: {{ .Values.microservices.search_rest_api.hybrid_search.scoring_config.vector_fields | toJson | quote }}
+        {{- with .Values.microservices.search_rest_api.extraContainers }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      initContainers:
+      {{- with .Values.microservices.search_rest_api.extraInitContainers }}
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and (.Values.microservices.search_rest_api.embeddingLivenessCheck.enabled) (.Values.global.embedding_deployment.enabled) }}
+        - name: init-embedding
+          image: {{ $ngsearchRestAPIDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command: 
+          - python
+          - -c
+          - |
+            import time
+            from siglip2_triton_client import TritonClientSettings, TritonEnsembleImageClient
+
+            triton_server_url = TritonClientSettings().triton_server_url
+            print("Connecting to inference service at: %s", triton_server_url)
+
+            while True:
+                try:
+                    client = TritonEnsembleImageClient()
+                    client.ping()
+                    break
+                except Exception as exc_info:
+                    print("Embedding client not available: %s", str(exc_info))
+                    time.sleep(1)
+          envFrom:
+            - configMapRef:
+                name: {{ include "ngsearch.fullname" . }}-env-config
+          env:
+            {{- if .Values.global.embedding_deployment.authentication.enabled }}
+            - name: TRITON_SERVER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.embedding_deployment.authentication.secret_name }}
+                  key: {{ .Values.global.embedding_deployment.authentication.secret_key }}
+            {{- end }}
+          {{- with .Values.microservices.search_rest_api.embeddingLivenessCheck.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.microservices.search_rest_api.embeddingLivenessCheck.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- end }}
+      {{- range .Values.microservices.search_rest_api.initContainers }}
+        - name: {{ .name }}
+          image: {{ .image | default $ngsearchRestAPIDockerImage }}
+          imagePullPolicy: {{ $values.imagePullPolicy }}
+          {{- with .command }}
+          command:
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+          {{- with .resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- $affinity := .Values.microservices.search_rest_api.affinity | default .Values.affinity }}
+    {{- with $affinity }}
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 10
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: api-gateway
+                    app.kubernetes.io/instance: {{ $releaseName }}
+                topologyKey: kubernetes.io/hostname
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- $tolerations := .Values.microservices.search_rest_api.tolerations | default .Values.tolerations }}
+    {{- with $tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+
+{{- end }}

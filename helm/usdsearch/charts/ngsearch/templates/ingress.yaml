@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  if .Values.ingress.enabled -}}
+
+{{- $metrics := include "ngsearch.metrics" . -}}
+{{- $fullName := include "ngsearch.fullname" . -}}
+{{- $GitVersion := .Capabilities.KubeVersion.GitVersion -}}
+{{- $searchRestAPIService := .Values.microservices.search_rest_api.service -}}
+{{- $values := .Values.microservices -}}
+{{- $valuesGlobal := .Values.global -}}
+
+
+{{- if semverCompare ">=1.20-0" $GitVersion -}}
+apiVersion: networking.k8s.io/v1
+{{- else if semverCompare ">=1.14-0" $GitVersion -}}
+apiVersion: networking.k8s.io/v1beta1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "ngsearch.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+{{- if .Values.ingress.ingressClassName }}
+  ingressClassName: {{ .Values.ingress.ingressClassName }}
+{{- end }}
+{{- if .Values.ingress.tls }}
+  tls:
+  {{- range .Values.ingress.tls }}
+    - hosts:
+      {{- range .hosts }}
+        - {{ . | quote }}
+      {{- end }}
+      secretName: {{ .secretName }}
+  {{- end }}
+{{- end }}
+  rules:
+  {{- with .Values.metrics }}
+    {{- if eq .type "ingress" }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+        - path: {{ .path }}
+        {{- if semverCompare ">=1.20-0" $GitVersion }}
+          pathType: Prefix
+        {{- end }}
+          backend:
+            {{- if semverCompare ">=1.20-0" $GitVersion }}
+            service:
+              name: {{ $metrics }}
+              port:
+                number: {{ .port  | quote }}
+            {{- else }}
+            serviceName: {{ $metrics }}
+            servicePort: {{ .port  | quote }}
+            {{- end }}
+    {{- end}}
+  {{- end }}
+  {{- if $values.search_rest_api.enabled }}
+    {{- if ne $valuesGlobal.storage_backend_type "multi" }}
+      {{- if eq $searchRestAPIService.type "ingress" }}
+    - host: {{ $searchRestAPIService.host | quote }}
+      http:
+        paths:
+        - path: {{ $searchRestAPIService.path }}openapi.json
+        {{- include "ngsearch.template.ingress.restAPI" (list $fullName $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        - path: {{ $searchRestAPIService.path }}v2
+        {{- include "ngsearch.template.ingress.restAPI" (list $fullName $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        - path: {{ $searchRestAPIService.path }}v1
+        {{- include "ngsearch.template.ingress.restAPI" (list $fullName $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        - path: {{ $searchRestAPIService.path }}docs
+        {{- include "ngsearch.template.ingress.restAPI" (list $fullName $searchRestAPIService.port $GitVersion ) | indent 10 }}
+      {{- end }}
+    {{- else if eq $valuesGlobal.storage_backend_type "multi" }}
+      {{- range $name, $backend := $valuesGlobal.multi }}
+        {{- if eq $backend.search_rest_api.service.type "ingress" }}
+    - host: {{ $backend.search_rest_api.service.host | default "whatever" | quote }}
+      http:
+        paths:
+        - path: {{ $backend.search_rest_api.service.path | default $values.search_rest_api.service.path }}openapi.json
+          {{- include "ngsearch.template.ingress.restAPIMulti" (list $fullName $name $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        - path: {{ $backend.search_rest_api.service.path | default $values.search_rest_api.service.path }}v2
+          {{- include "ngsearch.template.ingress.restAPIMulti" (list $fullName $name $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        - path: {{ $backend.search_rest_api.service.path | default $values.search_rest_api.service.path }}v1
+          {{- include "ngsearch.template.ingress.restAPIMulti" (list $fullName $name $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        - path: {{ $backend.search_rest_api.service.path | default $values.search_rest_api.service.path }}docs
+          {{- include "ngsearch.template.ingress.restAPIMulti" (list $fullName $name $searchRestAPIService.port $GitVersion ) | indent 10 }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}

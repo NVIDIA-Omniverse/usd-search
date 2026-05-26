@@ -1,0 +1,119 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for deepsearch-crawler.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+# By default the deepsearch crawler runs the unified `usdsearch` image (see
+# `global.image.usdsearch`). Override `name`/`tag` here to pin a different
+# image for the crawler only.
+image:
+  name: ""
+  pullPolicy: IfNotPresent
+  tag: ""
+
+# Strategy for the deployment
+strategy:
+  type: Recreate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# reset stream on startup
+reset_on_startup: true
+
+# Custom annotations to add to the deepsearch-crawler deployment pod template
+podAnnotations:
+  prometheus.io/path: /metrics
+  prometheus.io/port: "8000"
+  prometheus.io/scrape: "true"
+# podAnnotations:
+#   custom.example.com/key: "value"
+
+# Container security context configuration
+securityContext:
+  readOnlyRootFilesystem: true
+
+# Pod security context configuration
+podSecurityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+  runAsNonRoot: true
+
+crawler:
+  path: "/"
+
+  extraConfig: 
+    # include_patterns:
+    # - ".*include_path_pattern_1.*"
+    # - ".*include_path_pattern_2.*"
+    # exclude_patterns:
+    # - ".*exclude_path_pattern_1.*"
+    # - ".*exclude_path_pattern_2.*"
+
+resources: 
+  limits:
+    cpu: 1
+    memory: 5Gi
+  requests:
+    cpu: 1
+    memory: 5Gi
+
+# Enable liveness check before container start-up. This liveness checks verifies that
+# all resources that microservice depends on a ready before initialization. These 
+# resources include:
+#  * Redis
+enableLivenessChecks: true
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Service logging configuration
+
+loggingConfig:
+  version: 1
+  disable_existing_loggers: False
+  filters: {}
+  formatters:
+    default:
+      format: '%(levelname)s %(asctime)s %(name)s - %(message)s'
+  handlers:
+    default:
+      formatter: default
+      class: logging.StreamHandler
+      stream: ext://sys.stderr
+  loggers:
+    root:
+      level: WARN
+      handlers:
+        - default

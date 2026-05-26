@@ -1,0 +1,152 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# s3proxy Auth Proxy — overlay for authenticated non-AWS S3 endpoints.
+#
+# Deploys s3proxy as a credential-translating reverse proxy: it authenticates
+# to the upstream S3-compatible endpoint using JCLOUDS_IDENTITY/CREDENTIAL,
+# and exposes it locally with S3PROXY_AUTHORIZATION=none. This works around
+# a Kit client library limitation where non-AWS hostnames cannot use S3 signing
+# (HttpProviderFactory.cpp falls back to the base HTTP provider for URLs not
+# matching *.s3.*.amazonaws.com).
+#
+# All services are redirected through s3proxy for consistency — same pattern as
+# the Helm chart's s3proxy sub-chart.
+#
+# Usage:
+#   # Set your upstream S3 credentials and endpoint:
+#   export S3_STORAGE_AWS_ACCESS_KEY_ID=AKIA...
+#   export S3_STORAGE_AWS_SECRET_ACCESS_KEY=wJa...
+#   export S3_STORAGE_AWS_ENDPOINT_URL=https://pdx.s8k.io
+#   export S3_STORAGE_BUCKET_NAME=my-bucket
+#   export S3_STORAGE_REGION_NAME=us-east-1
+#
+#   # Start the stack with GPU plugins + s3proxy auth proxy:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml \
+#     -f docker-compose.s3proxy-auth.yml up --build
+#
+# How it works:
+#   - s3proxy authenticates to the upstream endpoint using your credentials
+#   - All internal services talk to s3proxy at http://s3proxy:80 without signing
+#   - Kit (rendering-job, graph-builder) can open USD files from the bucket
+#     without needing working S3 signature support in the Omniverse client lib
+#
+# When to use:
+#   - Custom S3 endpoint (non-AWS) with GPU plugins enabled
+#   - Any non-*.amazonaws.com endpoint where the rendering-job needs to open files
+#   - NOT needed for real AWS S3 (Kit handles *.s3.*.amazonaws.com natively)
+#   - NOT needed without GPU plugins (Python services handle SigV4 fine via aioboto3)
+
+x-s3proxy-env: &s3proxy-env
+  S3_STORAGE_AWS_ENDPOINT_URL: http://s3proxy:80
+
+services:
+  # ─── s3proxy (authenticating reverse proxy to upstream S3) ──────────────────
+
+  s3proxy:
+    image: andrewgaul/s3proxy
+    container_name: usdsearch-s3proxy
+    restart: unless-stopped
+    ports:
+      - "9000:80"
+    environment:
+      JCLOUDS_PROVIDER: s3
+      JCLOUDS_IDENTITY: ${S3_STORAGE_AWS_ACCESS_KEY_ID:?Set S3_STORAGE_AWS_ACCESS_KEY_ID}
+      JCLOUDS_CREDENTIAL: ${S3_STORAGE_AWS_SECRET_ACCESS_KEY:?Set S3_STORAGE_AWS_SECRET_ACCESS_KEY}
+      JCLOUDS_ENDPOINT: ${S3_STORAGE_AWS_ENDPOINT_URL:?Set S3_STORAGE_AWS_ENDPOINT_URL to the upstream endpoint}
+      JCLOUDS_REGIONS: ${S3_STORAGE_REGION_NAME:-us-east-1}
+      S3PROXY_AUTHORIZATION: none
+      LOG_LEVEL: info
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ 2>/dev/null || wget -q --spider http://localhost:80/ 2>/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ─── Service overrides (point all services at s3proxy) ─────────────────────
+
+  deepsearch-api:
+    environment:
+      <<: *s3proxy-env
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  info-endpoint:
+    environment:
+      <<: *s3proxy-env
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  asset-graph-service:
+    environment:
+      <<: *s3proxy-env
+
+  deepsearch-crawler:
+    environment:
+      <<: *s3proxy-env
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  indexing-crawler:
+    environment:
+      <<: *s3proxy-env
+
+  monitor-crawler:
+    environment:
+      <<: *s3proxy-env
+
+  monitor-worker-image-to-embedding:
+    environment:
+      <<: *s3proxy-env
+
+  monitor-worker-thumbnail-to-embedding:
+    environment:
+      <<: *s3proxy-env
+
+  monitor-worker-asset-graph-generation:
+    environment:
+      <<: *s3proxy-env
+
+  omni-writer:
+    environment:
+      <<: *s3proxy-env
+
+  graph-builder:
+    environment:
+      S3_STORAGE_AWS_ENDPOINT_URL: http://s3proxy:80
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  # ─── GPU plugin services (active when gpu-plugins overlay is also used) ────
+
+  rendering-job:
+    environment:
+      - S3_STORAGE_AWS_ENDPOINT_URL=http://s3proxy:80
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  monitor-worker-thumbnail-generation:
+    environment:
+      <<: *s3proxy-env
+
+  monitor-worker-rendering-to-embedding:
+    environment:
+      <<: *s3proxy-env

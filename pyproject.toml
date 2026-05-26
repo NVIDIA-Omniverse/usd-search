@@ -1,0 +1,132 @@
+# uv workspace root — not a package itself
+# Members are added here as each package/service is migrated (see docs/repo-organization-proposal.md)
+
+[tool.uv]
+package = false
+find-links = ["wheels/"]
+constraint-dependencies = [
+    "protobuf>=6.32.1",
+]
+
+[tool.uv.workspace]
+members = [
+    "packages/base-logging",
+    "packages/vision-endpoint",
+    "packages/search-utils",
+    "packages/ngsearch-backend",
+    "packages/deepsearch-utils",
+    "packages/asset-graph-client",
+    "packages/usdsearch",
+    "packages/siglip2-triton-client",
+    "packages/storage-api",
+    # further packages/ added per migration step
+    "services/deepsearch-crawler",
+    "services/storage",
+    "services/crawlers",
+    "packages/cache",
+    "packages/plugins",
+    "services/info-endpoint",
+    "services/deepsearch-monitor",
+    "services/deepsearch_api",
+    "services/asset-graph",
+    # tools/openapi-merge is intentionally NOT a workspace member: it ships in a
+    # standalone image (docker/Dockerfile.openapi-merge) used only during dev /
+    # CI to merge per-service OpenAPI specs. Keeping it out of the workspace
+    # prevents its deps (httpx, pyyaml, openapi-spec-validator) from leaking
+    # into the production usdsearch image.
+    # services/asset-graph-builder NOT a workspace member: poetry-based, requires pydantic<2 which
+    # conflicts with the rest of the workspace (pydantic v2). Migrate when pydantic v2 is adopted.
+    # services/rendering-job NOT a workspace member: requires websockets>=12.0 which conflicts with
+    # deepsearch-utils' websockets~=10.4 (ws_server.py uses removed max_queue param). Fix in step 11.
+    # further services/ added per migration step
+]
+
+# ---------------------------------------------------------------------------
+# Workspace-wide source overrides
+# ---------------------------------------------------------------------------
+
+[tool.uv.sources]
+base-logging = { workspace = true }
+vision-endpoint = { workspace = true }
+siglip2-triton-client = { workspace = true }
+storage-api = { workspace = true }
+
+# Workspace-wide pytest defaults. Per-package [tool.pytest.ini_options] blocks
+# have been removed: pytest discovery walks up from the tests directory and
+# picks up this block as the inifile, so every test run gets the same output
+# format and coverage setup. `-n <workers>` is intentionally NOT set here —
+# parallelism is per-suite tuning, so each ci/<pkg>/run_tests_*.sh script
+# passes its own `-n <N>` (default xdist behavior without -n is serial).
+# Coverage is invocation-cwd-relative; CI runs pytest from the workspace
+# root, so .coveragerc and --cov=. resolve as expected.
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-vv -ra --showlocals --color yes --reruns 0 --timeout 360 --cov-report term --cov-report html --cov-report xml --cov-config=.coveragerc --cov=."
+
+
+[tool.black]
+line-length = 120
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+known_first_party = ["search_utils"]
+
+[tool.mypy]
+ignore_missing_imports = "True"
+
+exclude = [
+    "package-links",
+    "packages/search-utils/_build",
+    "ci/helm/tests",
+    "packages/asset-graph-client/tests",
+    "packages/cache/tests",
+    "packages/deepsearch-utils/tests",
+    "packages/plugins/tests",
+    "packages/search-utils/tests",
+    "packages/siglip2-triton-client/tests",
+    "packages/usdsearch/tests",
+    "packages/vision-endpoint/tests",
+    "services/asset-graph/tests",
+    "services/asset-graph-builder/tests",
+    "services/crawlers/tests",
+    "services/deepsearch_api/tests",
+    "services/deepsearch-crawler/tests",
+    "services/deepsearch-monitor/tests",
+    "services/info-endpoint/tests",
+    "services/rendering-job/tests",
+    "services/rendering-job/exts/omni.services.deepsearch.rendering/data/tests",
+    "services/rendering-job/exts/omni.services.deepsearch.rendering/omni/services/deepsearch/rendering/tests",
+    "services/siglip2-triton/model_repo",
+    "packages/deepsearch-utils/setup.py",
+    "packages/storage-api/nvidia"
+]
+
+# Disallow dynamic typing
+disallow_any_unimported = "True"
+disallow_any_decorated = "True"
+disallow_any_generics = "True"
+disallow_any_explicit = "True"
+disallow_subclassing_any = "True"
+
+# Disallow untyped definitions and calls
+disallow_untyped_calls = "True"
+disallow_untyped_defs = "True"
+disallow_incomplete_defs = "True"
+check_untyped_defs = "True"
+disallow_untyped_decorators = "True"
+
+# None and optional handling
+no_implicit_optional = "True"
+
+# Configuring warnings
+warn_unused_ignores = "True"
+warn_no_return = "True"
+warn_return_any = "True"
+warn_redundant_casts = "True"
+
+# Misc things
+strict_equality = "True"
+
+# Config file
+warn_unused_configs = "True"

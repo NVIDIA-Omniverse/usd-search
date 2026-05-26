@@ -1,0 +1,66 @@
+# Version control
+.git/
+.gitmodules
+
+# Virtual environments (each service may have a local .venv)
+**/.venv/
+**/.env
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Build artefacts (scoped to packages/services to preserve top-level build/ scripts)
+**/*.egg-info/
+packages/**/dist/
+services/**/dist/
+packages/**/build/
+services/**/build/
+**/.eggs/
+
+# Test output / coverage
+**/coverage/
+**/htmlcov/
+**/.coverage
+**/coverage.xml
+**/*.badge.svg
+
+# IDE / editor
+.idea/
+.vscode/
+**/*.swp
+**/*.swo
+
+# CI / local tooling
+.uv-cache/
+**/node_modules/
+
+# Docs, notebooks, scripts — not needed at runtime
+docs/
+notebooks/
+scripts/
+hooks/
+
+# Helm chart and deployment configs — not needed at runtime
+helm/
+ci/helm/
+tests/helm/
+
+# Old source repos preserved for reference only
+_old/
+
+# Services with their own separate images — excluded from the unified image build context
+services/rendering-job/
+services/asset-graph-builder/
+
+# Test directories (source code tests are not needed at runtime)
+**/tests/
+
+# Large sample/test data directories (scoped to avoid matching generated _build/ sources)
+services/**/data/
+notebooks/**/data/

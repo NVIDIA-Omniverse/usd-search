@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $serviceName := "embedding" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $license := include "deepsearch.license" . -}}
+{{- $embeddingDockerImage := include "deepsearch.embeddingDockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $chartVersion := .Chart.Version -}}
+
+{{- if not .Values.global.embedding_deployment.endpoint }}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}
+  labels:
+    release_name: {{ $releaseName }}
+    component: "deepsearch"
+    version: {{ $chartVersion }}
+    deepsearch.service.name: {{ $serviceName }}
+    {{- include "deepsearch.MainDeploymentlabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.microservices.embedding.replicas }}
+  strategy:
+    type: {{ .Values.microservices.embedding.deployment_strategy }}
+  selector:
+    matchLabels:
+      deepsearch.service.name: {{ $serviceName }}
+      {{- include "deepsearch.EmbeddingDeploymentSelectorlabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ include (print $.Template.BasePath "/env_config_map.yaml") . | sha256sum }}
+        checksum/embedding-model-config: {{ include (print $.Template.BasePath "/embedding_model_config.yaml") . | sha256sum }}
+      labels:
+        release_name: {{ $releaseName }}
+        component: "deepsearch"
+        version: {{ $chartVersion }}
+        deepsearch.service.name: {{ $serviceName }}
+        {{- include "deepsearch.EmbeddingDeploymentSelectorlabels" . | nindent 8 }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      hostname: {{ $fullName }}
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      - name: tmp
+        {{- toYaml .Values.microservices.embedding.tmpDir | nindent 8 }}
+      - name: embedding-model-config
+        configMap:
+          name: {{ $fullName }}-embedding-model-config
+      serviceAccountName: {{ include "deepsearch.serviceAccountName" . }}
+      dnsConfig:
+        searches:
+          {{- range .Values.global.dnsConfig.searches }}
+          - {{ . }}
+          {{- end }}
+      containers:
+        - name: embedding
+          securityContext:
+            {{- toYaml .Values.microservices.embedding.securityContext | nindent 12 }}
+          image: {{ $embeddingDockerImage }}
+          ports:
+            - containerPort: 8000
+              name: http
+            - containerPort: 8001
+              name: grpc
+            - containerPort: 8002
+              name: metrics
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.microservices.embedding.triton_server.livenessProbe.httpGet.path }}
+              port: http
+            initialDelaySeconds: 30
+            failureThreshold: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.microservices.embedding.triton_server.readinessProbe.httpGet.path }}
+              port: http
+            initialDelaySeconds: 30
+            failureThreshold: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+          volumeMounts:
+          - name: dshm
+            mountPath: /dev/shm
+          - mountPath: /tmp
+            name: tmp
+            subPath: tmp
+          - mountPath: /run
+            name: tmp
+            subPath: run
+          - mountPath: /run/lock
+            name: tmp
+            subPath: run-lock
+          - name: embedding-model-config
+            mountPath: /models/siglip2_vision_encoder_onnx/config.pbtxt
+            subPath: siglip2_vision_encoder_onnx-config.pbtxt
+          resources:
+            {{- toYaml .Values.microservices.embedding.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: ACCEPT_EULA
+              value: {{ required "Please accept the license agreement: '--set global.accept_eula=true'" $license | quote }}
+            - name: TRANSFORMERS_CACHE
+              value: /tmp
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.microservices.embedding.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.microservices.embedding.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+
+{{- end }}

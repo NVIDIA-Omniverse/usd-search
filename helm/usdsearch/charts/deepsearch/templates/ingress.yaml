@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  if .Values.ingress.enabled -}}
+
+{{- $metrics := include "deepsearch.metrics" . -}}
+{{- $fullName := include "deepsearch.fullname" . -}}
+{{- $GitVersion := .Capabilities.KubeVersion.GitVersion -}}
+
+{{- if semverCompare ">=1.20-0" $GitVersion -}}
+apiVersion: networking.k8s.io/v1
+{{- else if semverCompare ">=1.14-0" $GitVersion -}}
+apiVersion: networking.k8s.io/v1beta1
+{{- else -}}
+apiVersion: extensions/v1beta1
+{{- end }}
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "deepsearch.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+{{- if .Values.ingress.ingressClassName }}
+  ingressClassName: {{ .Values.ingress.ingressClassName }}
+{{- end }}
+{{- if .Values.ingress.tls }}
+  tls:
+  {{- range .Values.ingress.tls }}
+    - hosts:
+      {{- range .hosts }}
+        - {{ . | quote }}
+      {{- end }}
+      secretName: {{ .secretName }}
+  {{- end }}
+{{- end }}
+  rules:
+  {{- range $k, $v := .Values.microservices.embedding.service }}
+    {{- if eq $v.type "ingress" }}
+    - host: {{ $v.host | quote }}
+      http:
+        paths:
+        - path: {{ $v.path }}
+          {{- if semverCompare ">=1.20-0" $GitVersion }}
+          pathType: Prefix
+          {{- end }}
+          backend:
+            {{- if semverCompare ">=1.20-0" $GitVersion }}
+            service:
+              name: {{ $fullName }}-deepsearch-embedding-{{ $k }}
+              port:
+                number: {{ $v.port | default 8001 }}
+            {{- else }}
+            serviceName: {{ $fullName }}-deepsearch-embedding-{{ $k }}
+            servicePort: {{ $v.port | default 8001 }}
+            {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- with .Values.microservices.info_endpoint.service }}
+    {{- if eq .type "ingress" }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+        - path: {{ .path }}
+          {{- if semverCompare ">=1.20-0" $GitVersion }}
+          pathType: Prefix
+          {{- end }}
+          backend:
+            {{- if semverCompare ">=1.20-0" $GitVersion }}
+            service:
+              name: {{ $fullName }}-info-endpoint
+              port:
+                number: 8000
+            {{- else }}
+            serviceName: {{ $fullName }}-info-endpoint
+            servicePort: 8000
+            {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}

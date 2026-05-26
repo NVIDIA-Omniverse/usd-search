@@ -1,154 +1,105 @@
-# __NVIDIA_OSS__ Standard Repo Template
+# USDSearch
 
-This README file is from the NVIDIA_OSS standard repo template of [PLC-OSS-Template](https://github.com/NVIDIA-GitHub-Management/PLC-OSS-Template?tab=readme-ov-file). It provides a list of files in the PLC-OSS-Template and guidelines on how to use (clone and customize) them.
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**Upon completing the customization for the project repo, the repo admin should replace this README template with the project specific README file.**
+USDSearch is a semantic search stack for OpenUSD and 3D asset libraries.
+It crawls asset storage, generates visual embeddings + VLM-based metadata,
+indexes the results, and serves them through a search API and web UI.
 
-- Files (org-wide templates in the NVIDIA .github org repo; per-repo overrides allowed) in [PLC-OSS-Template](https://github.com/NVIDIA-GitHub-Management/PLC-OSS-Template?tab=readme-ov-file)
+<p align="center">
+  <img src="docs/quickstart-user-journey.svg" alt="USDSearch /quickstart — first-time user journey" width="100%">
+</p>
 
-   - Root 
-     - README.md skeleton (CTA + Quickstart + Support/Security/Governance links) 
-     - LICENSE (Apache 2.0 by default)
-        - For other licenses, see the [Confluence page](https://confluence.nvidia.com/pages/viewpage.action?pageId=788418816) for other licenses
-        - CLA.md file (delete if not using MIT or BSD licenses)
-     - CODE_OF_CONDUCT.md 
-     - SECURITY.md (vuln reporting path) 
-     - CONTRIBUTING.md (base; repo can add specifics)
-     - SUPPORT.md (Support levels/channels)
-     - GOVERNANCE.md (baseline; repo may extend)
-     - CITATION.md (for projects that need citation)
+- 🔎 **Semantic Search** — natural-language or image-based queries over USD assets, renders, and reference images.
+- 🧠 **Multimodal Embeddings** — uses SigLIP2 to project images and text into a shared embedding space for efficient search.
+- 🏷️ **Automatic Tagging** — VLMs caption every asset and generate searchable metadata during ingestion. The metadata schema (caption, tags, materials, style, …) is fully configurable.
+- ✅ **Result Validation** — VLM-as-a-judge filters noisy matches so results stay visually relevant.
+- ☁️ **Automatic Discovery** — crawls the storage backend of your choice (S3, Storage API, Nucleus) to index assets at scale.
 
-   - .github/ 
-     - ISSUE_TEMPLATE/ (<https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository>)
-       - bug.yml, feature.yml, task.yml, config.yml 
-     - PULL_REQUEST_TEMPLATE.md (<https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository>)
-     - workflows/
-     - Note: workflow-templates/ for starter workflows should live in the org-level .github repo, not per-repo
+## Agent-driven quickstart (recommended)
 
-   - Repo-specific (not org-template, maintained by the team)
-     - CODEOWNERS (place at .github/CODEOWNERS or repo root)
-     - CHANGELOG.md (or RELEASE.md) 
-     - ROADMAP.md 
-     - MAINTAINERS.md 
-     - NOTICE or THIRD_PARTY_NOTICES / THIRD_PARTY_LICENSES (dependency specific)
-     - Build/package files (CMake, pyproject, Dockerfile, etc.)
+| Claude Code | Codex | What it does |
+|---|---|---|
+| [`/quickstart`](.claude/skills/quickstart/SKILL.md) | [`$quickstart`](.codex/skills/quickstart/SKILL.md) | Pick a backend (NVIDIA-hosted / your URL / local) and get to a first asset in ~2 seconds. |
+| [`/search`](.claude/skills/search/SKILL.md) | [`$search`](.codex/skills/search/SKILL.md) | Hybrid text + image search over the index; saves top-5 VLM-validated thumbnails to `./search-results/`. |
+| [`/inspect-asset`](.claude/skills/inspect-asset/SKILL.md) | [`$inspect-asset`](.codex/skills/inspect-asset/SKILL.md) | Deep-dive one asset URL: thumbnails, indexing status, scene structure, dependencies, VLM relevance. |
+| [`/search-in-scene`](.claude/skills/search-in-scene/SKILL.md) | [`$search-in-scene`](.codex/skills/search-in-scene/SKILL.md) | Spatial / scene-graph queries inside a USD: radius, bounding box, prim-type filters, where-used. |
+| [`/deploy-usdsearch`](.claude/skills/deploy-usdsearch/SKILL.md) | [`$deploy-usdsearch`](.codex/skills/deploy-usdsearch/SKILL.md) | Stand up a local docker compose stack or Helm deployment, then hand back to `/quickstart`. |
 
-   - Recommended structure and hygiene
-     - docs/
-     - examples/
-     - tests/
-     - scripts/
-     - Container/dev env: Dockerfile, docker/, .devcontainer/ (optional)
-     - Build/package (language-specific):
-       - Python: pyproject.toml, setup.cfg/setup.py, requirements.txt, environment.yml
-       - C++: CMakeLists.txt, cmake/, vcpkg.json
-     - Repo hygiene: .gitignore, .gitattributes, .editorconfig, .pre-commit-config.yaml, .clang-format
+Open this repo in your agent of choice and type:
 
-
-## Usage of [PLC-OSS-Template](https://github.com/NVIDIA-GitHub-Management/PLC-OSS-Template?tab=readme-ov-file) for NEW NVIDIA OSS repos
-
-1. Clone the [PLC-OSS-Template](https://github.com/NVIDIA-GitHub-Management/PLC-OSS-Template?tab=readme-ov-file)
-2. Find/replace all in the clone of `___PROJECT___` and `__PROJECT_NAME__` with the name of the specific project.
-3. Inspect all files to make sure all replacements work and update text as needed
-
-
-**What you can reuse immediately**
-- CODE_OF_CONDUCT.md
-- SECURITY.md
-- CONTRIBUTING.md (base)
-- .github/ISSUE_TEMPLATE/.yml (bug/feature/task + config.yml)
-- .github/PULL_REQUEST_TEMPLATE.md
-- Reusable workflows 
-
-**What you must customize per repo**
-- README.md: copy the skeleton and fill in product-specific details (Quickstart, Requirements, Usage, Support level, links)
-- LICENSE: check file is correct, update year, consult Confluence for alternatives https://confluence.nvidia.com/pages/viewpage.action?pageId=788418816, add CLA.md only if your license/process requires it
-- CODEOWNERS: replace <TEAM> with your GitHub team handle(s). Place at .github/CODEOWNERS (or repo root)
-- MAINTAINERS.md: list maintainers names/roles, escalation path
-- CHANGELOG.md (or RELEASE.md): track releases/changes
-- SUPPORT.md: Update for your project
-- ROADMAP.md (optional): upcoming milestones
-- NOTICE / THIRD_PARTY_NOTICES (if you ship third‑party content)
-- Build/package files (CMake/pyproject/Dockerfile/etc.), tests/, docs/, examples/, scripts/ as appropriate
-- Workflows: Edit if you need custom behavior 
-
-
-4. Change git origin to point to new repo and push
-5. Remove the line break below and everything above it
-
-## Usage for existing NVIDIA OSS repos
-
-1. Follow the steps above, but add the files to your existing repo and merge
-
-<!-- REMOVE THE LINE BELOW AND EVERYTHING ABOVE -->
------------------------------------------
-# [Project Title]
-One-sentence value proposition for users. Who is it for, and why it matters. 
-
-# Overview
-What the project does? Why the project is useful?
-Provide a brief overview, highlighting key features or problem-solving capabilities.
-
-# Getting Started
-Guide users on how they can get started with the project. This should include basic installation step, quick-start examples 
 ```bash
-# Option A: Package manager (pip/conda/npm/etc.)
-<copy-paste install>
-
-# Option B: Container
-docker run <image> <args>
-
-# Verify (hello world)
-<one-liner or ~10-line example>
+/quickstart
 ```
-# Requirements
-Include a list of pre-requisites. 
-- OS/Arch: <summary or link to full matrix>
-- Runtime/Compiler: <versions>
-- GPU/Drivers (if applicable): CUDA <ver>, driver <ver>, etc.
 
-# Usage
+You will be asked `Where do you want to search?` — your request is then handed off to `/search`.
+
+## Shell quickstart (secondary, no agent required)
+
+If Claude Code isn't an option, `scripts/quickstart.sh` mirrors the same three lanes in bash and ends with a sample query:
+
 ```bash
-# Minimal runnable snippet (≤20 lines)
-<code>
+./scripts/quickstart.sh                         # interactive, three lanes
+./scripts/quickstart.sh --hosted                # public NVIDIA dev endpoint
+USD_SEARCH_API_URL=... ./scripts/quickstart.sh --own
+./scripts/quickstart.sh --local                 # docker compose up + sample query
+./scripts/quickstart.sh --query "yellow forklift"
 ```
-- More examples/tutorials: <link>
-- API reference: <link>
 
-# Performance (Optional)
-Summary of benchmarks; link to detailed results and hardware used.
+This path is a convenience — it can't do VLM validation, image input, or the follow-on `/inspect-asset` / `/search-in-scene` flows. For anything beyond a sanity check, use the agent path above. Requires `bash`, `curl`, and `python3`; the local lane also needs `docker compose` v2.
 
-## Releases & Roadmap 
-- Releases/Changelog: <link>
-- (Optional) Next milestones or link to `ROADMAP.md`.
-  
-# Contribution Guidelines
-- Start here: `CONTRIBUTING.md`
-- Code of Conduct: `CODE_OF_CONDUCT.md`
-- Development quickstart (build/test):
+## Standing up your own deployment
+
+If you want to run USDSearch yourself — either on this laptop or on a Kubernetes cluster — use:
+
+```
+/deploy-usdsearch
+```
+
+`/deploy-usdsearch` ([`.claude/skills/deploy-usdsearch/SKILL.md`](.claude/skills/deploy-usdsearch/SKILL.md)) branches once between **local docker compose** (full stack at the repo root: opensearch, redis, deepsearch-api, info-endpoint, asset-graph, embedding workers behind an nginx gateway at `http://localhost:8080`, with the Explorer WebUI as an optional overlay) and **Helm on Kubernetes** (the chart at `helm/usdsearch/`). Both branches walk through storage backend (Public S3 / Custom S3 / Nucleus), GPU plugins, VLM plugins, WebUI, and credentials — accepting **env-var names only**, never raw secrets. After the stack is healthy and `./scripts/quickstart-smoke.sh` passes, control returns to `/quickstart` so you can immediately fetch an asset against your own deployment.
+
+---
+
+## Plain docker compose (no agent)
+
+The agent path above wraps the same docker compose stack that's defined at the repo root. The default deployment runs **SigLIP2 on GPU** (via Triton) and the **GPU-accelerated renderer enabled** — bring it up directly with:
+
 ```bash
-<clone> && <deps> && <build/test>
+docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml up -d --build
 ```
-## Governance & Maintainers
-- Governance: `GOVERNANCE.md`
-- Maintainers: <team/handles>
-- Labeling/triage policy: <link>
+
+Requires an NVIDIA GPU on the host and `nvidia-container-toolkit` configured. To run without a GPU (SigLIP2 on CPU, no renderer), drop the `-f docker-compose.gpu-plugins.yml` flag.
+
+Open **http://localhost:8080** — the nginx gateway routes `/` to the Explorer UI, `/docs/` to the bundled Swagger docs, and the search / info / asset-graph APIs to their backing services. After it reports healthy (~60s), `./scripts/quickstart-smoke.sh` exercises every gateway-proxied endpoint.
+
+For configuration recipes — custom S3 bucket, local-filesystem assets, or VLM auto-tagging — see [`docs/local-deployment.md`](docs/local-deployment.md).
+
+---
+
+## Build from source
+
+For developers working on USD Search itself. To deploy or run the service, use one of the paths above.
+
+See [`docs/development.md`](docs/development.md) for prerequisites, the editable-install steps (`build_search_utils.sh`, `build_pytinyexr.sh`, `uv sync`) and repository layout details.
+
+---
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
+component licenses are listed in [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md).
+
+## Contributing
+
+This project is currently not accepting contributions. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
-- Vulnerability disclosure: `SECURITY.md`
-- Do not file public issues for security reports.
 
-## Support
-- Level: <Experimental | Maintained | Stable>
-- How to get help: Issues/Discussions/<channel link>
-- Response expectations (if any).
+Please report security vulnerabilities per the policy in
+[SECURITY.md](SECURITY.md).
 
-# Community
-Provide the channel for community communications.
+## Code of Conduct
 
-# References
-Provide a list of related references
-
-# License
-This project is licensed under the [NAME HERE] License - see the LICENSE.md file for details
-- License: <link>
+This project adheres to the Contributor Covenant Code of Conduct. See
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

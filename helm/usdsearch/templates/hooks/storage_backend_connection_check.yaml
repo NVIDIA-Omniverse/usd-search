@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  if and .Values.global.checks.storage_backend.enabled (ne .Values.global.storage_backend_type "multi") }}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $releaseName }}-{{ .Values.global.storage_backend_type | replace "_" "-" }}-storage-check
+  labels:
+    {{- include "deepsearch-global.labels" . | nindent 4 }}
+  annotations:
+  {{- if .Values.global.s3proxy.enabled }}
+  {{- toYaml .Values.global.checks.storage_backend.s3_proxy_annotations | nindent 4}}
+  {{- else }}
+  {{- toYaml .Values.global.checks.storage_backend.annotations | nindent 4}}
+  {{- end }}
+spec:
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 3600
+  backoffLimit: {{ .Values.global.checks.storage_backend.backoff_limit }}
+  template:
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      restartPolicy: "OnFailure"
+      automountServiceAccountToken: false
+      containers:
+        - name: connection-check
+          {{- $apiImg := .Values.ngsearch.microservices.search_rest_api.image }}
+          {{- if $apiImg.name }}
+          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default .Chart.AppVersion }}
+          {{- else }}
+          image: {{ include "deepsearch-global.usdsearchImage" . }}
+          {{- end }}
+          command:
+          - python
+          - -c
+          - |
+            from search_utils.storage_client import get_client, StorageClient
+            from search_utils.storage_client.config import StorageConfig
+            import asyncio
+
+            async def task():
+                client: StorageClient
+                async with get_client(client_type=StorageConfig().storage_backend_type).connection_context() as client:
+                    assert await client.check_connection()
+
+            asyncio.run(task())
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          env:
+            - name: STORAGE_BACKEND_TYPE 
+              value: "{{ .Values.global.storage_backend_type }}"
+          {{- if eq .Values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+          {{- end }}
+{{- end }}

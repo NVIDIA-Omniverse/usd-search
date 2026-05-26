@@ -1,0 +1,1 @@
+export const {{ definition.name }} = {% if asymmetric.client %}{{ definition.client|schema_type_name }}{% else %}{{ definition.server|schema_type_name }}{% endif %};

@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v2
+name: usdsearch
+description: USD Search API
+maintainers:
+- name: NVIDIA
+  url: https://www.nvidia.com/en-us/
+keywords:
+- Omniverse
+- USDSearch
+- NVIDIA
+
+# A chart can be either an 'application' or a 'library' chart.
+#
+# Application charts are a collection of templates that can be packaged into versioned archives
+# to be deployed.
+#
+# Library charts provide useful utilities or functions for the chart developer. They're included as
+# a dependency of application charts to inject those utilities and functions into the rendering
+# pipeline. Library charts do not define any templates and therefore cannot be deployed.
+type: application
+
+# This is the chart version. Derived from git tags matching `chart-X.Y.Z`.
+# CI stamps the real version at package time via helm/scripts/version.sh.
+# Do NOT manually edit — use `git tag chart-X.Y.Z` to release.
+version: 0.0.0-dev
+
+# This is the version number of the application being deployed.
+# Derived from git tags matching `images-X.Y.Z` — defaults to the latest
+# published image set so local installs pull real tags from NGC.
+# CI overrides this at package time via helm/scripts/version.sh.
+appVersion: "1.3.1"
+
+# Home page for the documentation of DeepSearch
+home: https://docs.omniverse.nvidia.com/services/latest/services/usd-search/overview.html
+
+# Chart icon shown in chart repository UIs (e.g. NGC).
+icon: https://docs.omniverse.nvidia.com/services/latest/_images/usdsearch-hero.jpg
+
+dependencies:
+  # @ignore
+  - name: deepsearch
+    version: "1.0.0"
+  - name: ngsearch
+    version: "1.0.0"
+  - name: deepsearch-crawler
+    condition: deepsearch_crawler.enabled
+    version: "1.0.0"
+  - name: rendering-service
+    condition: rendering_service_deployment.enabled
+    version: "1.0.0"
+  - name: opensearch
+    condition: opensearch_deployment.enabled
+    version: "3.3.2"
+    repository: "https://opensearch-project.github.io/helm-charts/"
+  - name: opensearch-dashboards
+    condition: opensearch_dashboards_deployment.enabled
+    version: "3.5.0"
+    repository: "https://opensearch-project.github.io/helm-charts/"
+  - name: redis
+    version: 25.3.2
+    condition: redis_deployment.enabled
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+  - name: neo4j
+    version: 2026.1.4
+    condition: neo4j_deployment.enabled
+    repository: "https://helm.neo4j.com/neo4j"
+  - name: asset-graph-service
+    version: 0.1.0
+    condition: asset_graph_service_deployment.enabled
+  - name: nginx
+    alias: deepsearch-explorer
+    version: 22.5.3
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: deepsearch_explorer_deployment.enabled
+  - name: nginx
+    alias: api-gateway
+    version: 22.5.3
+    repository: "oci://registry-1.docker.io/bitnamicharts"
+    condition: api_gateway_deployment.enabled
+  - name: s3proxy
+    alias: s3proxy
+    version: 1.0.0
+    condition: global.s3proxy.enabled

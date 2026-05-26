@@ -1,0 +1,168 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $dockerImage := include "asset-graph-service.dockerImage" . -}}
+{{- $defaultVerifyAccessEndpoint := include "asset-graph-service.defaultVerifyAccessEndpoint" . -}}
+{{- $defaultVerifyAccessEnabled := include "asset-graph-service.defaultVerifyAccessEnabled" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "asset-graph-service.fullname" . }}
+  labels:
+    {{- include "asset-graph-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "asset-graph-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "asset-graph-service.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      serviceAccountName: {{ include "asset-graph-service.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+          - uvicorn
+          - asset_graph_service.api:app
+          - --host=0.0.0.0
+          - --port=8000
+          env:
+            - name: db_uri
+              value: {{ .Values.graphdb.neo4jURI }}
+            - name: db_username
+              value: {{ .Values.graphdb.neo4jUsername }}
+            - name: db_password
+              {{- if .Values.graphdb.passwordFromSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.graphdb.passwordFromSecret }}
+                  key: "password"
+                  optional: false
+              {{- else }}
+              value: {{ .Values.graphdb.neo4jPassword }}
+              {{- end }}
+            - name: verify_access
+              value: {{ .Values.verifyAccess.enabled | quote | default ( $defaultVerifyAccessEnabled | quote ) }}
+            - name: verify_access_endpoint
+              value: {{ .Values.verifyAccess.endpoint | default $defaultVerifyAccessEndpoint }}
+            - name: SENTRY_DSN
+              value: {{ .Values.sentry_dsn | default .Values.global.sentry_dsn | default "" }}
+            - name: N_WORKERS
+              value: {{ .Values.graphdb.n_workers | default 20 | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            - name: OTEL_SDK_DISABLED
+              value: "{{ .Values.global.tracing.OTEL_SDK_DISABLED }}"
+            - name: OTEL_TRACES_EXPORTER
+              value: "{{ .Values.global.tracing.OTEL_TRACES_EXPORTER }}"
+            - name: LOG_REQUESTS
+              value: {{ .Values.telemetry.log_requests | quote }}
+            - name: LOG_HEADERS
+              value: {{ .Values.telemetry.log_headers | quote }}
+          {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - mountPath: /app/logging.yml
+              name: logging-config
+              subPath: logging.yml
+      {{- if .Values.enableLivenessChecks }}
+      initContainers:
+        - name: neo4j-liveness-check
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+          - python
+          - -c
+          - |
+            import urllib3, os, time
+            http=urllib3.PoolManager()
+            ready = False
+
+            while not ready:
+              try:
+                response = http.request('GET', os.getenv('DB_HTTP_URI'))
+                ready = True
+              except Exception:
+                print("Neo4j is not ready")
+                time.sleep(2)
+            print("Neo4j is ready")
+          env:
+            - name: DB_HTTP_URI
+              value: {{ .Values.graphdb.neo4jTCPURI }}
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      {{- end}}
+      volumes:
+        - name: logging-config
+          configMap:
+            name: {{ include "asset-graph-service.fullname" . }}-logging
+            items:
+              - key: logging.yml
+                path: logging.yml
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

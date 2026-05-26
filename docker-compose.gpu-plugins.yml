@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# GPU Plugin Workers — optional overlay for GPU-accelerated plugin processing.
+#
+# Adds:
+#   - GPU device reservation to the base SigLIP2 Triton service
+#     (via infra/compose/siglip2-triton-gpu.yml, shared with CI)
+#   - Rendering service (Omniverse Kit, GPU) for USD/MDL asset rendering
+#   - Plugin workers: thumbnail_generation, rendering_to_embedding
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml up
+#
+# Prerequisites:
+#   - NVIDIA GPU with driver installed
+#   - nvidia-container-toolkit
+#   - Rendering service image built:
+#       docker build -f docker/Dockerfile.kit -t rendering-job:latest services/rendering-job/
+
+include:
+  - infra/compose/siglip2-triton-gpu.yml
+
+x-gpu-worker-env: &gpu-worker-env
+  # Storage backend — overridable from the host shell (kept in sync with the
+  # main compose's x-common-env so /quickstart settings reach GPU workers too).
+  STORAGE_BACKEND_TYPE: ${STORAGE_BACKEND_TYPE:-s3}
+  S3_STORAGE_BUCKET_NAME: ${S3_STORAGE_BUCKET_NAME:-omniverse-content-production}
+  S3_STORAGE_REGION_NAME: ${S3_STORAGE_REGION_NAME:-us-west-2}
+  # Default bucket above (omniverse-content-production) is public/read-only, so we
+  # disable non-system writes by default — this makes the thumbnail-generation plugin
+  # short-circuit at preprocess() instead of rendering every asset and then failing
+  # on PutObject with AccessDenied. Override to True when pointing at a private
+  # bucket where the worker has IAM write permission for `.thumbs/`.
+  S3_STORAGE_ALLOW_NON_SYSTEM_WRITES: ${S3_STORAGE_ALLOW_NON_SYSTEM_WRITES:-False}
+  # Null-pass-through (`KEY:` no value): forward from host if set, OMIT
+  # entirely from the container otherwise. Required for anonymous public-S3
+  # access — pydantic-settings reads an empty-string env var as `""` (not
+  # `None`), which prevents the S3 client from registering `disable_signing`
+  # and causes NoCredentialsError against public buckets.
+  S3_STORAGE_AWS_ACCESS_KEY_ID:
+  S3_STORAGE_AWS_SECRET_ACCESS_KEY:
+  S3_STORAGE_AWS_ENDPOINT_URL:
+  OV_SERVER:
+  OV_USERNAME:
+  OV_PASSWORD:
+  LOGGING_CONFIG: /logging.yml
+  PYTHONUNBUFFERED: "1"
+  REDIS_URL: redis://redis:6379
+  OTEL_SDK_DISABLED: "true"
+
+services:
+  # ─── GPU overlay for SigLIP2 Triton ──────────────────────────────────────
+  # Device reservation is pulled in via `include: infra/compose/siglip2-triton-gpu.yml`
+  # above so the CI overlay and the quickstart overlay share one definition.
+
+  # ─── Override: ensure API uses real (non-mock) embedding ─────────────────
+
+  deepsearch-api:
+    environment:
+      MOCK_EMBEDDING: "false"
+
+  # ─── GPU Infrastructure: Rendering Service ───────────────────────────────
+
+  rendering-job:
+    build:
+      context: ./services/rendering-job
+      dockerfile: ../../docker/Dockerfile.kit
+      additional_contexts:
+        graph-builder: ./services/asset-graph-builder
+    container_name: usdsearch-renderer
+    restart: unless-stopped
+    environment:
+      - MODE=api
+      # List-form pass-through: bare `- KEY` (no `=`) forwards from the host
+      # if set and OMITS from the container if unset. Same rationale as the
+      # null-form mapping in x-gpu-worker-env above.
+      - OV_USERNAME
+      - OV_PASSWORD
+      - S3_STORAGE_AWS_SECRET_ACCESS_KEY
+      - S3_STORAGE_AWS_ACCESS_KEY_ID
+      - S3_STORAGE_AWS_ENDPOINT_URL
+      - KIT_WORKER_SETTINGS_N_WORKERS=1
+      - KIT_WORKER_SETTINGS_BATCH_SIZE=1
+      - RENDERING_SERVICE_SETTINGS_KIT_WORKER_MEMORY_LIMIT=25600
+      - HOME=/home/ubuntu
+      - LOGGING_CONFIG=/logging.yml
+    ports:
+      - "8200:8000"
+    shm_size: '2gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - /usr/share/nvidia/nvoptix.bin:/usr/share/nvidia/nvoptix.bin:ro
+      - rendering-cache:/cache
+      - ./logging.yml:/logging.yml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  # ─── Rendering Plugin Workers ────────────────────────────────────────────
+
+  monitor-worker-thumbnail-generation:
+    image: usdsearch:latest
+    container_name: usdsearch-worker-thumbgen
+    restart: unless-stopped
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=thumbnail_generation"]
+    environment:
+      <<: *gpu-worker-env
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: thumbnail_generation
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+      DEEPSEARCH_RENDERER_CONFIG_RENDERER_TYPE: rendering_service
+      DEEPSEARCH_RENDERER_CONFIG_RENDERING_SERVICE_URL: http://rendering-job:8000
+    depends_on:
+      redis:
+        condition: service_healthy
+      rendering-job:
+        condition: service_healthy
+
+  monitor-worker-rendering-to-embedding:
+    image: usdsearch:latest
+    container_name: usdsearch-worker-rend2emb
+    restart: unless-stopped
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=rendering_to_embedding"]
+    environment:
+      <<: *gpu-worker-env
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: rendering_to_embedding
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+      DEEPSEARCH_RENDERER_CONFIG_RENDERER_TYPE: rendering_service
+      DEEPSEARCH_RENDERER_CONFIG_RENDERING_SERVICE_URL: http://rendering-job:8000
+      SIGLIP2_TRITON_SERVER_URL: siglip2-triton:8001
+    depends_on:
+      redis:
+        condition: service_healthy
+      rendering-job:
+        condition: service_healthy
+      siglip2-triton:
+        condition: service_healthy
+
+volumes:
+  rendering-cache:

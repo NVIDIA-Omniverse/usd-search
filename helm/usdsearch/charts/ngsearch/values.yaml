@@ -1,0 +1,1027 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+################################################################################
+## NGSearch services config
+################################################################################
+
+# Name of kubernetes secret that stores information about the service 
+# account that is used to access data in Nucleus. 
+
+# Please refer to https://docs.omniverse.nvidia.com/nucleus/deepsearch 
+# for more information on how such kubernetes secrets can be created.
+
+################################################################################
+## Indexing configuration parameters
+################################################################################
+
+# It is possible to override the global exclude_patterns setting for NGSearch 
+# service specifically. In order to do so please update the following variable. 
+# The syntax of this variable should follow the same pattern as in exclude_patterns:
+# 
+# exclude_patterns:
+# - <regex 1>
+# - <regex 2>
+#
+# Here regex 1 and regex 2 are some regular expressions that can be found in 
+# a file path. For example the following value:
+# 
+# exclude_patterns:
+# - /.thumbs/
+# - .__omni_channel__
+#
+# will filter out all items that are within ".thumbs" folders and all those 
+# assets that contain "__omni_channel__" in the file path
+
+
+microservices:
+  # set-up search thin layer interface with elastic search
+
+  search_rest_api:
+    enabled: true
+
+    # Custom annotations to add to the search-rest-api deployment pod template
+    # podAnnotations: {}
+    # podAnnotations:
+    #   custom.example.com/key: "value"
+    podAnnotations:
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8000"
+      prometheus.io/scrape: "true"
+
+    # liveness probe configuration
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 5
+    # readiness probe configuration
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 5
+
+    # liveness check container
+    embeddingLivenessCheck: 
+      enabled: true
+      resources:
+        requests:
+          cpu: 200m
+          memory: 128Mi
+        limits: 
+          cpu: 200m
+          memory: 256Mi
+
+    replicas: 1
+    # By default the search REST API runs the unified `usdsearch` image
+    # (see `global.image.usdsearch`). Override here to pin a different image
+    # for the search REST API only.
+    image:
+      name: ""
+      tag: ""
+
+    # extra initContainers
+    initContainers: []
+
+    # it is possible to configure Admin Access to key to be able to see search 
+    # results without Nucleus Authentication token
+    admin_authentication:
+      enabled: true
+      access_key:
+
+    ################################################################################
+    ## Search configuration parameters
+    ################################################################################
+
+    # Number of search results that are returned by the NGSearch Search Service by
+    # default, when using non-paginated search functionality. This value can be 
+    # overridden from the input search query using the "max" prefix.
+    
+    default_search_size: 64
+
+    # In order to verify that client application has access to view certain assets
+    # all search results are verified with the Storage backend. While this functionality
+    # is crucial for Omniverse Nucleus servers with fine-grained access. It may 
+    # not be required for AWS S3 bucket or in the cases when all users have 
+    # access to all the assets on the storage backend. In that case it is 
+    # possible to switch off this functionality by setting the following parameter
+    # to false, which would also decrease the time for processing search request. 
+
+    enable_access_verification: true
+
+    ################################################################################
+    ## Default Cut-off Threshold
+    ################################################################################
+
+    # Results returned by the search service have a score associated to them 
+    # that reflects how well the assets match the input query. In order to 
+    # avoid getting less relevant results, it is possible to filter out those 
+    # values, which score is lower than the predefined threshold. By default 
+    # the cutting off threshold is set at 0, which is the lowest possible score.
+
+    default_cutoff_threshold: 0
+
+    ################################################################################
+    ## Search telemetry
+    ################################################################################
+
+    # NGSearch service has the possibility to gather telemetry information about 
+    # searches executed by the users of the system. This information can
+    # then be used to understand what queries are most frequently executed and also
+    # allow to track down issues, if some inconsistency appears in the search
+    # results. 
+    #
+    # Telemetry information includes:
+    #
+    #  * Overall duration of request processing
+    #
+    #  * Time spent waiting for response from Elastic Search service
+    # 
+    #  * Parsed version of the input query that is then converted to a request to
+    #    Elastic Search service
+    #
+    # Note that no information about the user is stored in the system.
+    #
+    # This telemetry is stored in the data directory of NGSearch in an SQLite
+    # database format and is !>NOT<! sent anywhere outside of the service.
+    #
+    # By default telemetry logging is switched off. If you wish to enable
+    # it, set the parameter below to True
+
+    use_search_telemetry: false
+
+    # If Telemetry logging is enabled, there is additional possibility to log 
+    # telemetry information to stdout as structured logs, which can then accumulated 
+    # in a database for analysis. In order to enable this functionality, set the 
+    # following parameter to True.
+
+    search_telemetry_stdout: false
+
+    # validation of search results
+    validation:
+      # Enable validation of search results
+      enabled: false
+      # maximum number of concurrent requests to the VLM service
+      max_concurrent_requests: 50
+      # --
+      # @raw
+      #
+      # Vision endpoint allows to automatically tag and caption various assets stored on the storage backend using an external Vision Language Model (VLM) service.
+      #
+      # The following types of VLM services providers could be configured with the helm chart:
+      #   * azure_openai
+      #   * openai
+      #   * anthropic
+      #   * mistralai
+      #   * google
+      #   * nim
+      #   * qwen
+      #   * inference_hub
+      #
+      # In order to select one VLM for the whole service globally you can pass the following command line parameter:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service=<VLM service type>
+      # ```
+      #
+      # or specify `ngsearch.microservices.search_rest_api.validation.vlm_service` setting in the `my-usdsearch-config.yaml` file as follows:
+      #
+      # ```yaml
+      # ngsearch:
+      #   microservices:
+      #     search_rest_api:
+      #       validation:
+      #         vlm_service: <VLM service type>
+      #  ```
+      #
+      vlm_service: ""
+      # --
+      # @raw
+      #
+      # Azure OpenAI VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing Azure OpenAI service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic azure-openai-vlm-api-key-secret \
+      #     --from-literal=api-key=<Azure OpenAI API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.api_key=<Azure OpenAI API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the Azure OpenAI VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      azure_openai:
+        api_key_secret_name: "azure-openai-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "AZURE_OPENAI_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: gpt-4o-20241120
+          api_version: 2025-03-01-preview
+          azure_endpoint:
+          max_tokens: 2048
+          temperature: 0
+          azure_deployment: gpt-4o-20241120
+      # --
+      # @raw
+      #
+      # OpenAI VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing OpenAI service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic openai-vlm-api-key-secret \
+      #     --from-literal=api-key=<OpenAI API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.api_key=<OpenAI API Key>
+      # ```
+      #
+      # __NOTE__: Instead of relying on the OpenAI model, it is possible to provide on a custom VLM model endpoint, provided this custom VLM model has OpenAI API compatible interface. This could be achieved by appropriately setting the ``base_url`` parameter:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.base_url=<your custom LLM model>
+      # ```
+      #
+      # If it also possible to customize various other parameters of the OpenAI VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      openai:
+        api_key_secret_name: "openai-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "OPENAI_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: "gpt-4o"
+          max_tokens: 2048
+          temperature: 0
+          base_url:
+      
+      # --
+      # @raw
+      #
+      # Anthropic VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing Anthropic service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic anthropic-vlm-api-key-secret \
+      #     --from-literal=api-key=<Anthropic API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.api_key=<Anthropic API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the Anthropic VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      anthropic:
+        api_key_secret_name: "anthropic-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "ANTHROPIC_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: "claude-3-5-sonnet-latest"
+          max_tokens: 2048
+          temperature: 0
+      # --
+      # @raw
+      #
+      # Mistral AI VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing Mistral AI service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic mistralai-vlm-api-key-secret \
+      #     --from-literal=api-key=<Mistral AI API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.api_key=<Mistral AI API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the Mistral AI VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      mistralai:
+        api_key_secret_name: "mistralai-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "MISTRALAI_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: pixtral-large-latest
+          max_tokens: 1024
+          temperature: 0
+
+      # --
+      # @raw
+      #
+      # Google Gemini VLM service endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing Google Gemini service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic google-vlm-api-key-secret \
+      #     --from-literal=api-key=<Google Gemini API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.api_key=<Google Gemini API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the Google Gemini VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # For example, it is possible to customize the base URL for the Google Gemini VLM endpoint to the following:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.base_url=<target base URL>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      google:
+        api_key_secret_name: "google-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "GOOGLE_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: gemini-2.5-pro
+          max_tokens: 2048
+          temperature: 0
+          base_url: https://generativelanguage.googleapis.com/v1beta/openai
+
+      # --
+      # @raw
+      #
+      # NIM VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing NIM service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic nim-vlm-api-key-secret \
+      #     --from-literal=api-key=<NIM API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.api_key=<NIM API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the NIM VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      nim:
+        api_key_secret_name: "nim-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "NIM_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: "meta/llama-4-maverick-17b-128e-instruct"
+          max_tokens: 
+          temperature: 0
+
+      # --
+      # @raw
+      #
+      # Qwen VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing Qwen service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic qwen-vlm-api-key-secret \
+      #     --from-literal=api-key=<Qwen API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.api_key=<Qwen API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the Qwen VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      qwen:
+        api_key_secret_name: "qwen-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "QWEN_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: "qwen3-vl-235b-a22b-instruct"
+          max_tokens: 4096
+          temperature: 0
+      # --
+      # @raw
+      #
+      # Inference Hub VLM endpoint configuration.
+      #
+      # It is required to provide a secret with the API key for accessing Inference Hub service, which could be done with the following command:
+      # ```bash
+      # kubectl create secret generic inference-hub-vlm-api-key-secret \
+      #     --from-literal=api-key=<Inference Hub API Key>
+      # ```
+      #
+      # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+      # ```bash
+      #     --set global.secrets.create.vlm=true \
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.api_key=<Inference Hub API Key>
+      # ```
+      #
+      # If it possible to customize various parameters of the Inference Hub VLM endpoint. This can be done using the following command line arguments:
+      #
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.parameters.<parameter name>=<parameter value>
+      # ```
+      #
+      # The full list of parameters with pre-set default values can be found below:
+      inference_hub:
+        api_key_secret_name: "inference-hub-vlm-api-key-secret"
+        api_key_secret_field: "api-key"
+        api_key: ""
+        env_prefix: "INFERENCE_HUB_"
+        # --
+        #
+        # Model parameters
+        parameters:
+          model: "azure/openai/gpt-5.1"
+          max_tokens: 4096
+          temperature: 0
+
+      # Domain context to use for validation
+      domain_context: |
+        You are validating search results for a 3D asset search engine used by professional 3D artists and developers.
+
+        ## Asset Types
+        The assets being searched are 3D models (USD files) used in simulation, robotics, and visual effects. These include objects like vehicles, furniture, tools, food items, industrial equipment, architectural elements, nature elements, and characters.
+
+        ## Strictness Guidelines - BE VERY STRICT
+
+        You must be significantly more strict when evaluating matches. A match should only be given when the asset clearly and specifically matches the query. Apply these stricter rules:
+
+        ### Scoring Adjustments (override default ranges):
+        - **is_match = true** ONLY when similarity_score is **75 or higher**
+        - **is_match = false** when similarity_score is below 75
+        - Do NOT give the benefit of the doubt. When uncertain, mark as NO MATCH.
+
+        ### Strict Matching Rules:
+        1. **Category matches are NOT enough**: If the query is "orange fruit" and the asset is a different fruit, that is NOT a match
+        2. **Color specificity matters**: If the query mentions a color, the asset MUST show that color prominently
+        3. **Object type must match precisely**: "chair" should only match chairs, not benches or stools
+        4. **Generic terms require strong visual match**: Even for broad queries like "vehicle", the asset should clearly be a vehicle, not just transportation-related
+        5. **Partial matches are NOT matches**: If the query describes a specific thing and the asset only partially matches, mark as NO MATCH
+        6. **Contextual objects don't count**: If the query is "tree" and there's a tiny tree in the background of a building scene, that is NOT a match
+
+        ### Examples of strict evaluation:
+        - Query "red car" + Asset shows a blue car → NO MATCH (wrong color)
+        - Query "office chair" + Asset shows a dining chair → NO MATCH (wrong type of chair)
+        - Query "lime fruit" + Asset shows a lemon → NO MATCH (different fruit despite similar appearance)
+        - Query "wooden table" + Asset shows a metal table → NO MATCH (wrong material)
+        - Query "robot arm" + Asset shows a full humanoid robot → Could be a MATCH only if a robot arm is prominently visible
+
+    # --
+    hpa:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 5
+      targetCPUUtilizationPercentage: 80
+      targetMemoryUtilizationPercentage: 90
+
+    # resources for the deployment
+    resources:
+      requests:
+        cpu: 1
+        memory: 1Gi
+      limits:
+        cpu: 2
+        memory: 2Gi
+
+    loggingConfig:
+      version: 1
+      disable_existing_loggers: False
+      filters:
+        otel_disabled_exclude:
+          (): deepsearch_api.utils.OTELDisabledWarningFilter
+        healthcheck_exclude:
+          (): deepsearch_api.utils.AccessLogFilter
+        grpc_error_exclude:
+          (): deepsearch_api.utils.GRPCCommonFilter
+        correlation_id:
+          (): asgi_correlation_id.CorrelationIdFilter
+          uuid_length: 32
+          default_value: '-'
+      formatters:
+        default:
+          "()": uvicorn.logging.DefaultFormatter
+          format: '%(levelprefix)s %(asctime)s [%(correlation_id)s] %(name)s - %(message)s'
+        access:
+          "()": uvicorn.logging.AccessFormatter
+          format: '%(levelprefix)s %(asctime)s [%(correlation_id)s] %(name)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
+      handlers:
+        default:
+          formatter: default
+          class: logging.StreamHandler
+          stream: ext://sys.stderr
+          filters:
+          - correlation_id
+          - grpc_error_exclude
+        access:
+          formatter: access
+          class: logging.StreamHandler
+          stream: ext://sys.stdout
+          filters:
+            - correlation_id
+            - healthcheck_exclude
+      loggers:
+        root:
+          level: INFO
+          handlers:
+            - default
+        uvicorn.error:
+          level: INFO
+          handlers:
+            - default
+          propagate: no
+        uvicorn.access:
+          level: INFO
+          handlers:
+            - access
+          propagate: no
+        search_backend_observability:
+          level: INFO
+          handlers:
+            - default
+          propagate: no
+        deepsearch_api.request_duration_logger:
+          level: INFO
+          filters:
+            - healthcheck_exclude
+          handlers:
+            - default
+          propagate: no
+        opentelemetry.sdk.trace:
+          filters:
+            - otel_disabled_exclude
+        deepsearch_api.telemetry:
+          level: INFO
+          handlers: 
+            - default
+          propagate: no
+
+
+    service:
+      path: /
+      port: 8000
+    # ------------------------------------------
+    #  Default clusterIP setting
+    # ------------------------------------------
+      type: ClusterIP
+    # # ----------------------------------------
+    # #  NodePort configuration example
+    # # ----------------------------------------
+    #   type: nodeport
+    #   nodeport: 30514
+    # # ----------------------------------------
+    # #  Ingress configuration example
+    # # ----------------------------------------
+    # type: ingress
+    # host: <my ingress host name>
+    # path: "/"
+    # ------------------------------------------
+    #  Load Balancer service configuration example
+    #  IMPORTANT: Selected Load Balancer type must support WebSockets.
+    #    For example in the case of an AWS deployment "NLB" loadbalancer 
+    #    type would be a suitable option, while "ELB" loadbalancer type 
+    #    will not work. 
+    # ------------------------------------------
+    # type: loadbalancer
+    # ------------------------------------------
+    #  Additional service annotations
+    #    * could be useful when setting type loadbalancer
+    #    * when non provided - default service annotations defined in ``service.annotations`` will be used 
+    # ------------------------------------------
+    #   annotations:
+    #     service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+
+
+    # Configuration of the temporary directory for the service. By default it is
+    # set to use Memory medium
+    tmpDir:
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi
+
+    ## Hybrid Search default configuration ################
+    hybrid_search:
+      scoring_config:
+        rrf_config: 
+          rank_constant: 60
+          query_rank_constants: {}
+        hybrid_text: 
+          enabled: True
+          weight: 1.2
+          fields: 
+          - field: modified_by
+            enabled: True
+            weight: 5
+            match_type: exact
+            wildcard: True
+            analyzer: "standard"
+          - field: modified_by
+            enabled: True
+            weight: 5
+            match_type: exact
+            wildcard: False
+            analyzer: "whitespace"
+          - field: name
+            nested: False
+            enabled: True
+            weight: 2
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: name.simple
+            nested: False
+            enabled: True
+            weight: 2
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: name.standard
+            nested: False
+            enabled: True
+            weight: 2
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: usd_properties.value
+            nested: True
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: usd_properties.key
+            nested: True
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: tags.tag
+            nested: True
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: tags.value
+            nested: True
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: path
+            nested: False
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: path.tree
+            nested: False
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: path.tree_reverse
+            nested: False
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          - field: __VISION_METADATA_FIELDS__
+            nested: False
+            enabled: True
+            weight: 1
+            match_type: fuzzy
+            fuzzy_max_expansions: 1
+            wildcard: True
+          cross_field_operator: or
+        vector_fields:
+          siglip2-embedding.embedding:
+            enabled: True
+            weight: 1
+            field_name: siglip2-embedding.embedding
+            dimension: 1536
+
+  # Metadata Indexing service
+  indexing_cron:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed
+        memory: 2Gi
+
+  
+  indexing:
+    replicas: 1
+
+    # Custom annotations to add to the indexing deployment pod template
+    # podAnnotations: {}
+    # podAnnotations:
+    #   custom.example.com/key: "value"
+    podAnnotations:
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8001"
+      prometheus.io/scrape: "true"
+
+    # It is possible to define the number of retries to limit the number of 
+    # times each of the assets in the redis stream will be attempted to be 
+    # processed by default this parameter is unset, which means it will try 
+    # to process each asset indefinitely. 
+    #
+    # autoclaim_n_retries: 1000
+
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed
+        memory: 2Gi
+    hpa:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 5
+
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    #  * NGSearch storage service
+    enableLivenessChecks: true
+
+  # Tags crawler service
+  tagcrawler_cron:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed
+        memory: 2Gi
+
+  tagcrawler:
+    replicas: 1
+
+    # Custom annotations to add to the tag-crawler deployment pod template
+    # podAnnotations: {}
+    # podAnnotations:
+    #   custom.example.com/key: "value"
+    podAnnotations:
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8002"
+      prometheus.io/scrape: "true"
+
+    # It is possible to define the number of retries to limit the number of 
+    # times each of the assets in the redis stream will be attempted to be 
+    # processed by default this parameter is unset, which means it will try 
+    # to process each asset indefinitely. 
+    #
+    # autoclaim_n_retries: 1000
+
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed  
+        memory: 2Gi
+    hpa:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 5
+
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    #  * NGSearch storage service
+    enableLivenessChecks: true
+
+  storage_cron:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 1
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+    es_cache_actualization:
+      timeout: 86400   # 1 day
+    es_cache_nucleus_verification:
+      timeout: 86400   # 1 day
+      remove_unsupported: false      # remove unsupported assets from the index
+    
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    #  * NGSearch storage service
+    enableLivenessChecks: true
+
+# By default the indexing / storage / tag-crawler pods run the unified
+# `usdsearch` image (see `global.image.usdsearch`). Override here to pin a
+# different image for these pods only.
+image:
+  name: ""
+  tag: ""
+
+imagePullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: "nvcr.io"
+nameOverride: ""
+fullnameOverride: ""
+
+# create omniverse service user
+CREATE_SERVICE_USER: false
+
+# environment variables
+env:
+  # You can provide additional environment variables as follows
+  #  - name: 'VARIABLE NAME'
+  #    value: 'VARIABLE VALUE'
+
+##############################
+# Search Query configuration
+##############################
+
+query_config: |
+  vision_generated_metadata_query:
+    type: "multi_match"
+    bool_relation: "filter"
+    parameters:
+      fields: ["vision_generated_*"]
+      type: "best_fields"
+      analyzer: "standard"  # important, otherwise text will be treated as keywords
+      minimum_should_match: 100%
+      _name: "vision_metadata_multimatch"
+
+
+##############################################
+## Ingress set-up
+##############################################
+#
+# If any of the service endpoint had ingress type you need to additionally 
+# set ingress.enabled parameter from below to "true".
+
+ingress:
+  enabled: false
+  annotations:
+    ingress.kubernetes.io/service-upstream: "true"
+
+# set-up metrics backend
+metrics:
+  enabled: true
+  port: 8000
+  type: ClusterIP
+
+## Account to use
+serviceAccount:
+  create: true
+
+################################################################################
+## Security Context configuration
+################################################################################
+
+podSecurityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+  runAsNonRoot: true
+
+securityContext:
+  readOnlyRootFilesystem: true
+  
+################################################################################
+## END
+################################################################################
+
+loggingConfig:
+  version: 1
+  disable_existing_loggers: False
+  filters: {}
+  formatters:
+    default:
+      format: '%(levelname)s %(asctime)s %(name)s - %(message)s'
+  handlers:
+    default:
+      formatter: default
+      class: logging.StreamHandler
+      stream: ext://sys.stderr
+  loggers:
+    opensearch:
+      level: ERROR
+    search_utils.cache_utils:
+      level: WARNING
+    root:
+      level: INFO
+      handlers:
+        - default

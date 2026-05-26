@@ -1,0 +1,25 @@
+[run]
+concurrency = multiprocessing
+parallel = true
+omit =
+    # executed server-side — no coverage info collected
+    deepsearch_crawler/crawler.py
+    deepsearch_crawler/main.py
+    */tests/*
+    */_build/*
+    *pytest.ini*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise Exception
+    raise (.*)Error
+    (.*)except (.*) as (.*):(.*)
+    (.*)except:(.*)
+    def (.*)_message(.*)
+    if 0:
+    if __name__ == .__main__.:
+
+[html]
+directory = docs/metrics/coverage
+

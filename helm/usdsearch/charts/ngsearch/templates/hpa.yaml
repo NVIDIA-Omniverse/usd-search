@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "ngsearch.fullname" . -}}
+{{- $indexingServiceName := "indexing" -}}
+{{- $tagCrawlerServiceName := "tag-crawler" -}}
+{{- $searchRestAPIServiceName := "search-rest-api" -}}
+{{- $fullTagCrawlerServiceName := printf "%s-%s" $fullName $tagCrawlerServiceName -}}
+{{- $fullIndexingServiceName := printf "%s-%s" $fullName $indexingServiceName -}}
+{{- $fullSearchRestAPIServiceName := printf "%s-%s" $fullName $searchRestAPIServiceName -}}
+
+{{- if .Values.microservices.indexing.hpa.enabled }}
+--- 
+
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  labels:
+    {{- include "ngsearch.MainDeploymentlabels" . | nindent 4 }}
+  name: {{ $fullIndexingServiceName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  maxReplicas: {{ .Values.microservices.indexing.hpa.maxReplicas }}
+  minReplicas: {{ .Values.microservices.indexing.hpa.minReplicas }}
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $fullIndexingServiceName }}
+  targetCPUUtilizationPercentage: 50
+
+{{- end }}
+
+{{- if .Values.microservices.tagcrawler.hpa.enabled }}
+
+--- 
+
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  labels:
+    {{- include "ngsearch.MainDeploymentlabels" . | nindent 4 }}
+  name: {{ $fullTagCrawlerServiceName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  maxReplicas: {{ .Values.microservices.tagcrawler.hpa.maxReplicas }}
+  minReplicas: {{ .Values.microservices.tagcrawler.hpa.minReplicas }}
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $fullTagCrawlerServiceName }}
+  targetCPUUtilizationPercentage: 20
+
+{{- end }}
+
+{{- if .Values.microservices.search_rest_api.hpa.enabled }}
+
+--- 
+
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  labels:
+    {{- include "ngsearch.MainDeploymentlabels" . | nindent 4 }}
+  name: {{ $fullSearchRestAPIServiceName }}
+  namespace: {{ .Release.Namespace }}
+spec:
+{{- with .Values.microservices.search_rest_api.hpa }}
+  maxReplicas: {{ .maxReplicas }}
+  minReplicas: {{ .minReplicas }}
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $fullSearchRestAPIServiceName }}
+  targetCPUUtilizationPercentage: {{ .targetCPUUtilizationPercentage | default "80" }}
+  targetMemoryUtilizationPercentage: {{ .targetMemoryUtilizationPercentage | default "90" }}
+{{- end }}
+
+{{- end }}

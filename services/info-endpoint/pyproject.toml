@@ -1,0 +1,54 @@
+[project]
+name = "ngsearch-info-endpoint"
+dynamic = ["version"]
+description = "Asset status and on-demand processing REST API"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+    {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "ngsearch-cache",
+    "ngsearch-plugins",
+    "deepsearch-monitor",
+    "ngsearch-crawlers",
+    "ngsearch-storage",
+    "search-utils[storage-api]",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "redis>=4.5.0",
+    "aiohttp>=3.13",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.6.1",
+    "prometheus-fastapi-instrumentator>=6.1.0",
+    "setuptools>=65.5.1",
+    "typing-extensions>=4.9.0",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+ngsearch-cache = { workspace = true }
+ngsearch-plugins = { workspace = true }
+deepsearch-monitor = { workspace = true }
+ngsearch-crawlers = { workspace = true }
+ngsearch-storage = { workspace = true }
+search-utils = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["info_endpoint"]

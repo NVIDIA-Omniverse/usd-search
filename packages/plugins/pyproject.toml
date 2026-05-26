@@ -1,0 +1,62 @@
+[project]
+name = "ngsearch-plugins"
+dynamic = ["version"]
+description = "Asset processing plugins for the DeepSearch pipeline (embedding, metadata, thumbnails, AGS)"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+    {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
+]
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "ngsearch-cache",
+    "ngsearch-storage",
+    "deepsearch-utils",
+    "search-utils[storage-api]",
+    "vision-endpoint>=0.12.0",
+    "orjson>=3.9.0",
+    "pillow>=10.2.0",
+    "numpy>=1.26.4,<2",
+    "aiohttp>=3.13",
+    "opentelemetry-api>=1.25.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.6.1",
+    # deepsearch-monitor is a runtime workspace dep for thumbnail_generation (circular declaration avoided)
+]
+
+[dependency-groups]
+test = [
+    "pytest>=8.4.1,<10",
+    "pytest-asyncio>=0.20.2",
+    "pytest-cov>=4.0.0",
+    "pytest-xdist>=3.2.1",
+    "pytest-forked>=1.6.0",
+    "pytest-rerunfailures>=11.1.2",
+    "aioresponses>=0.7.6",
+    "authlib>=1.7.2",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+ngsearch-cache = { workspace = true }
+ngsearch-storage = { workspace = true }
+deepsearch-utils = { workspace = true }
+search-utils = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["plugins"]

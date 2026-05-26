@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Single-stage usdsearch image on python:3.12-bookworm.
+#
+# Use this variant when you need a debian-based runtime (e.g. ad-hoc shell
+# access, apt installs, or python 3.12 specifically). The default
+# docker/Dockerfile.usdsearch produces a hardened distroless image on python 3.13.
+#
+# Usage:
+#   docker build --platform linux/amd64 \
+#     -f docker/Dockerfile.usdsearch.python.3.12-bookworm-base \
+#     -t usdsearch:latest .
+#
+# NOTE: Requires linux/amd64 platform (pytinyexr only has x86_64 wheels)
+# and Python 3.12 (numpy 1.26.4 only has wheels up to cp312).
+
+FROM python:3.12-bookworm
+
+RUN apt-get update && apt-get install -y -qq git p7zip-full && rm -rf /var/lib/apt/lists/*
+
+RUN pip install uv --no-cache-dir
+
+WORKDIR /app
+
+# Workspace root config — copied first so dep-only changes don't invalidate source layers
+COPY pyproject.toml uv.lock ./
+COPY build/ build/
+COPY tools/ tools/
+COPY packages/ packages/
+COPY services/deepsearch_api/        services/deepsearch_api/
+COPY services/deepsearch-crawler/    services/deepsearch-crawler/
+COPY services/deepsearch-monitor/    services/deepsearch-monitor/
+COPY services/info-endpoint/         services/info-endpoint/
+COPY services/storage/               services/storage/
+COPY services/crawlers/              services/crawlers/
+COPY services/asset-graph/           services/asset-graph/
+COPY logging.yml /logging.yml
+
+# Copy any pre-built wheels so find-links resolves (pyproject.toml declares find-links = ["wheels/"]).
+COPY wheels/ wheels/
+
+# Build pytinyexr wheel for the current Python version and place it in wheels/
+RUN ./build/build_pytinyexr.sh
+
+# Download IDL protos and generate gRPC client code under packages/search-utils/_build/
+RUN ./build/build_search_utils.sh
+
+# Install all workspace packages as non-editable built wheels.
+ENV UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync \
+        --no-editable \
+        --no-group dev \
+        --no-group lint \
+        --no-group test \
+        --extra search-backend \
+        --extra storage-api \
+        --extra pillow \
+        --extra tools
+
+ENV PATH=/app/.venv/bin:${PATH}
+ENV PYTHONUNBUFFERED=1

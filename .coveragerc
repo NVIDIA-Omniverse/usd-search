@@ -1,0 +1,29 @@
+[run]
+concurrency = multiprocessing
+parallel = true
+omit =
+    *package-links*
+    */tests/*
+    */test/*
+    */test_service/*
+    */integration_tests/*
+    *deeptag_core*
+    *pytest.ini*
+    *_build*
+    */_build/*
+    */.venv/*
+    */wheels/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    raise Exception
+    raise (.*)Error
+    (.*)except (.*) as (.*):(.*)
+    (.*)except:(.*)
+    def (.*)_message(.*)
+    if 0:
+    if __name__ == .__main__.:
+
+[html]
+directory = docs/metrics/coverage

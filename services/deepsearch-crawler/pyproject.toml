@@ -1,0 +1,110 @@
+[project]
+name = "deepsearch-crawler"
+dynamic = ["version"]
+description = "Unified DeepSearch Crawler — scans storage backends and writes to Redis stream"
+authors = [
+    {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
+]
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "base-logging",
+    "search-utils[storage-api]",
+    "deprecated>=1.2.13",
+    "aiobotocore[boto3]>=2.5.0",
+    "boto3>=1.26.76",
+    "certifi>=2023.7.22",
+    "cryptography>=46.0.5",
+    "pyparsing>=3.0.9",
+    "requests>=2.31.0",
+    "typing-extensions>=4.9.0",
+    "protobuf>=6.31.0",
+    "urllib3>=2.7.0",
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-semantic-conventions>=0.46b0",
+    "pyyaml>=6.0.2",
+    "sentry-sdk>=2.14.0",
+    "setuptools>=65.5.1",
+]
+
+[dependency-groups]
+test = [
+    "pytest>=7.3.1",
+    "pytest-timeout>=2.1.0",
+    "pytest-asyncio>=0.20.2",
+    "anybadge>=1.14.0",
+    "coverage-badge>=1.1.0",
+    "pytest-forked>=1.6.0",
+    "pytest-rerunfailures>=11.1.2",
+    "nest-asyncio>=1.5.6",
+    "coverage>=7.2.3",
+    "pytest-xdist>=3.2.1",
+]
+lint = [
+    "black>=22.12.0",
+    "isort>=5.11.4",
+    "pylint>=2.15.10",
+    "mypy>=0.991",
+    "types-deprecated>=1.2.9.2",
+    "types-pyyaml>=6.0.12.9",
+    "types-psutil>=5.9.5.11",
+    "types-python-dateutil>=2.8.19.12",
+    "types-redis>=4.5.4.1",
+    "types-requests>=2.28.11.17",
+    "types-setuptools>=67.6.0.7",
+    "types-urllib3>=1.26.25.10",
+    "types-boto3>=1.0.2",
+    "types-aiobotocore-support>=2.5.0.post1",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+search-utils = { workspace = true }
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepsearch_crawler"]
+
+[tool.black]
+line-length = 120
+target-version = ['py39']
+
+[tool.isort]
+profile = "black"
+known_first_party = ["search_utils"]
+
+[tool.mypy]
+ignore_missing_imports = "True"
+exclude = ["package-links", "_build"]
+disallow_any_unimported = "True"
+disallow_any_decorated = "True"
+disallow_any_generics = "True"
+disallow_any_explicit = "True"
+disallow_subclassing_any = "True"
+disallow_untyped_calls = "True"
+disallow_untyped_defs = "True"
+disallow_incomplete_defs = "True"
+check_untyped_defs = "True"
+disallow_untyped_decorators = "True"
+no_implicit_optional = "True"
+warn_unused_ignores = "True"
+warn_no_return = "True"
+warn_return_any = "True"
+warn_redundant_casts = "True"
+strict_equality = "True"
+warn_unused_configs = "True"

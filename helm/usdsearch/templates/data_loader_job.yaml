@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  if .Values.data_loader.enabled }}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $releaseName }}-data-loader-{{ .Release.Revision }}
+  {{- if .Values.data_loader.wait }}
+  annotations:
+    "helm.sh/hook": post-install, post-upgrade
+    "helm.sh/hook-weight": "0"
+{{/*    "helm.sh/hook-delete-policy": hook-succeeded*/}}
+  {{- end }}
+spec:
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 12 }}
+      {{- end }}
+      restartPolicy: "OnFailure"
+      containers:
+        - name: es-data-loader
+          image: {{ .Values.data_loader.es_data_loader_image }}
+          command:
+          - sh
+          - -c
+          - /loader.sh
+          env:
+          - name: OPENSEARCH_HOST
+            value: {{ include "deepsearch-global.dataLoaderOutputURL" . }}
+          - name: DATA_DIR
+            value: {{ .Values.data_loader.config.data_dir }}
+          {{- with .Values.data_loader.env }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
+      initContainers:
+        - name: es-check
+          {{- $apiImg := .Values.ngsearch.microservices.search_rest_api.image }}
+          {{- if $apiImg.name }}
+          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default .Chart.AppVersion }}
+          {{- else }}
+          image: {{ include "deepsearch-global.usdsearchImage" . }}
+          {{- end }}
+          command:
+          - python
+          - -c
+          - |
+            import requests, time
+            ready = False
+            while True:
+              try: 
+                  response = requests.get('{{ .Values.global.search_backend_config.schema }}://{{ .Values.global.search_backend_config.host }}:{{ .Values.global.search_backend_config.port }}')
+                  break
+              except Exception as exc_info:
+                print(f"OpenSearch service is not ready: {exc_info}")
+                time.sleep(2)
+              print("REST API service is ready")
+{{- end }}
