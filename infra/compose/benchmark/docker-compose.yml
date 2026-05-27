@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  claude-code-sandbox:
+    image: docker/sandbox-templates:claude-code
+    container_name: usdsearch-benchmark-sandbox
+    # Image already runs as user `agent` (uid 1000), workdir
+    # /home/agent/workspace, CMD `claude --dangerously-skip-permissions`.
+    tty: true
+    stdin_open: true
+    volumes:
+      # Project mounted into the image's workdir. The anonymous-volume
+      # overlay on /home/agent/workspace/benchmark hides the host
+      # ./benchmark folder from the sandbox so the harness and its
+      # scoring artifacts stay outside the container's view.
+      #
+      # ⚠️ DO NOT REMOVE the anonymous-volume line below. It prevents
+      # the sandboxed agent from reading isaac-benchmark.yaml (the
+      # ground truth it is being scored against), run.py (the scoring
+      # logic), and the cache / previews directories. Without it the
+      # benchmark is trivially gameable. See benchmark/README.md.
+      - ../../..:/home/agent/workspace
+      - /home/agent/workspace/benchmark
+      # Claude config + credentials. ~/.claude.json holds the OAuth
+      # token / primaryApiKey plus per-project state; ~/.claude/ holds
+      # settings, skills, memory, etc. Without these mounts Claude
+      # inside the container has no auth and reverts to interactive
+      # permission prompts.
+      #
+      # CLAUDE_JSON_HOST + CLAUDE_HOME_HOST let the benchmark driver
+      # point each parallel sandbox at its own private snapshot of
+      # ~/.claude.json and ~/.claude/. Two reasons it matters:
+      #   1. Concurrent token-refresh writes from parallel sandboxes
+      #      would otherwise race on the host files.
+      #   2. The container's `agent` user (uid 1000) usually differs
+      #      from the host uid that owns the auth files (mode
+      #      600/700). The driver chmod-opens the snapshot so the
+      #      container can read it; the host originals stay locked
+      #      down. Without the snapshot, claude CLI fails to load
+      #      credentials and silently retries auth forever.
+      # Both default to the host's real files for hand-run /
+      # single-sandbox use.
+      - ${CLAUDE_HOME_HOST:-${HOME}/.claude}:/home/agent/.claude
+      - ${CLAUDE_JSON_HOST:-${HOME}/.claude.json}:/home/agent/.claude.json
+
+  codex-sandbox:
+    build:
+      context: .
+      dockerfile: codex.Dockerfile
+    image: docker/sandbox-templates:codex
+    container_name: usdsearch-benchmark-codex-sandbox
+    # Image runs as user `agent` (uid 1000), workdir /home/agent/workspace.
+    tty: true
+    stdin_open: true
+    environment:
+      # Passthrough from host env. Either OPENAI_API_KEY must be set on
+      # the host shell, OR a logged-in ~/.codex/ must be mounted below
+      # (the mount carries auth.json from `codex login`).
+      - OPENAI_API_KEY
+    volumes:
+      # ⚠️ DO NOT REMOVE the anonymous-volume line below. Same
+      # data-leakage guarantee as the claude-code-sandbox service:
+      # `./benchmark/` (ground truth + scoring code + cache) is masked
+      # from the sandboxed agent. Any future agent added to this file
+      # MUST replicate these two lines verbatim. See benchmark/README.md.
+      - ../../..:/home/agent/workspace
+      - /home/agent/workspace/benchmark
+      # Codex auth + per-session state lives in ~/.codex/ (auth.json,
+      # sessions/, history, etc.). CODEX_HOME_HOST mirrors the
+      # CLAUDE_JSON_HOST pattern: the benchmark driver snapshots
+      # ~/.codex/ to a per-worker tempdir so parallel runs don't race
+      # on the auth file. Defaults to the host's real ~/.codex/ for
+      # hand-run / single-sandbox use.
+      - ${CODEX_HOME_HOST:-${HOME}/.codex}:/home/agent/.codex

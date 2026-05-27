@@ -1,0 +1,262 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $labels := include "deepsearch-global.labels" . -}}
+
+{{- if .Values.deployServiceMonitors }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $releaseName }}-asset-graph-service
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: asset-graph-service
+  endpoints:
+  - port: http
+    path: /metrics
+  targetLabels:
+    - release_name
+    - component
+    - version
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-crawler
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      deepsearch.service.name: deepsearch-crawler
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-embedding-metadata
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      deepsearch.service.name: embedding
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+{{- range $plugin_name, $plugin_config := .Values.deepsearch.plugins }}
+
+  {{- if $plugin_config.active }}
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-worker-{{ $plugin_config.preview_name | replace "_" "-" }}
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      deepsearch.service.name: worker-{{ $plugin_name }}
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+  {{- end }}
+
+{{- end }}
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-monitor-crawler
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      deepsearch.service.name: monitor-crawler
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-omni-writer
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      deepsearch.service.name: omni-writer
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-index-metadata
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      ngsearch.service.name: indexing
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-search-metadata
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      ngsearch.service.name: search
+  endpoints:
+  - port: metrics
+  targetLabels:
+    - release_name
+    - component
+    - version
+
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-search-rest-api-metadata
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      ngsearch.service.name: search-rest-api
+  endpoints:
+  - port: metrics
+  targetLabels:
+    - release_name
+    - component
+    - version
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-storage-metadata
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      ngsearch.service.name: storage-cron-worker
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-tag-crawler-metadata
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      ngsearch.service.name: tag-crawler
+  podMetricsEndpoints:
+  - port: metrics
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+
+---
+  {{- if .Values.rendering_service_deployment.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ $releaseName }}-metrics-rendering-service
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      usdsearch.service.name: rendering-service
+  podMetricsEndpoints:
+  - port: http
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: hostname
+  podTargetLabels:
+    - release_name
+    - component
+    - version
+    - hostname
+  {{- end }}
+
+{{- end }}

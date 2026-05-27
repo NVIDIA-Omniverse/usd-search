@@ -1,0 +1,36 @@
+[project]
+name = "asset-graph-client"
+dynamic = ["version"]
+description = "Generated client for the Asset Graph Service API"
+authors = [
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+]
+readme = "README.md"
+requires-python = ">=3.8,<4.0"
+dependencies = [
+    "urllib3>=1.25.3",
+    "python-dateutil>=2.8.2",
+    "aiohttp>=3.8.4",
+    "aiohttp-retry>=2.8.3",
+    "pydantic>=2.0",
+    "typing-extensions>=4.7.1",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["asset_graph_service_client"]

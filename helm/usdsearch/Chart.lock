@@ -1,0 +1,39 @@
+dependencies:
+- name: deepsearch
+  repository: ""
+  version: 1.0.0
+- name: ngsearch
+  repository: ""
+  version: 1.0.0
+- name: deepsearch-crawler
+  repository: ""
+  version: 1.0.0
+- name: rendering-service
+  repository: ""
+  version: 1.0.0
+- name: opensearch
+  repository: https://opensearch-project.github.io/helm-charts/
+  version: 3.3.2
+- name: opensearch-dashboards
+  repository: https://opensearch-project.github.io/helm-charts/
+  version: 3.5.0
+- name: redis
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 25.3.2
+- name: neo4j
+  repository: https://helm.neo4j.com/neo4j
+  version: 2026.1.4
+- name: asset-graph-service
+  repository: ""
+  version: 0.1.0
+- name: nginx
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 22.5.3
+- name: nginx
+  repository: oci://registry-1.docker.io/bitnamicharts
+  version: 22.5.3
+- name: s3proxy
+  repository: ""
+  version: 1.0.0
+digest: sha256:457a50e60bced4078ea30772d21358b13e1472f0e749a897d3a3eedde5c4d475
+generated: "2026-03-20T12:38:37.578198+01:00"

@@ -1,0 +1,9 @@
+__pycache__
+_build
+dist
+_requirements
+_licenses
+
+# pytest coverage
+.coverage
+coverage.xml

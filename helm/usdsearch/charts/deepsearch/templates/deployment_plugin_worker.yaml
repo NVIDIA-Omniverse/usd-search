@@ -1,0 +1,504 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $serviceName := "worker" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $license := include "deepsearch.license" . -}}
+{{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
+{{- $farmRecevierEndPoint := include "deepsearch.farmRecevierEndPoint" . -}}
+{{- $release := .Release -}}
+{{- $renderingJobLabels := include "deepsearch.renderingJobLabels" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $values := .Values -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $chartVersion := .Chart.Version -}}
+{{- $deploymentLabels := include "deepsearch.MainDeploymentlabels" . }}
+{{- $deploymentSelectorLabels := include "deepsearch.MainDeploymentSelectorlabels" . }}
+{{- $serviceAccountName := include "deepsearch.serviceAccountName" . }}
+{{- $renderingJobServiceAccountName := include "deepsearch.renderingJobServiceAccountName" . }}
+{{- $envConfigMap := include (print $.Template.BasePath "/env_config_map.yaml") . }}
+{{- $pluginConfigMap := include (print $.Template.BasePath "/plugin_config.yaml") . }}
+{{- $storageBackendConfigMap := include (print $.Template.BasePath "/storage_backend_config.yaml") . }}
+{{- $loggingConfigMap := include (print $.Template.BasePath "/logging_config_map.yaml") . }}
+{{- $RenderingJobTemplateConfigMap := include (print $.Template.BasePath "/rendering_job_template.yaml") . }}
+{{- $visionMetadataConfigMap := include (print $.Template.BasePath "/vision_metadata_config.yaml") . }}
+
+
+{{- if not .Values.global.maintenance_mode }}
+
+{{- range $plugin_name, $plugin_config := $values.plugins }}
+
+  {{- if $plugin_config.active }}
+    
+{{- $vlm_service := ( $plugin_config.vision_endpoint.vlm_service | default $values.vision_endpoint.vlm_service ) -}}
+
+    {{- range $worker_name, $worker_config := $values.microservices.plugin_worker.worker_config }}
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}-{{ $plugin_config.preview_name | replace "_" "-" }}-{{ $worker_name }}
+  labels:
+    release_name: {{ $releaseName }}
+    component: "deepsearch"
+    version: {{ $chartVersion }}
+    deepsearch.service.name: {{ $serviceName }}-{{ $plugin_name }}
+    deepsearch.worker.type.name: {{ $worker_name }}
+    {{- $deploymentLabels | nindent 4 }}
+spec:
+  replicas: {{ $plugin_config.replicas | default 1 }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      deepsearch.service.name: {{ $serviceName }}-{{ $plugin_name }}
+      deepsearch.worker.type.name: {{ $worker_name }}
+      {{- $deploymentSelectorLabels | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ $envConfigMap | sha256sum }}
+        checksum/plugin-config-config-map: {{ $pluginConfigMap | sha256sum }}
+        checksum/storage-backend-config: {{ $storageBackendConfigMap | sha256sum }}
+        checksum/logging-config: {{ $loggingConfigMap | sha256sum }}
+        {{- if and $plugin_config.requires_rendering ( eq ($plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type) "k8s" ) }}
+        checksum/rendering-job-template: {{ $RenderingJobTemplateConfigMap | sha256sum }}
+        {{- end }}
+        {{- if $plugin_config.requires_vision_metadata }}
+        checksum/vision-metadata-config: {{ $visionMetadataConfigMap | sha256sum }}
+        {{- end }}
+      labels:
+        release_name: {{ $releaseName }}
+        component: "deepsearch"
+        version: {{ $chartVersion }}
+        deepsearch.service.name: {{ $serviceName }}-{{ $plugin_name }}
+        deepsearch.worker.plugin: {{ $plugin_name }}
+        deepsearch.worker.type.name: {{ $worker_name }}
+        {{- $deploymentSelectorLabels | nindent 8 }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      hostname: {{ $fullName }}
+      volumes:
+      - name: logging-config
+        configMap:
+          name: {{ $fullName }}-logging
+          items:
+            - key: logging.yaml
+              path: logging.yaml
+      - name: pluginconfig
+        configMap:
+          name: {{ $fullName }}-plugin-config
+      {{- if $plugin_config.requires_vision_metadata }}
+      - name: vision-metadata-config
+        configMap:
+          name: {{ $fullName }}-vlm-config-{{ $plugin_name | replace "_" "-"  }}
+      {{- end }}
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      - name: tmp
+        {{- toYaml $values.microservices.plugin_worker.tmpDir | nindent 8 }}
+      {{- if $plugin_config.serviceAccountName }}
+      serviceAccountName: {{ $plugin_config.serviceAccountName }}
+      {{- else if $plugin_config.useRenderingServiceAccount }}
+      serviceAccountName: {{ $renderingJobServiceAccountName }}
+      {{- else }}
+      serviceAccountName: {{ $serviceAccountName }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $values.podSecurityContext | nindent 8 }}
+      dnsConfig:
+        searches:
+          {{- range $values.global.dnsConfig.searches }}
+          - {{ . }}
+          {{- end }}
+      containers:
+        - name: plugin-worker
+          securityContext:
+            {{- toYaml $values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ $values.imagePullPolicy }}
+          workingDir: /monitor/src
+          command:
+          - sh
+          - -c
+          - |
+            rm -rf /tmp/* &&
+            python -m \
+            monitor.src.monitor_worker \
+            --plugin_name={{ $plugin_config.type }} \
+            {{- if $worker_config.group }}
+            --group_name={{ $worker_config.group }} \
+            {{- end }}
+            {{- if $worker_config.job_type }}
+            --job_item_type={{ printf "%s," ( join "," $worker_config.job_type ) }}
+            {{- end }}
+            
+          ports:
+          {{- if and ($plugin_config.requires_rendering | default false) ( eq ($plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type) "k8s" ) }}
+          - containerPort: 8765
+          {{- end }}
+          {{- if $values.metrics.enabled }}
+          - name: metrics
+            containerPort: {{ $values.microservices.plugin_worker.metrics.port }}
+            protocol: TCP
+          {{- end}}
+          volumeMounts:
+          - mountPath: /logging.yaml
+            name: logging-config
+            subPath: logging.yaml
+          - name: dshm
+            mountPath: /dev/shm
+          - name: pluginconfig
+            mountPath: /plugin_config
+          {{- if $plugin_config.requires_vision_metadata }}
+          - name: vision-metadata-config
+            mountPath: /vision_metadata_config
+          {{- end }}
+          - mountPath: /tmp
+            name: tmp
+            subPath: tmp
+          - mountPath: /run
+            name: tmp
+            subPath: run
+          - mountPath: /run/lock
+            name: tmp
+            subPath: run-lock
+          resources:
+            {{- toYaml ($plugin_config.resources | default $values.microservices.plugin_worker.resources) | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            {{- with $values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if and $plugin_config.requires_embedding_service ( $values.global.embedding_deployment.authentication.enabled ) }}
+            - name: TRITON_SERVER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $values.global.embedding_deployment.authentication.secret_name }}
+                  key: {{ $values.global.embedding_deployment.authentication.secret_key }}
+            {{- end }}
+            {{- if $plugin_config.requires_vision_metadata }}
+            - name: METADATA_YAML_FILEPATH
+              value: /vision_metadata_config/metadata_fields.yaml
+            - name: METADATA_PROMPT_FILEPATH
+              value: /vision_metadata_config/image_prompt.txt
+            - name: METADATA_GENERATION_VLM_SERVICE
+              value: {{ required "Please provide the VLM service type: --set deepsearch.vision_endpoint.vlm_service=<VLM Service type>" $vlm_service -}} 
+              {{- if eq $vlm_service "azure_openai" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.azure_openai "default" $values.vision_endpoint.azure_openai) | nindent 12 }}
+              {{- else if eq $vlm_service "openai" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.openai "default" $values.vision_endpoint.openai) | nindent 12 }}
+              {{- else if eq $vlm_service "anthropic" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.anthropic "default" $values.vision_endpoint.anthropic ) | nindent 12 }}
+              {{- else if eq $vlm_service "mistralai" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.mistralai "default" $values.vision_endpoint.mistralai ) | nindent 12 }}
+              {{- else if eq $vlm_service "google" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.google "default" $values.vision_endpoint.google ) | nindent 12 }}
+              {{- else if eq $vlm_service "nim" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.nim "default" $values.vision_endpoint.nim ) | nindent 12 }}
+              {{- else if eq $vlm_service "qwen" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.qwen "default" $values.vision_endpoint.qwen ) | nindent 12 }}
+              {{- else if eq $vlm_service "inference_hub" -}}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.inference_hub "default" $values.vision_endpoint.inference_hub ) | nindent 12 }}
+              {{- end }}
+            {{- end }}            
+            {{- if $plugin_config.requires_thumbnail_settings }}
+            - name: THUMBNAIL_LOCATION
+              {{- if $plugin_config.thumbnail_settings }}
+              value: {{ $plugin_config.thumbnail_settings.relative_location | default $values.thumbnail_settings.relative_location | quote }}
+              {{- else }}
+              value: {{ $values.thumbnail_settings.relative_location | quote }}
+              {{- end }}
+            - name: THUMBNAIL_SUFFIXES
+              {{- if $plugin_config.thumbnail_settings }}
+              value: {{ $plugin_config.thumbnail_settings.suffixes | default $values.thumbnail_settings.suffixes | toJson | quote }}
+              {{- else }}
+              value: {{ $values.thumbnail_settings.suffixes | toJson | quote }}
+              {{- end }}
+            - name: THUMBNAIL_FILEPATH_PATTERNS
+              {{- if $plugin_config.thumbnail_settings }}
+              value: {{ $plugin_config.thumbnail_settings.filepath_patterns | default $values.thumbnail_settings.filepath_patterns | toJson | quote }}
+              {{- else }}
+              value: {{ $values.thumbnail_settings.filepath_patterns | toJson | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if $plugin_config.gif_offset_ms }}
+            - name: GIF_OFFSET_MS
+              value: {{ $plugin_config.gif_offset_ms | quote }}
+            {{- end }}
+            - name: SENTRY_DSN
+              value: {{ $values.microservices.plugin_worker.sentry_dsn | default $.Values.global.sentry_dsn | default "" }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $values.global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            - name: OTEL_SDK_DISABLED
+              value: {{ $values.global.tracing.OTEL_SDK_DISABLED | quote }}
+            - name: OTEL_TRACES_EXPORTER
+              value: {{ $values.global.tracing.OTEL_TRACES_EXPORTER | quote }}
+            {{- if $plugin_config.requires_ags_service }}
+            - name: ASSET_GRAPH_SERVICE_ENDPOINT
+              value: http://{{ $releaseName }}-asset-graph-service:8000
+            {{- end }}
+            - name: USER_AGENT
+              value: "DeepSearch.FarmWorker/{{ $values.microservices.monitor.image.tag | default $.Chart.AppVersion }}"
+            - name: DEEPSEARCH_MONITOR_WORKER_CONFIG_METRICS_PORT
+              value: {{ $values.microservices.plugin_worker.metrics.port | quote }}
+            {{- if and $plugin_config.requires_rendering ( eq ($plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type) "rendering_service" ) }}
+            - name: DEEPSEARCH_MONITOR_WORKER_CONFIG_N_PARALLEL_QUEUE_PROCESSORS
+              value: {{ $values.microservices.rendering_service.settings.maximum_parallel_requests | quote }}
+            {{- else }}
+              {{- with $values.microservices.plugin_worker.settings }}
+            - name: DEEPSEARCH_MONITOR_WORKER_CONFIG_N_PARALLEL_QUEUE_PROCESSORS
+              value: {{ $plugin_config.n_concurrent_queue_workers | default .n_concurrent_queue_workers | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if $plugin_config.requires_rendering }}
+              {{- if eq ($plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type) "k8s" }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_RENDERER_TYPE
+              value: {{ $plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type }}
+            - name: K8S_RENDER_VERIFY_K8S_SSL_CERT
+              value: {{ $values.microservices.k8s_renderer.verify_k8s_ssl_cert | quote }}
+            - name: EXTERNAL_CACHE_URI
+              value: {{ $farmRecevierEndPoint }}
+            - name: K8S_RENDER_JOB_TEMPLATE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $fullName }}-rendering-job-template
+                  key: rendering_job_template
+            - name: K8S_RENDER_JOB_LABELS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ $fullName }}-rendering-job-template
+                  key: rendering_job_labels
+                {{- with $values.microservices.plugin_worker.service }}
+                  {{- if .endpoint_override.enabled }}
+            - name: FARM_CLIENT_WS_HOST
+              value: "{{ .endpoint_override.host }}"
+            - name: FARM_CLIENT_WS_PORT
+              value: "{{ .endpoint_override.port | toString }}"
+            - name: FARM_CLIENT_WS_PROTOCOL
+              value: {{ .endpoint_override.schema | default "ws" | quote }}
+                  {{- else }}
+                    {{- if eq .type "ingress" }}
+            - name: FARM_CLIENT_WS_HOST
+              value: "{{ .host }}"
+            - name: FARM_CLIENT_WS_PORT
+              value: "80"
+            - name: FARM_CLIENT_WS_PROTOCOL
+              value: {{ .schema | default "ws" | quote }}
+                    {{- else if eq (lower .type) "nodeport" }}
+            - name: FARM_CLIENT_WS_HOST
+              value: {{ $values.global.nodeIP | default $values.nodeIP }}
+            - name: FARM_CLIENT_WS_PORT
+              value: "{{ .nodeport | toString }}"
+            - name: FARM_CLIENT_WS_PROTOCOL
+              value: {{ .schema | default "ws" | quote }}
+                    {{- else if eq (lower .type) "clusterip" }}
+            - name: FARM_CLIENT_WS_HOST
+              value: {{ $fullServiceName }}-{{ $plugin_config.preview_name | replace "_" "-" }}-{{ $worker_name }}.{{ $release.Namespace }}.svc.cluster.local
+            - name: FARM_CLIENT_WS_PORT
+              value: "{{ .port | toString }}"
+            - name: FARM_CLIENT_WS_PROTOCOL
+              value: {{ .schema | default "ws" | quote }}
+                    {{- end}}
+                  {{- end}}
+                {{- end}}
+                {{- with $values.microservices.plugin_worker.rendering_settings }}
+            - name: FARM_CLIENT_RENDERING_BATCH_SIZE
+              value: {{ .client_batch_size | quote }}
+            - name: FARM_CLIENT_RENDERING_BATCH_TIMEOUT
+              value: {{ .client_batch_timeout | quote }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_PENDING_JOB_LIMIT
+              value: {{ $worker_config.pending_job_limit | default ( $plugin_config.pending_job_limit | default .pending_job_limit ) | quote }}
+                {{- end }}
+              {{- else if eq ($plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type) "rendering_service" }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_RETRY_TIMEOUT_ON_BUSY
+              value: {{ $worker_config.retry_timeout_on_busy | default ( $plugin_config.retry_timeout_on_busy | default $values.microservices.plugin_worker.rendering_settings.retry_timeout_on_busy ) | quote }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_RENDERER_TYPE
+              value: {{ $plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type }}
+            {{- if $values.microservices.rendering_service.settings.rendering_service_url }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_RENDERING_SERVICE_URL
+              value: {{ $values.microservices.rendering_service.settings.rendering_service_url }}
+            {{- else }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_RENDERING_SERVICE_URL
+              value: "http://{{ $release.Name }}-rendering-service.{{ $release.Namespace }}.svc.cluster.local:8000"
+            {{- end }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_ENDPOINT
+              value: {{ $values.microservices.rendering_service.settings.endpoint }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_HEALTH_CHECK_ENDPOINT
+              value: {{ $values.microservices.rendering_service.settings.health_check_endpoint }}
+            {{- if $values.microservices.rendering_service.authentication.enabled }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $values.microservices.rendering_service.authentication.api_key_secret_name }}
+                  key: {{ $values.microservices.rendering_service.authentication.api_key_secret_field }}
+            {{- end }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_MAXIMUM_PARALLEL_REQUESTS
+              value: {{ $values.microservices.rendering_service.settings.maximum_parallel_requests | quote }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_FORCE_RENDER
+              value: {{ $values.microservices.rendering_service.settings.force_render | quote }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_ENABLE_CACHING
+              value: {{ $values.microservices.rendering_service.settings.enable_caching | quote }}
+            - name: DEEPSEARCH_RENDERER_CONFIG_EXTRA_HEADERS
+              value: {{ $values.microservices.rendering_service.settings.extra_headers | toJson | quote }}
+              {{- end }}
+            {{- end }}
+            - name: ACCEPT_EULA
+              value: {{ required "Please accept the license agreement: '--set global.accept_eula=true'" $license | quote}}
+          {{- if eq $values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" (dict "Values" $values "Release" $release) | nindent 12 }}
+          {{- else if eq $values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" (dict "Values" $values "Release" $release) | nindent 12 }}
+          {{- else if eq $values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" (dict "Values" $values "Release" $release) | nindent 12 }}
+          {{- else if eq $values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" (dict "Values" $values "Release" $release) | nindent 12 }}
+          {{- end }}
+            - name: PLUGINS_CONFIG_PATH
+              value: /plugin_config/plugin.config.yaml
+        {{- with $plugin_config.sidecar_containers }}
+          {{- range $sidecar := . }}
+        - name: {{ $sidecar.name }}
+          {{- if $sidecar.image.name }}
+          image: {{ default $values.global.registry $sidecar.image.registry }}/{{ $sidecar.image.name }}:{{ $sidecar.image.tag }}
+          {{- else }}
+          image: {{ include "deepsearch-global.renderingJobImage" $ }}
+          {{- end }}
+          imagePullPolicy: {{ default $values.imagePullPolicy $sidecar.imagePullPolicy }}
+          {{- with $sidecar.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $sidecar.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: SENTRY_DSN
+              value: {{ $values.microservices.plugin_worker.sentry_dsn | default $.Values.global.sentry_dsn | default "" }}
+            - name: ACCEPT_EULA
+              value: {{ $license | quote }}
+            {{- if $plugin_config.indexed_properties }}
+            - name: INDEXED_PROPERTIES
+              value: {{ $plugin_config.indexed_properties | quote }}
+            {{- end }}
+            {{- if $plugin_config.indexed_property_prefixes }}
+            - name: INDEXED_PROPERTY_PREFIXES
+              value: {{ $plugin_config.indexed_property_prefixes | quote }}
+            {{- end }}
+          {{- with .env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $sidecar.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- end }}
+        {{- end }}
+      {{- if $values.microservices.plugin_worker.enableLivenessChecks }}
+      initContainers:
+        - name: redis-liveness-check
+          securityContext:
+            {{- toYaml $values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ $values.imagePullPolicy }}
+          command:
+          - python
+          - -m
+          - search_utils.redis.wait_ready
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+        {{- if $plugin_config.requires_embedding_service }}
+        - name: embedding-liveness-check
+          securityContext:
+            {{- toYaml $values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ $values.imagePullPolicy }}
+          command: 
+          - python
+          - -c
+          - |
+            import time
+            from siglip2_triton_client import TritonClientSettings, TritonEnsembleImageClient
+
+            triton_server_url = TritonClientSettings().triton_server_url
+            print("Connecting to inference service at: %s", triton_server_url)
+
+            while True:
+                try:
+                    client = TritonEnsembleImageClient()
+                    client.ping()
+                    break
+                except Exception as exc_info:
+                    print("Embedding client not available: %s", str(exc_info))
+                    time.sleep(1)
+
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            {{- if $values.global.embedding_deployment.authentication.enabled }}
+            - name: TRITON_SERVER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $values.global.embedding_deployment.authentication.secret_name }}
+                  key: {{ $values.global.embedding_deployment.authentication.secret_key }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+        {{- end }}
+        {{- if $plugin_config.requires_ags_service }}
+        {{- include "deepsearch.template.service.httpLivenessCheck" (dict "name" "ags-liveness-check" "image" $monitorDockerImage "securityContext" $values.securityContext "imagePullPolicy" $values.imagePullPolicy "endpoint" (printf "http://%s-asset-graph-service:8000" $releaseName ) "resources" $values.microservices.plugin_worker.liveness_checks.resources ) | nindent 8}}
+        {{- end }}
+      {{- end }}
+      {{- with $values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with $values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with $values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+
+    {{- end }}
+
+  {{- end }}
+
+{{- end }}
+
+{{- end }}

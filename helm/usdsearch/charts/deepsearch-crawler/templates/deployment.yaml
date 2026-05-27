@@ -1,0 +1,179 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch-crawler.fullname" . -}}
+{{- $serviceName := "deepsearch-crawler" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $license := include "deepsearch-crawler.license" . -}}
+{{- $dockerImage := include "deepsearch-crawler.dockerImage" . -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $chartVersion := .Chart.Version -}}
+
+{{- if not .Values.global.maintenance_mode }}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}
+  labels:
+    release_name: {{ $releaseName }}
+    component: "deepsearch-crawler"
+    version: {{ $chartVersion }}
+    deepsearch.service.name: {{ $serviceName }}
+    {{- include "deepsearch-crawler.MainDeploymentlabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ .Values.strategy.type | default "Recreate" }}
+    {{- if eq .Values.strategy.type "RollingUpdate" }}
+    rollingUpdate:
+      maxUnavailable: {{ .Values.strategy.rollingUpdate.maxUnavailable | default 1 }}
+      maxSurge: {{ .Values.strategy.rollingUpdate.maxSurge | default 1 }}
+    {{- end }}
+  selector:
+    matchLabels:
+      deepsearch.service.name: {{ $serviceName }}
+      {{- include "deepsearch-crawler.deploymentSelectorlabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ include (print $.Template.BasePath "/env_config_map.yaml") . | sha256sum }}
+        checksum/extra-crawler-config-map: {{ include (print $.Template.BasePath "/extra_crawler_config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        release_name: {{ $releaseName }}
+        component: "deepsearch"
+        version: {{ $chartVersion }}
+        deepsearch.service.name: {{ $serviceName }}
+        {{- include "deepsearch-crawler.deploymentSelectorlabels" . | nindent 8 }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      serviceAccountName: {{ include "deepsearch-crawler.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      volumes:
+      - name: logging-config
+        configMap:
+          name: {{ $fullName }}-logging
+          items:
+            - key: logging.yaml
+              path: logging.yaml
+      {{- if .Values.crawler.extraConfig }}
+      - name: extra-crawler-config
+        configMap:
+          name: {{ $fullName }}-extra-crawler-config
+      {{- end}}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+          - python
+          - -m
+          - deepsearch_crawler.main
+          ports:
+            - name: metrics
+              containerPort: 8000
+          # livenessProbe:
+          #   httpGet:
+          #     path: /
+          #     port: http
+          # readinessProbe:
+          #   httpGet:
+          #     path: /
+          #     port: http
+          volumeMounts:
+          - mountPath: /logging.yaml
+            name: logging-config
+            subPath: logging.yaml
+          {{- if .Values.crawler.extraConfig }}
+          - name: extra-crawler-config
+            mountPath: /extra_crawler_config
+          {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+            - configMapRef:
+                name: {{ $releaseName }}-deepsearch-global-env-config
+          env:
+            {{- if .Values.crawler.extraConfig }}
+            - name: DEEPSEARCH_CRAWLER_EXTRA_CONFIG_FILE
+              value: /extra_crawler_config/extra_crawler_config.yaml
+            {{- end }}
+            - name: SENTRY_DSN
+              value: {{ .Values.sentry_dsn | default .Values.global.sentry_dsn | default "" }}
+            - name: OV_INSTANCE
+              value: {{ $fullName }}
+            - name: USER_AGENT
+              value: "DeepSearch.Monitor/{{ .Values.image.tag }}"
+            - name: DEEPSEARCH_CRAWLER_PATH
+              value: {{ .Values.crawler.path }}
+            - name: DEEPSEARCH_CRAWLER_RESET_ON_STARTUP
+              value: {{ .Values.reset_on_startup | quote }}
+            - name: ACCEPT_EULA
+              value: {{ required "Please accept the license agreement: '--set global.accept_eula=true'" $license | quote}}
+          {{- if eq .Values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+          {{- end}}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.enableLivenessChecks }}
+      initContainers:
+        - name: redis-liveness-check
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+          - python
+          - -m
+          - search_utils.redis.wait_ready
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      {{- end}}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+
+{{- end}}

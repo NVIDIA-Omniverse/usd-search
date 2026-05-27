@@ -1,0 +1,159 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $dockerImage := include "rendering-service.dockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $chartVersion := .Chart.Version -}}
+{{- if .Values.hssc.enabled }}
+{{- $_ := required "rendering-service.hssc.uri is required when rendering-service.hssc.enabled is true" .Values.hssc.uri }}
+{{- end }}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rendering-service.fullname" . }}
+  labels:
+    release_name: {{ $releaseName }}
+    component: "rendering-service"
+    version: {{ $chartVersion }}
+    {{- include "rendering-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "rendering-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/logging-config: {{ include (print $.Template.BasePath "/logging_config_map.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        release_name: {{ $releaseName }}
+        component: "rendering-service"
+        version: {{ $chartVersion }}
+        {{- include "rendering-service.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      serviceAccountName: {{ include "rendering-service.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: 
+          - /bin/bash
+          - -c
+          - |
+            rm -rf /tmp/* && \
+            /bin/bash /entrypoint.sh
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: MODE
+              value: api 
+            - name: INFERENCE_PORT
+              value: {{ .Values.service.port | quote }}
+            - name: KIT_WORKER_SETTINGS_N_WORKERS
+              value: {{ .Values.settings.n_parallel_kit_workers | quote }}
+            - name: KIT_WORKER_SETTINGS_BATCH_SIZE
+              value: {{ .Values.settings.n_assets_per_worker | quote }}
+            {{- if .Values.hssc.enabled }}
+            - name: RENDERING_SERVICE_SETTINGS_HSSC_URI
+              value: {{ .Values.hssc.uri | quote }}
+            - name: RENDERING_SERVICE_SETTINGS_ENABLE_SHADER_CACHE_WRAPPER
+              value: {{ .Values.hssc.enable_shader_cache_wrapper | quote }}
+            {{- end }}
+            {{- if .Values.settings.kit_worker_memory_limit }}
+            - name: RENDERING_SERVICE_SETTINGS_KIT_WORKER_MEMORY_LIMIT
+              value: {{ .Values.settings.kit_worker_memory_limit | quote }}
+            {{- end }}
+            {{- if .Values.settings.n_allowed_waiting_requests }}
+            - name: KIT_WORKER_SETTINGS_N_ALLOWED_WAITING_REQUESTS
+              value: {{ .Values.settings.n_allowed_waiting_requests | quote }}
+            {{- end }}
+            - name: KIT_WORKER_SETTINGS_KIT_EXTRA_ARGS
+              value: {{ include "rendering-service.kitExtraArgsJson" . | quote }}
+            - name: LOAD_ASSET_AS_REFERENCE
+              value: {{ .Values.settings.load_asset_as_reference | quote }}
+            - name: LOGGING_CONFIG
+              value: /logging.yaml
+          {{- with .Values.env }}
+          {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: logging-config
+              mountPath: /logging.yaml
+              subPath: logging.yaml
+            {{- range $key, $cfg := .Values.cacheVolumes }}
+            {{- if $cfg.enabled }}
+            - name: {{ $key | replace "_" "-" }}
+              {{- toYaml $cfg.volumeMount | nindent 14 }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- with .Values.sidecars }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: logging-config
+          configMap:
+            name: {{ include "rendering-service.fullname" . }}-logging
+            items:
+              - key: logging.yaml
+                path: logging.yaml
+        {{- range $key, $cfg := .Values.cacheVolumes }}
+        {{- if $cfg.enabled }}
+        - name: {{ $key | replace "_" "-" }}
+          {{- toYaml $cfg.volume | nindent 10 }}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

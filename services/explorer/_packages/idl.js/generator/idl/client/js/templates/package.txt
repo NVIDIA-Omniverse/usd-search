@@ -1,0 +1,11 @@
+{
+  "name": "{{ package_name }}",
+  "version": "{{ package_version|default("1.0.0") }}",
+  "description": "{{ package_description }}",
+  "main": "client.js",
+  "author": "NVIDIA",
+  "license": "SEE LICENSE IN LICENSE.txt",
+  "peerDependencies": {
+    "@omniverse/idl": "1.0.0"
+  }
+}

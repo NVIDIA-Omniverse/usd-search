@@ -1,0 +1,49 @@
+[project]
+name = "asset-graph-builder"
+dynamic = ["version"]
+description = "Kit-worker service for building USD asset dependency graphs"
+authors = [
+    {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
+]
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.13.5",
+    "jinja2>=3.1.6",
+    "authlib>=1.7.2",
+    "certifi==2023.7.22",          # NOTE: fixed — license not BSD/MIT/Apache, SWIPAT self-checkout not possible
+    "cryptography>=46.0.5",        # NOTE: fixed — SWIPAT self-checkout not possible
+    "fastapi>=0.110.0",
+    "httpx>=0.27.2",
+    "pillow>=10.2.0",
+    "pydantic<2",
+    "python-multipart>=0.0.22",
+    "sentry-sdk>=2.14.0",
+    "setuptools>=78.1.1",
+    "starlette>=0.36.3",
+    "typing_extensions>=4.9.0",
+    "urllib3>=2.7.0",
+    "uvicorn>=0.24.0.post1",
+]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.uv-dynamic-versioning]
+enable = true
+vcs = "git"
+pattern = "default-unprefixed"
+fallback-version = "0.1.0"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.hatch.build.targets.wheel]
+packages = ["graph_builder"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

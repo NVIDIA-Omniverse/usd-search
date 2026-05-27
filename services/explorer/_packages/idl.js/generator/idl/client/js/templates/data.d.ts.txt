@@ -1,0 +1,51 @@
+{%+ for line in copyright -%}
+// {{ line -}}
+{%+ if loop.last +%}
+
+{%+ endif -%}
+{%+ endfor -%}
+{% if spec|has_binary_data %}import Stream from "@omniverse/idl/stream";{% endif %}
+{% for definition in types %}
+{%- if definition.type == "enum" %}
+export enum {{ definition.name }} {
+  {%- for member in definition.members %}
+  {{ member.name }} = {{ member.value }},
+  {%- endfor %}
+}
+{% elif definition.type == "const" %}
+export class {{ definition.name }} {
+  public static value: {{ definition.value }};
+}
+{% elif definition.type == "alias" %}
+export type {{ definition.name }} = {{ definition.value|schema_dtype_name }};
+{% elif definition.type == "struct" %}
+export type {{ definition.name }} = {
+  {%- if definition.mapping %}
+  [{{ definition.mapping.index }}: {{ definition.mapping.key }}]: {{ definition.mapping.value|schema_dtype }},
+  {%- else %}
+  {%- for field in definition.fields %}
+  {{ field.name }}{% if field.optional %}?{% endif %}: {{ field|schema_dtype }},
+  {%- endfor %}
+  {%- endif %}
+};
+{% elif definition.type == "custom" %}
+{% include "custom/" + definition.schema + ".d.ts.txt" %}
+{% endif %}
+{%- endfor %}
+
+{% for interface in interfaces.values() %}
+{%- for function in interface.functions %}
+export type {{ function|request(interface) }} = {
+  {%- for param in function.params %}
+  {%- if not param.is_const %}
+  {{ param.name }}{% if param.optional %}?{% endif %}: {{ param|schema_dtype }},
+  {%- endif %}
+  {%- endfor %}
+  {%- for field in interface.fields %}
+  {%- if not field.is_const %}
+  {{ field.name }}{% if field.optional %}?{% endif %}: {{ field|schema_dtype }},
+  {%- endif %}
+  {%- endfor %}
+};
+{% endfor %}
+{%- endfor %}

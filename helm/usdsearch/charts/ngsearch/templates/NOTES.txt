@@ -1,0 +1,26 @@
+{{ $plugins := include "ngsearch.plugin-config" . }}
+{{- $dockerImage := include "ngsearch.ngsearchDockerImage" . -}}
+
+
+Deployment of {{ .Chart.Description | quote }}:
+ > version: {{ .Chart.AppVersion }}
+ > license agreement accepted: {{ .Values.global.accept_eula }}
+
+Services:
+  Storage:
+    > image: {{ $dockerImage }}
+  Search Backend:
+    {{- with .Values.global.search_backend_config }}
+    > Provided:
+      > backend type: {{ .backend_type }}
+      > host: {{ .host }}
+      > port: {{ .port }}
+      > name: {{ .index_name}}
+    {{- end }}
+  Nucleus Indexing service:
+    > image: {{ $dockerImage }}
+  Nucleus Tagging crawler service:
+    > image: {{ $dockerImage }}
+
+Storage:
+{{/*TODO: Add note*/}}

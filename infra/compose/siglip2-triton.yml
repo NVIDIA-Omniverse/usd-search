@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SigLIP2 Triton Inference Server — CPU base deployment.
+#
+# This is the single source of truth for the siglip2-triton service.
+# GPU support is added by layering siglip2-triton-gpu.yml on top.
+#
+# Usage:
+#   CPU only:  docker compose -f infra/compose/siglip2-triton.yml up
+#   With GPU:  docker compose -f infra/compose/siglip2-triton.yml -f infra/compose/siglip2-triton-gpu.yml up
+#   With CI:   ... -f infra/compose/siglip2-triton.ci.yml up
+#
+# Ports:
+#   8001 → gRPC inference (primary, used by siglip2-triton-client)
+#
+# Build context is services/siglip2-triton (contains 7.2 GB ONNX model weights in LFS).
+
+services:
+  siglip2-triton:
+    build:
+      context: ../../services/siglip2-triton
+      dockerfile: ../../docker/Dockerfile.siglip2-triton
+    container_name: siglip2-triton-server
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - TRITON_LOG_VERBOSE=0
+    shm_size: '2gb'
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s

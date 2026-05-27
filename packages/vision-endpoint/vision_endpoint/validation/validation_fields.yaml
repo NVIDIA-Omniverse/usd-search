@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+validation_fields:
+
+- name: is_match
+  description: >
+    True ONLY if every element of the query (objects, colors, materials, quantities, relationships) is visibly present in the reference images. False if ANY part of the query is missing or contradicted. When unsure, default to false.
+  type: bool
+
+- name: confidence
+  description: >
+    Float 0.0-1.0. How certain you are about is_match. 0.9+ all evidence clear, 0.7-0.9 likely correct, below 0.7 uncertain.
+  type: float
+
+- name: similarity_score
+  description: >
+    Integer 0-100. How completely the asset matches the query. 90-100 all query elements present, 70-89 primary subject matches but minor detail differs, 50-69 partial match (e.g. right object wrong color), below 50 poor or no match.
+  type: int
+
+- name: reasoning
+  description: >
+    One sentence: list what the images show, which query elements are present or missing, and your match decision.
+  type: str

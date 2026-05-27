@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+metadata_fields:
+
+# Primary search fields - these drive discoverability
+
+- name: caption
+  description: >
+    A concise title (5-12 words) that identifies the object.
+    Format: "[Adjective] [Specific Object Name]".
+    Examples: "Vintage wooden rocking chair", "Modern chrome desk lamp",
+    "Weathered pirate treasure chest", "Futuristic sci-fi control panel".
+  type: str
+
+- name: category
+  description: >
+    The primary category. Choose exactly ONE:
+    furniture, vehicle, architecture, nature, electronics, clothing,
+    food, tool, weapon, decoration, container, lighting, instrument,
+    sports, toy, appliance, industrial, character, prop, other.
+  type: str
+
+# Search keywords - the main discovery driver
+
+- name: tags
+  description: >
+    5-10 searchable keywords that help users find this asset. Include:
+    - Object name and synonyms (couch, sofa, settee)
+    - Specific type (sectional sofa, chesterfield, loveseat)
+    - Visual traits (tufted, curved, upholstered)
+    - Style keywords (mid-century, scandinavian, art-deco)
+    - Use context (living room, lounge, office reception)
+    - Related searches (seating, furniture, interior)
+    Use lowercase. Prioritize terms real users would actually type. Include synonyms.
+  type: list[str]
+
+# Filterable visual attributes
+
+- name: colors
+  description: >
+    Colors visible in the object, from most to least prominent (max 5).
+    Use simple, searchable names: red, blue, green, yellow, orange,
+    purple, pink, brown, black, white, gray, beige, gold, silver.
+    Add modifiers only when distinct: dark_brown, light_blue, metallic_silver.
+  type: list[str]
+
+- name: materials
+  description: >
+    Apparent materials, from primary to secondary (max 5).
+    Use common terms: wood, metal, plastic, glass, fabric, leather,
+    stone, ceramic, concrete, rubber, paper, foam, wicker, chrome, brass.
+  type: list[str]
+
+- name: style
+  description: >
+    The visual/artistic style. Choose exactly ONE primary style:
+    realistic, stylized, cartoon, low_poly, pixel, hand_painted,
+    photorealistic, sci_fi, fantasy, retro, modern, vintage, industrial.
+  type: str
+
+# Quality flags for filtering
+
+- name: is_game_ready
+  description: >
+    True if the asset appears complete, properly textured, and suitable
+    for use in games or real-time applications. False if it has obvious
+    issues like missing parts, broken UVs, or is just a primitive shape.
+  type: bool
+
+- name: has_issues
+  description: >
+    True if there are visible problems: missing/pink textures, UV errors,
+    stretched textures, unnatural artifacts, or incomplete geometry.
+    False if the asset renders correctly with no obvious defects.
+  type: bool

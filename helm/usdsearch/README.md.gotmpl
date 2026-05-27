@@ -1,0 +1,1389 @@
+# {{ template "chart.description" . }}
+
+{{ template "chart.deprecationWarning" . }}
+{{ template "chart.typeBadge" . }}{{ template "chart.appVersionBadge" . }}
+
+{{ template "chart.homepageLine" . }}
+
+{{ template "chart.sourcesSection" . }}
+
+# Requirements
+| Repository | Name | Version |
+|------------|------|---------|
+{{- range .Dependencies }}
+{{- if .Repository }}
+	{{- if .Alias }}
+| {{ .Repository }} | {{ .Alias }}({{ .Name }}) | {{ .Version }} |
+	{{- else }}
+| {{ .Repository }} | {{ .Name }} | {{ .Version }} |
+		{{- end }}
+	{{- end }}
+{{- end }}
+
+
+# Overview
+
+USD Search API is a collection of cloud-native microservices that enable developers, creators, and workflow specialists to efficiently search through vast collections of OpenUSD data, images, and other assets using natural language or image-based inputs.
+
+With these production-ready microservices, developers can deploy USD Search API onto their own infrastructure. With USD Search API's artificial intelligence (AI) features, you can quickly locate untagged and unstructured 3D data and digital assets, saving time navigating unstructured, untagged 3D data. USD Search API is capable of searching and indexing 3D asset databases, as well as navigating complex 3D scenes to perform spatial searches, without requiring manual tagging of assets.
+
+The document describes how USD Search API helm chart could be configured and installed on a kubernetes cluster and connected to a wide range of storage backends.
+
+**NOTE**: USD Search API helm chart assumes that a Kubernetes cluster is already available and configured. Further, depending on the ingress controller and namespace, some changes may be required.
+
+# Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Packages and Access](#packages-and-access)
+- [Deployment](#deployment)
+	- [AWS S3](#aws-s3)
+		- [Alternative installation options](#alternative-installation-options)
+		- [Additional parameters: re-scan frequency](#additional-parameters-re-scan-frequency)
+	- [S3proxy](#s3proxy)
+		- [Examples for Different Storage Backends](#examples-for-different-storage-backends)
+			- [Any S3 compatible Storage Backend](#any-s3-compatible-storage-backend)
+			- [Azure Blob Storage Backend](#azure-blob-storage-backend)
+			- [Google Cloud Storage Backend](#google-cloud-storage-backend)
+		- [Alternative installation options](#alternative-installation-options-1)
+		- [Extra Java options](#extra-java-options)
+	- [Omniverse Nucleus Server](#omniverse-nucleus-server)
+		- [Alternative installation options](#alternative-installation-options-2)
+			- [Nucleus API token](#nucleus-api-token)
+		- [USD Search REST API Authentication](#usd-search-rest-api-authentication)
+			- [Admin Access Key](#admin-access-key)
+			- [Disable Access verification](#disable-access-verification)
+	- [Omniverse Storage APIs](#omniverse-storage-apis)
+		- [SSL support](#ssl-support)
+		- [Authentication](#authentication)
+		- [Alternative installation options](#alternative-installation-options-3)
+	- [API endpoint access](#api-endpoint-access)
+	- [Monitoring](#monitoring)
+- [Post-installation](#post-installation)
+	- [Deployment status check](#deployment-status-check)
+	- [Testing](#testing)
+- [Uninstall](#uninstall)
+	- [Rendering jobs clean-up](#rendering-jobs-clean-up)
+	- [Secrets and persistent volumes clean-up](#secrets-and-persistent-volumes-clean-up)
+- [Experimental](#experimental)
+	- [Sample Explorer WebUI](#sample-explorer-webui)
+	- [Admin tools (beta)](#admin-tools-beta)
+		- [Re-indexing](#re-indexing)
+		- [Storage backend listing](#storage-backend-listing)
+	- [Rendering service](#rendering-service)
+		- [Authentication](#authentication-1)
+- [Advanced configuration](#advanced-configuration)
+	- [Indexing path filtering](#indexing-path-filtering)
+	- [Thumbnail indexing settings](#thumbnail-indexing-settings)
+	- [Plugins](#plugins)
+		- [Horizontal Pod Autoscaler](#horizontal-pod-autoscaler)
+		- [Concurrent processing](#concurrent-processing)
+	- [Rendering Job configuration](#rendering-job-configuration)
+		- [Number of parallel rendering jobs](#number-of-parallel-rendering-jobs)
+		- [Number of parallel rendering workers per rendering job](#number-of-parallel-rendering-workers-per-rendering-job)
+		- [Rendering Job Timeout](#rendering-job-timeout)
+		- [Additional configuration settings](#additional-configuration-settings)
+			- [Annotations](#annotations)
+			- [Tolerations](#tolerations)
+		- [Resources](#resources)
+	- [Persistence (experimental)](#persistence-experimental)
+	- [USD properties search](#usd-properties-search)
+	- [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging)
+		- [VLM services](#vlm-services)
+			- [Anthropic](#anthropic)
+			- [Azure OpenAI](#azure-openai)
+			- [Google](#google)
+			- [NVIDIA Inference Hub](#nvidia-inference-hub)
+			- [Mistral AI](#mistral-ai)
+			- [NVIDIA NIM](#nvidia-nim)
+			- [OpenAI](#openai)
+			- [Qwen](#qwen)
+		- [Customization](#customization)
+			- [Image prompt configuration](#image-prompt-configuration)
+			- [Metadata fields configuration](#metadata-fields-configuration)
+	- [VLM-based verification of results with respect to input query](#vlm-based-verification-of-results-with-respect-to-input-query)
+		- [VLM services](#vlm-services-1)
+			- [Anthropic](#anthropic-1)
+			- [Azure OpenAI](#azure-openai-1)
+			- [Google](#google-1)
+			- [NVIDIA Inference Hub](#nvidia-inference-hub-1)
+			- [Mistral AI](#mistral-ai-1)
+			- [NVIDIA NIM](#nvidia-nim-1)
+			- [OpenAI](#openai-1)
+			- [Qwen](#qwen-1)
+	- [Search Backend configuration](#search-backend-configuration)
+		- [External OpenSearch instance](#external-opensearch-instance)
+		- [OpenSearch authentication](#opensearch-authentication)
+	- [OTEL Telemetry and Traces collection](#otel-telemetry-and-traces-collection)
+		- [Trace collection](#trace-collection)
+		- [Search telemetry collection](#search-telemetry-collection)
+	- [Values](#values)
+		- [Global settings](#global-settings)
+	- [Embedding service settings](#embedding-service-settings)
+	- [Asset Graph Service additional settings](#asset-graph-service-additional-settings)
+	- [Other settings](#other-settings)
+	- [Neo4j instance settings](#neo4j-instance-settings)
+	- [Maintainers](#maintainers)
+- [License](#license)
+- [FAQ](#faq)
+	- [USD assets organization best practices](#usd-assets-organization-best-practices)
+	- [Image-based search best practices](#image-based-search-best-practices)
+	- [Redis Persistent Volume Claim](#redis-persistent-volume-claim)
+	- [Microk8s CA certificate issues](#microk8s-ca-certificate-issues)
+	- [Redis CrashLoopBackOff](#redis-crashloopbackoff)
+	- [OpenSearch Persistent Volume Claim](#opensearch-persistent-volume-claim)
+	- [Incorrect Service Registration Token with Omniverse Nucleus storage backend](#incorrect-service-registration-token-with-omniverse-nucleus-storage-backend)
+	- [OpenSearch Virtual Memory (vm.max\_map\_count)](#opensearch-virtual-memory-vmmax_map_count)
+	- [Storage backend connection](#storage-backend-connection)
+	- [Search speed improvement](#search-speed-improvement)
+		- [Increase the number of OpenSearch replicas](#increase-the-number-of-opensearch-replicas)
+	- [Indexing speed improvement](#indexing-speed-improvement)
+		- [Enable shader caching in Rendering jobs](#enable-shader-caching-in-rendering-jobs)
+		- [Scale the cluster](#scale-the-cluster)
+	- [Metrics are missing in Grafana with monitoring enabled](#metrics-are-missing-in-grafana-with-monitoring-enabled)
+- [Get Help](#get-help)
+
+# Prerequisites
+
+Kubernetes cluster with the following features enabled:
+* Role-based access control (RBAC) - required for creating GPU-based asset rendering jobs
+* [NVIDIA k8s device plugin](https://github.com/NVIDIA/k8s-device-plugin) - required for execution of asset rendering jobs. Alternatively, [NVIDIA GPU-operator](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/index.html) (which includes [NVIDIA k8s device plugin](https://github.com/NVIDIA/k8s-device-plugin)) could be used.
+
+Optional:
+* Metrics server - required for Horizontal Pod Autoscaling (HPA)
+* [Prometheus Stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) - required for service monitoring
+* Dynamic Persistent Volume provisioning - can be utilized by dependent helm charts (e.g. OpenSearch, Redis, Neo4j) in order to automatically provision required persistent volumes
+
+Helm version is higher than ``3.0.0``. To check this run the following command
+    
+```bash
+helm version
+version.BuildInfo{Version:"v3.2.0", GitCommit:"e11b7ce3b12db2941e90399e874513fbd24bcb71", GitTreeState:"clean", GoVersion:"go1.13.10"}
+```
+
+# Packages and Access
+
+Generate your NGC helm and container registry API Key prior to fetch helm chart. See onboarding guide [here](https://docs.nvidia.com/ai-enterprise/deployment/spark-rapids-accelerator/latest/appendix-ngc.html).
+
+Fetch the latest helm chart from the registry
+
+```bash
+helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.3.1.tgz \
+	--username='$oauthtoken' \
+	--password=<YOUR API KEY>
+```
+
+# Deployment
+
+USD Search can be deployed to index data from an [AWS S3 bucket](#aws-s3), an [Omniverse Nucleus server](#omniverse-nucleus-server) or a broad range of other backends by utilizing [S3proxy functionality](#s3proxy). Detailed deployment commands can be found in the sections below.
+
+## AWS S3
+
+{{- range .Values }}
+{{- if (eq "global.s3" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### Additional parameters: re-scan frequency
+
+USD Search re-scans the S3 bucket daily to detect new data while minimizing load. You can adjust the re-scan frequency by adding the following argument to the installation or upgrade command:
+
+```bash
+  --set global.s3.re_scan_timeout=<re scan timeout time in seconds>
+```
+
+**NOTE**: Setting this parameter too low may cause processing queues to grow faster than your USD Search instance can handle. It is recommended to monitor the processing queues in Grafana and adjust the parameter to prevent excessive queue growth.
+
+
+## S3proxy
+
+{{- range .Values }}
+{{- if (eq "s3proxy" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### Extra Java options
+
+{{- range .Values }}
+{{- if (eq "s3proxy.extraJavaOpts" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+## Omniverse Nucleus Server
+
+{{- range .Values }}
+{{- if (eq "global.nucleus" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### USD Search REST API Authentication
+
+By default, when connected to an Omniverse Nucleus server, search service verifies that the user has access to retrieved assets before returning them. Therefore, in order to access search functionality, it is required to provide with one of the following authentication methods:
+
+* service account ``username`` / ``password`` pair
+	* alternatively is it possible to rely on [Nucleus API token](https://docs.omniverse.nvidia.com/nucleus/latest/config-and-info/api_tokens.html) and provide ``$omni-api-token`` as the ``username`` and the API token value as the ``password``.
+
+* [Nucleus connection token](https://docs.omniverse.nvidia.com/nucleus/latest/config-and-info/auth_user_mgmt.html#authentication) that is generated by the client library.
+
+#### Admin Access Key
+
+At service deploy time it is possible to configure admin access key that allows by-passing this access verification step by setting the ``access_key`` configuration parameter as follows:
+
+```bash
+	--set ngsearch.microservices.search_rest_api.admin_authentication.access_key=<some key value>
+```
+when this field is left unset the access key will be auto-generated and stored in a configmap on the kubernetes cluster. To retrieve the value of this key you can run the following:
+
+```bash
+export NAMESPACE=<deployment namespace>
+export HELM_NAME=<deployment name>
+echo $(kubectl get cm $HELM_NAME-ngsearch-env-config -n $NAMESPACE -o "jsonpath={.data.DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY}")
+```
+
+Alternatively it is possible to run the following command:
+
+```bash
+helm status <deployment name>
+```
+
+which will show some information about the deployment and the list of useful commands. The value of Admin access key will be printed there as part of `Accessing USD Search` section.
+
+#### Disable Access verification
+
+If access verification is not desired it is possible to disable it by providing the following argument to the installation or upgrade command: 
+
+```bash
+	--set ngsearch.microservices.search_rest_api.enable_access_verification=false
+```
+
+## Omniverse Storage APIs
+
+{{- range .Values }}
+{{- if (eq "global.storage_api" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+## API endpoint access
+
+All the USD Search functionality is unified under a single API gateway. API Gateway service configuration. By default the ClusterIP service type is used, however, it is possible to override this and make the endpoint publicly accessible. Please refer to [NGINX helm chart service configuration](https://github.com/bitnami/charts/blob/main/bitnami/nginx/README.md#traffic-exposure-parameters) for a complete list of settings.
+
+Below you can find several sample configurations for the API gateway endpoint, depending on the desired service type, and instructions on how to access it:
+
+*  **ClusterIP** (default) - If the ClusterIP service type is used, you can access the API externally via port-forwarding from the Kubernetes cluster as described below. For internal access, use the service name directly.
+
+	API Gateway port-forward example:
+
+	```bash
+	kubectl port-forward -n <NAMESPACE> svc/<deployment name>-api-gateway 8080:80
+	```
+	The endpoint should then be accessible at ``http://localhost:8080``.
+
+* **NodePort** - You can specify the NodePort service type to make the endpoint publicly accessible using the Kubernetes cluster’s external IP. Typically, NodePort values must be in the >30000 range. To enable this, use the following command line arguments:
+
+	```bash
+		--set api-gateway.service.type=NodePort \
+		--set api-gateway.service.nodePorts.http=<NodePort value>
+	```
+	the service will then be accessible at ``http://<external cluster IP>:<NodePort value>``
+
+	**NOTE**: Please refer to [Kubernetes documentation](https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport) more information about NodePort type services.
+
+* **Ingress** - You can enable Ingress to make the service available at a specified hostname. This requires an Ingress controller to be set up, and you may need to specify an Ingress class that matches your controller. Use the following command line arguments to configure it:
+
+	```bash
+		--set api-gateway.ingress.enabled=true \
+		--set api-gateway.ingress.hostname=<service hostname> \
+        --set api-gateway.ingress.ingressClassName=<ingress class name, e.g. 'nginx'>
+	```
+	the service will then be accessible at ``http://<service hostname>``
+
+## Monitoring
+
+The USD Search Helm chart includes monitoring functionality that sets up metrics collection and pre-configured dashboards for tracking background indexing progress and the overall system state. This requires the Prometheus Operator and Grafana with dashboard provisioning. You can use the [Kube Prometheus Stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) to meet these requirements. To enable monitoring, provide the following command line arguments:
+
+```bash
+	--set deployGrafanaDashboards=true \
+	--set deployServiceMonitors=true
+```
+With the above flag enabled the metrics will be automatically scraped by Prometheus service (part of Prometheus stack) and visualized in Grafana as `USD Search / Plugin Processing Dashboard` and `USD Search / Metadata Indexing and Crawler Dashboard` dashboards.
+
+# Post-installation
+
+## Deployment status check
+
+After the helm chart is installed you can check the state of the deployment as follows:
+
+```bash
+helm status <deployment name>
+```
+
+This command should print the following to the standard output:
+
+```bash
+NAME: <deployment name>
+LAST DEPLOYED: <deployment time>
+NAMESPACE: <deployment namespace>
+STATUS: deployed
+REVISION: 1
+NOTES:
+  ...
+```
+
+It will also show some useful commands for checking the following:
+* General deployment information (e.g. deployment name and namespace)
+* Storage backend information
+* USD Search API service information
+* USD Search API service access information
+* Couple of useful commands to check pod status
+* Clean-up commands configured specifically for the deployment
+
+## Testing
+
+The first installation of deployment may take some time, as all the containers will be pulled from the registry. Subsequent installations, however, will be faster.
+
+In order to verify that deployment is successful and the services are working as expected it is possible to run the following 
+
+```bash
+helm test <deployment name>
+```
+
+For a successful deployment this should print the following to standard output: 
+
+```bash
+...
+TEST SUITE:     <deployment name>-ags-api-verification
+Last Started:   Fri Nov  8 12:01:47 2024
+Last Completed: Fri Nov  8 12:01:52 2024
+Phase:          Succeeded
+TEST SUITE:     <deployment name>-database-search-api-verification
+Last Started:   Fri Nov  8 12:01:53 2024
+Last Completed: Fri Nov  8 12:01:59 2024
+Phase:          Succeeded
+TEST SUITE:     <deployment name>-s3-storage-check
+Last Started:   Fri Nov  8 12:01:59 2024
+Last Completed: Fri Nov  8 12:02:10 2024
+Phase:          Succeeded
+...
+```
+
+In case some of these test return a `Failed` status, please refer to the following resources for debugging the deployment:
+* [Frequently asked questions](#faq) section
+* Kubernetes [application debugging guide](https://kubernetes.io/docs/tasks/debug/debug-application/)
+
+# Uninstall
+
+To uninstall the USD Search API deployment, run the following command:
+
+```bash
+helm uninstall <deployment name>
+```
+
+## Rendering jobs clean-up
+
+Rendering jobs created during deployment are not automatically removed on helm uninstall and may occupy resources on the cluster. In order to remove them run the following command:
+
+```bash
+kubectl delete jobs \
+	-l 'app.kubernetes.io/instance=<deployment name>,deepsearch.job-type=rendering' \
+	--field-selector status.successful=0
+```
+
+This command only removes those jobs are running or failed execution. Successfully terminated jobs do not occupy any resources on the kubernetes cluster and would be automatically removed after 1 hour, so it is not necessary to clean them up. Nevertheless, in some cases it may be preferred to remove those jobs as well, which could be done with the following command:
+
+```bash
+kubectl delete jobs \
+	-l 'app.kubernetes.io/instance=<deployment name>,deepsearch.job-type=rendering' \
+	--field-selector status.successful=1
+```
+
+## Secrets and persistent volumes clean-up
+
+Secrets and persistent volume claims (PVCs) are not automatically removed on helm uninstall. They are retained in case the instance needs to be re-created. In some cases it could be desired to remove them as well (e.g. in case a clean install from scratch is desired). The following set of commands could be used to achieve this:
+
+* Secrets:    
+```bash
+kubectl delete secrets $(kubectl get secrets \
+	-l 'app.kubernetes.io/instance=<deployment name>' \
+	-o custom-columns=":metadata.name" | awk '{print}' ORS=' ')
+```
+
+* Persistent volume claims (PVCs):
+
+```bash
+kubectl delete pvc $(kubectl get pvc \
+	-l 'app.kubernetes.io/instance=<deployment name>' \
+	-o custom-columns=":metadata.name" | awk '{print}' ORS=' ')
+kubectl delete pvc data-neo4j-0 
+```
+
+# Experimental
+
+## Sample Explorer WebUI
+
+In order to quickly get started and experiment with USD Search APIs we provide a sample explorer web app that illustrates a way how USD Search APIs could be accessed.
+
+In you order to enable it you need to run the following command to generate WebUI setup configuration:
+
+```bash
+echo 'deepsearch_explorer_deployment:
+  enabled: true
+
+deepsearch-explorer:
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/nginx
+    tag: latest
+
+  initContainers:
+    - name: git-clone-and-build
+      image: node:18-alpine
+      command:
+        - /bin/sh
+        - -c
+      args:
+        - |
+          apk add --no-cache git
+          git clone -b ${GIT_REF} ${GIT_REPO_URL} /source && cd /source && cd ${SUB_PATH}
+          npm install && npm ci --production=false && npm run build
+          cp -r build/* /app/
+      env:
+        - name: GIT_REPO_URL
+          value: "https://github.com/NVIDIA-Omniverse/usdsearch-client.git"
+        - name: GIT_REF
+          value: "main"
+        - name: SUB_PATH
+          value: "./web"
+      volumeMounts:
+        - name: app-volume
+          mountPath: /app
+
+  extraVolumeMounts:
+    - name: app-volume
+      mountPath: /app
+      readOnly: true
+
+  extraVolumes:
+    - name: app-volume
+      emptyDir:
+        medium: Memory' > sample-webui.yaml
+```
+
+Then you need to add this configuration to you helm installation command as follows:
+```bash
+helm install ... -f sample-webui.yaml
+```
+
+## Admin tools (beta)
+
+We have added some administrative tools that allow performing different actions with USD Search API. You can find the list of available tools below.
+
+### Re-indexing
+
+Re-indexing allows you to trigger priority processing of the assets on the storage backend:
+
+```bash
+kubectl exec -it $(kubectl get pods -l deepsearch.service.name=info-endpoint -o jsonpath='{.items[0].metadata.name}') -- \
+    python -m usdsearch.admin.tools reindex <path>
+```
+
+By default this would attempt re-indexing those assets from the given path that have non-Ok statuses.
+
+In order to learn about additional configuration options that re-indexing tool supports please refer to its help, which can be accessed as follows:
+```bash
+kubectl exec -it $(kubectl get pods -l deepsearch.service.name=info-endpoint -o jsonpath='{.items[0].metadata.name}') -- \
+    python -m usdsearch.admin.tools reindex --help
+```
+
+### Storage backend listing
+
+Storage backend listing allows you to see the content on the certain path on the storage backend. It can be executed as follows:
+
+```bash
+kubectl exec -it $(kubectl get pods -l deepsearch.service.name=info-endpoint -o jsonpath='{.items[0].metadata.name}') -- \
+    python -m usdsearch.admin.tools ls <path>
+```
+
+In order to learn about additional configuration options that re-indexing tool supports please refer to its help, which can be accessed as follows:
+```bash
+kubectl exec -it $(kubectl get pods -l deepsearch.service.name=info-endpoint -o jsonpath='{.items[0].metadata.name}') -- \
+    python -m usdsearch.admin.tools ls --help
+```
+
+## Rendering service
+
+{{- range .Values }}
+{{- if (eq "rendering-service" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+
+# Advanced configuration
+
+**NOTE**: Changing the settings provided below is typically not required for a standard installation of USD Search. These settings, however, allow customizing the deployment and tuning it for the particular use-case and infrastructure.
+
+Below several additional parameters that allow customizing USD Search service are described. For convenience, instead of providing them all as command line arguments, it is recommended to pass them to the installation command as a configuration file as follows:
+
+```bash
+helm install .... -f my-usdsearch-config.yaml
+```
+where `my-usdsearch-config.yaml` file can have the following additional settings.
+
+## Indexing path filtering
+
+By default USD Search indexes the all the assets that can be found on the server. It is, however, possible to explicitly define which URL patterns should be included in indexing and which should be excluded. The URL definition supports [python regex syntax](https://docs.python.org/3/library/re.html). In order to include / exclude some of the file patterns - it is possible to specify the following in the `my-usdsearch-config.yaml` file:
+
+```yaml
+deepsearch-crawler:
+  crawler:
+    extraConfig:
+      include_patterns:
+      - <.*regexp of the folder that needs to be included.*>
+      exclude_patterns:
+      - <.*regexp of the folder that needs to be excluded.*>
+```
+
+## Thumbnail indexing settings
+
+{{- range .Values }}
+{{- if (eq "deepsearch.thumbnail_settings" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+## Plugins
+
+USD Search API service is built as a collection of plugins. These plugins are designed to focus on specific task that are outlined below:
+
+{{- range .Values }}
+{{- if and (hasPrefix "deepsearch.plugins" .Key)}}
+	{{- if (regexMatch "deepsearch.plugins.[^\\.]*$" .Key) }}
+		{{- $plugin_name := (replace "deepsearch.plugins." "" .Key) }}
+* **{{$plugin_name}}** 
+		{{ if eq $plugin_name "image_to_embedding" -}}
+- extracts CLIP embeddings from image data 
+	* supports all the image file formats supported by [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#) and [.exr file format](https://openexr.com/en/latest/)
+	* **enabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.image_to_embedding.active=False
+		```
+
+		{{ else if eq $plugin_name "asset_graph_generation" -}}
+- extracts USD prim structure and metadata from USD assets
+	* supports USD asset formats (``.usd``, ``.usda``, ``.usdc``, ``.usdz``)
+	* extracts all dependencies of a USD stage and stores it as a graph in Neo4j database
+	* extracts asset properties, please refer to [USD properties search](#usd-properties-search) section for more details on how the functionality could be configured for different use-cases.
+	* **enabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.asset_graph_generation.active=False
+		```
+
+		{{ else if eq $plugin_name "rendering_to_embedding" -}}
+- renders USD assets from multiple views and extracts CLIP embeddings from these renderings
+	* supports USD asset formats (``.usd``, ``.usda``, ``.usdc``, ``.usdz``)
+	* **enabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.rendering_to_embedding.active=False
+		```
+
+		{{ else if eq $plugin_name "thumbnail_to_embedding" -}}
+- extracts CLIP embeddings from thumbnails of assets
+	* any asset type is supported, provided this asset has a thumbnail
+	* currently thumbnails are expected to be in the Omniverse Nucleus format:
+		* the thumbnail images should be found in the ``.thumbs/256x256/`` folder next to the asset. 
+		* they should have image should have either ``<original asset name>.png`` or ``<original asset name>.auto.png`` name.
+	* **enabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.thumbnail_to_embedding.active=False
+		```
+
+		{{ else if eq $plugin_name "image_to_vision_metadata" -}}
+- uses VLM configured in [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging) section to automatically generate captions and tags from images
+	* supports all the image file formats supported by [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html#) and [.exr file format](https://openexr.com/en/latest/)
+	* requires VLM to be properly configured, please refer to [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging) section for more information
+	* **disabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.image_to_vision_metadata.active=True
+		```
+
+		{{ else if eq $plugin_name "rendering_to_vision_metadata" -}}
+- renders USD assets from multiple views and uses VLM configured in [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging) section to automatically generate captions and tags from renderings of these assets
+	* supports USD asset formats (``.usd``, ``.usda``, ``.usdc``, ``.usdz``)
+	* requires VLM to be properly configured, please refer to [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging) section for more information
+	* **disabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.rendering_to_vision_metadata.active=True
+		```
+
+		{{ else if eq $plugin_name "thumbnail_to_vision_metadata" -}}
+- uses VLM configured in [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging) section to automatically generate captions and tags from thumbnails of assets
+	* any asset type is supported, provided this asset has a thumbnail
+	* currently thumbnails are expected to be in the Omniverse Nucleus format:
+		* the thumbnail images should be found in the ``.thumbs/256x256/`` folder next to the asset. 
+		* they should have image should have either ``<original asset name>.png`` or ``<original asset name>.auto.png`` name.
+	* requires VLM to be properly configured, please refer to [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging) section for more information
+	* **disabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.thumbnail_to_vision_metadata.active=True
+		```
+
+		{{ else if eq $plugin_name "thumbnail_generation" -}}
+- renders USD asset and uploads rendered image to the storage backend to serve as asset thumbnail
+	* supports USD asset formats (``.usd``, ``.usda``, ``.usdc``, ``.usdz``)
+	* **enabled** by default, if not required - could be disabled by providing the following command line argument during helm installation:
+		```bash
+		  --set deepsearch.plugins.thumbnail_generation.active=False
+		```
+
+		{{ else }}
+	* {{ title ( replace "deepsearch.vision_endpoint." "" .Key | replace "_" " " )}}
+		{{- end }}
+
+{{- end }}
+{{- end }}
+{{- end}}
+
+
+### Horizontal Pod Autoscaler
+
+Each of the plugins is deployed as a separate k8s deployment that could be horizontally scaled. By default this functionality is disabled to avoid occupying to many resources. In order to enable it, one could add the following to individual plugin configuration.
+
+```yaml
+hpa:
+  enabled: true
+  minReplicas: <desired minimum number of replicas (default 1) >
+  maxReplicas: <desired maximum number of replicas (default 1) >
+  targetCPUUtilizationPercentage: <desired target CPU utilization (default 80) >
+```
+
+for example for ``image_to_embedding`` plugin the configuration can look like this:
+
+```yaml
+deepsearch:
+  # ...
+  plugins:
+    # ...
+    image_to_embedding:
+      hpa:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 5
+        targetCPUUtilizationPercentage: 80
+```
+
+### Concurrent processing
+
+Some plugins may rely on external services and do not do a lot of processing themselves. In order to increase throughput it is possible to increase concurrency for each plugin by setting ``n_concurrent_queue_workers`` parameter to the desired value. For those plugins that require USD Asset rendering this value is set to ``256`` by default, others have this parameter set to ``1``.
+
+Adjusting the value of this parameter may increase throughput and can be done as in the following example:
+
+```yaml
+deepsearch:
+  # ...
+  plugins:
+    # ...
+    thumbnail_to_embedding:
+      n_concurrent_queue_workers: 8
+```
+
+## Rendering Job configuration
+
+For rendering USD asset USD Search API rely on rendering jobs that are scheduled by Kubernetes on demand. If needed - rendering Job configuration could be adjusted.
+
+### Number of parallel rendering jobs
+
+{{- range .Values }}
+{{- if (eq "deepsearch.microservices.k8s_renderer.maxRenderingJobsCount" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### Number of parallel rendering workers per rendering job
+
+{{- range .Values }}
+{{- if (eq "deepsearch.microservices.k8s_renderer.n_parallel_kit_workers" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### Rendering Job Timeout
+
+{{- range .Values }}
+{{- if (eq "deepsearch.microservices.k8s_renderer.activeDeadlineSeconds" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### Additional configuration settings
+
+#### Annotations
+
+{{- range .Values }}
+{{- if (eq "deepsearch.microservices.k8s_renderer.render_job_pod_annotations" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+#### Tolerations
+
+{{- range .Values }}
+{{- if (eq "deepsearch.microservices.k8s_renderer.tolerations" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+
+### Resources
+
+Resource requests and limits for each individual rendering job could be adjusted by updating the ``resources`` parameter in the  ``deepsearch.microservices.k8s_renderer`` section in ``my-usdsearch-config.yaml`` file. The default settings for resource requests and limits for the job are outlined below:
+
+```yaml
+{{- range .Values }}
+{{- if (eq "deepsearch.microservices.k8s_renderer.resources" .Key) }}
+{{(default .Default .AutoDefault) }}
+{{- end }}
+{{- end}}
+```
+
+## Persistence (experimental)
+
+{{- range .Values }}
+{{- if (eq "deepsearch.persistence" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+**NOTE**: This is an experimental feature. Some functionality may not be supported in case of the heterogenous GPU setup.
+
+{{ define "chart.valueDefaultColumnRender" }}
+{{- $defaultValue := (default .Default .AutoDefault)  -}}
+{{- $notationType := .NotationType }}
+{{- if (and (hasPrefix "`" $defaultValue) (hasSuffix "`" $defaultValue) ) -}}
+{{- $defaultValue = (toPrettyJson (fromJson (trimAll "`" (default .Default .AutoDefault) )) ) -}}
+{{- $notationType = "json" }}
+{{- end -}}
+{{- if (eq $notationType "tpl" ) }}
+<pre lang="{{ $notationType }}">
+{{ .Key }}: |
+{{- $defaultValue | nindent 2 }}
+</pre>
+{{- else if (eq $notationType "email") }}
+<a href="mailto:{{ $defaultValue }}" style="color: green;">"{{ $defaultValue }}"</a>
+{{- else }}
+<pre lang="{{ $notationType }}">
+{{ $defaultValue }}
+</pre>
+{{- end }}
+{{ end }}
+
+{{ define "chart.typeColumnRender" }}
+{{- if (eq .Type "string/email") }}
+<a href="#stringemail" title="{{- template "chart.valuetypes.email" -}}">{{.Type}}</a>
+{{- else if (eq .Type "k8s/storage/persistent-volume/access-modes" )}}
+<a target="_blank" 
+   href="https://kubernetes.io/docs/concepts/storage/persistent-volumes/#access-modes"
+   >{{- .Type }}</a>
+{{- else }}
+{{ .Type }}
+{{- end }}
+{{ end }}
+
+## USD properties search
+
+{{- range .Values }}
+{{- if (eq "deepsearch.plugins.asset_graph_generation" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+## VLM-based automatic captioning and tagging
+
+{{- range .Values }}
+{{- if (eq "deepsearch.vision_endpoint.vlm_service" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### VLM services
+
+Below you can find a list of VLM service providers with respective parameters that could be configured with USD Search API.
+
+{{- range .Values }}
+{{- if and (hasPrefix "deepsearch.vision_endpoint" .Key) (not (hasPrefix "deepsearch.vision_endpoint.vlm_service" .Key)) (not (hasPrefix "deepsearch.vision_endpoint.image_prompt" .Key)) (not (hasPrefix "deepsearch.vision_endpoint.metadata_fields" .Key)) }}
+	{{- if (regexMatch "deepsearch.vision_endpoint.[^\\.]*$" .Key) }}
+		{{- $vlm_service := (replace "deepsearch.vision_endpoint." "" .Key) }}
+		{{- if eq $vlm_service "mistralai" }}
+#### Mistral AI
+		{{- else if eq $vlm_service "openai" }}
+#### OpenAI
+		{{- else if eq $vlm_service "azure_openai" }}
+#### Azure OpenAI
+		{{- else if eq $vlm_service "google" }}
+#### Google
+		{{- else if eq $vlm_service "nim" }}
+#### NVIDIA NIM
+		{{- else if eq $vlm_service "qwen" }}
+#### Qwen
+		{{- else if eq $vlm_service "inference_hub" }}
+#### NVIDIA Inference Hub
+		{{- else }}
+
+#### {{ title ( replace "deepsearch.vision_endpoint." "" .Key | replace "_" " " )}}
+		{{- end }}
+{{ .AutoDescription }}
+{{- else if (regexMatch "deepsearch.vision_endpoint.[^\\.]*.parameters$" .Key)}}
+{{- $defaultValue := (default .Default .AutoDefault)  }}
+
+```yaml
+{{ (fromJson (trimAll "`" (default .Default .AutoDefault) )) | toYaml }}
+```
+
+{{- end }}
+{{- end }}
+{{- end}}
+
+### Customization
+
+It is possible to customize the type of information extracted by the VLM-based auto-captioning system. There are two ways how this can be achieved:
+
+1. By providing a custom image prompt.
+2. By providing a custom list of metadata fields.
+
+Each of the above is described in the following sections.
+
+#### Image prompt configuration
+
+{{- range .Values }}
+{{- if and (eq "deepsearch.vision_endpoint.image_prompt" .Key) -}}
+
+{{ .AutoDescription }}
+
+```text
+{{ printf ( fromJson (trimAll "`" (default .Default .AutoDefault) ) ) }}
+```
+
+{{- end }}
+{{- end}}
+
+#### Metadata fields configuration
+
+{{- range .Values }}
+{{- if and (eq "deepsearch.vision_endpoint.metadata_fields" .Key) -}}
+
+{{ .AutoDescription }}
+
+```yaml
+{{ (fromJson (trimAll "`" (default .Default .AutoDefault) )) | toYaml }}
+```
+
+{{- end }}
+{{- end}}
+
+## VLM-based verification of results with respect to input query
+
+{{- range .Values }}
+{{- if (eq "ngsearch.microservices.search_rest_api.validation" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### VLM services
+
+Below you can find a list of VLM service providers with respective parameters that could be configured with USD Search API.
+
+{{- range .Values }}
+{{- if and (hasPrefix "ngsearch.microservices.search_rest_api.validation" .Key) (not (hasPrefix "ngsearch.microservices.search_rest_api.validation.vlm_service" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.validation.max_concurrent_requests" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.validation.enabled" .Key)) }}
+	{{- if (regexMatch "ngsearch.microservices.search_rest_api.validation.[^\\.]*$" .Key) }}
+		{{- $vlm_service := (replace "ngsearch.microservices.search_rest_api.validation." "" .Key) }}
+		{{- if eq $vlm_service "mistralai" }}
+#### Mistral AI
+		{{- else if eq $vlm_service "openai" }}
+#### OpenAI
+		{{- else if eq $vlm_service "azure_openai" }}
+#### Azure OpenAI
+		{{- else if eq $vlm_service "google" }}
+#### Google
+		{{- else if eq $vlm_service "nim" }}
+#### NVIDIA NIM
+		{{- else if eq $vlm_service "qwen" }}
+#### Qwen
+		{{- else if eq $vlm_service "inference_hub" }}
+#### NVIDIA Inference Hub
+		{{- else }}
+
+#### {{ title ( replace "ngsearch.microservices.search_rest_api.validation." "" .Key | replace "_" " " )}}
+		{{- end }}
+{{ .AutoDescription }}
+{{- else if (regexMatch "ngsearch.microservices.search_rest_api.validation.[^\\.]*.parameters$" .Key)}}
+{{- $defaultValue := (default .Default .AutoDefault)  }}
+
+```yaml
+{{ (fromJson (trimAll "`" (default .Default .AutoDefault) )) | toYaml }}
+```
+
+{{- end }}
+{{- end }}
+{{- end}}
+
+## Search Backend configuration
+
+{{- range .Values }}
+{{- if and (eq "global.search_backend_config" .Key) }}
+
+{{ .AutoDescription }}
+
+{{- end }}
+{{- end}}
+
+### OpenSearch authentication
+
+{{- range .Values }}
+{{- if and (eq "global.search_backend_config.auth_secret_name" .Key) }}
+
+{{ .AutoDescription }}
+
+{{- end }}
+{{- end}}
+
+
+## OTEL Telemetry and Traces collection
+
+### Trace collection
+
+{{- range .Values }}
+{{- if and (eq "global.tracing" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+### Search telemetry collection
+
+{{- range .Values }}
+{{- if and (eq "ngsearch.microservices.search_rest_api.use_search_telemetry" .Key) }}
+{{ .AutoDescription }}
+{{- end }}
+{{- end}}
+
+
+
+{{ define "chart.valuesTableHtml" }}
+
+For convenience, configurable values of this Helm Chart are outlined in the sections below.
+
+### Global settings
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	{{- range .Values }}
+    {{- if and (hasPrefix "global" .Key) (not (hasPrefix "global.checks" .Key)) (not (hasPrefix "global.tracing" .Key)) (not (hasPrefix "global.nucleus" .Key)) (not (hasPrefix "global.storage_api" .Key)) (not (hasPrefix "global.s3" .Key)) (not (hasPrefix "global.azure" .Key)) (not (hasPrefix "global.multi" .Key)) (not (hasPrefix "global.search_backend_config" .Key)) (not (hasPrefix "deepsearch-crawler.crawler" .Key)) (not (hasPrefix "global.exclude_patterns" .Key)) }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+</table>
+
+## Embedding service settings
+
+The following parameters describe embedding service configuration settings:
+
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	<tbody>
+	{{- range .Values }}
+    {{- if (hasPrefix "deepsearch.microservices.embedding" .Key) }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+	</tbody>
+</table>
+
+## Asset Graph Service additional settings
+
+The following parameters allow configuring the Asset Graph Search (AGS) deployment:
+
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	<tbody>
+	{{- range .Values }}
+    {{- if or (hasPrefix "asset-graph-service" .Key) (hasPrefix "asset_graph_service_deployment.enabled" .Key) }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+	</tbody>
+</table>
+
+## Other settings
+
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	<tbody>
+    {{- range .Values }}
+    {{- if and (not (hasPrefix "rendering-service" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.validation" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.use_search_telemetry" .Key)) (not (hasPrefix "s3proxy" .Key)) (not (hasPrefix "asset-graph-service" .Key)) (not (hasPrefix "deepsearch.microservices.embedding" .Key)) (not (hasPrefix "deepsearch.microservices.plugin_worker" .Key)) (not (hasPrefix "deepsearch_crawler" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.verification" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.admin_authentication" .Key)) (not (hasPrefix "deployServiceMonitors" .Key)) (not (hasPrefix "deployGrafanaDashboards" .Key)) (not (hasPrefix "api-gateway" .Key)) (not (hasPrefix "data_loader" .Key)) (not (hasPrefix "deepsearch_explorer" .Key)) (not (hasPrefix "deepsearch-explorer" .Key)) (not (hasPrefix "deepsearch.persistence" .Key)) (not (hasPrefix "global" .Key)) (not (hasPrefix "redis" .Key)) (not (hasPrefix "opensearch" .Key)) (not (hasPrefix "neo4j" .Key)) (not (hasPrefix "deepsearch.microservices.k8s_renderer" .Key )) (not (hasPrefix "deepsearch-crawler.crawler" .Key)) (not (hasPrefix "global.exclude_patterns" .Key)) (not (hasPrefix "deepsearch.plugins" .Key)) (not (hasPrefix "deepsearch.vision_endpoint" .Key)) }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+	</tbody>
+</table>
+
+## Redis instance settings
+
+Configuration for the default Redis instance, which gets deployed when ``redis_deployment.enabled`` is set to ``true``.
+
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	<tbody>
+    {{- range .Values }}
+    {{- if hasPrefix "redis" .Key }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+	</tbody>
+</table>
+
+## OpenSearch instance settings
+
+Configuration for the default OpenSearch cluster, which gets deployed when ``opensearch_deployment.enabled`` is set to ``true``.
+
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	<tbody>
+    {{- range .Values }}
+    {{- if hasPrefix "opensearch" .Key }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+	</tbody>
+</table>
+
+## Neo4j instance settings
+
+Configuration for the default Neo4j instance, which gets deployed when ``neo4j_deployment.enabled`` is set to ``true``.
+
+<table>
+	<thead>
+		<th>Key</th>
+		<th>Type</th>
+		<th>Default</th>
+		<th>Description</th>
+	</thead>
+	<tbody>
+    {{- range .Values }}
+    {{- if hasPrefix "neo4j" .Key }}
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
+			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>
+			<td>
+				<div style="width: 300px;">{{ template "chart.valueDefaultColumnRender" . }}</div>
+			</td>
+			<td>{{ if .Description }}{{ .Description }}{{ else }}{{ .AutoDescription }}{{ end }}</td>
+		</tr>
+    {{- end }}
+	{{- end }}
+	</tbody>
+</table>
+
+
+{{ end }}
+
+
+{{ template "chart.valuesSectionHtml" . }}
+
+{{ template "chart.maintainersSection" . }}
+
+# License
+
+GOVERNING TERMS:
+ 
+If you download the software and materials as available from the NVIDIA AI product portfolio, use is governed by the NVIDIA Software License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for NVIDIA AI Products (found at https://www.nvidia.com/en-us/agreements/enterprise-software/product-specific-terms-for-ai-products/); except for the model which is governed by the NVIDIA AI Foundation Models Community License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-ai-foundation-models-community-license-agreement/.
+ 
+If you download the software and materials as available from the NVIDIA Omniverse portfolio, use is governed by the NVIDIA Software License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-license-agreement/) and the Product-Specific Terms for NVIDIA Omniverse (found at NVIDIA Agreements | Enterprise Software | Product Specific Terms for Omniverse); except for the model which is governed by the NVIDIA AI Foundation Models Community License Agreement (found at https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-ai-foundation-models-community-license-agreement/.
+
+# FAQ
+
+## USD assets organization best practices
+
+USD Search API service indexes individual assets that are stored on the storage backend. As described in [Plugins](#plugins) section multiple asset formats are supported. 
+
+When it comes to USD assets, USD Search API service operates on the file level, so the whole USD asset / scene is indexed as a whole. If one has a large USD scene with multiple smaller prims baked in, only the overarching USD scene will be indexed as it would be the only actual file stored on the storage backend. Therefore, in case finding smaller objects that the scene is composed of is desired (e.g. in the case of doing in-scene search or finding scenes that contain specific objects), those individual objects should be:
+* stored on the storage backend as individual USD assets,
+* referenced in the main scene, instead of being baked into it.
+
+## Image-based search best practices
+
+USD Search API relies on the [SigLIP2 model](https://huggingface.co/google/siglip2-giant-opt-patch16-384) to extract embedding from images. SigLIP2 model operates on RGB images of shape ``384x384``, therefore to achieve the best accuracy the input images should be squared and have at least ``384x384`` size.
+
+If images have different dimensions - they will be rescaled such that the minimum of height and width is equal to ``384`` and then center-cropping will be applied to make sure aspect ratio is preserved and the SigLIP2 model receives a squared input.
+
+## Redis Persistent Volume Claim
+
+USD Search API relies on [Redis](https://redis.io/) for all internal caching and uses the official [Redis Helm chart](https://artifacthub.io/packages/helm/bitnami/redis>) for installation, which itself relies on the Persistent Volume Claim mechanism. For the Redis installation provided with USD Search API, a Persistent Volume is required that would be then claimed by Redis. An example configuration is shown below for a Persistent Volume that uses storage on the local file system.
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+name: sample-pv-name
+spec:
+accessModes:
+- ReadWriteOnce
+capacity:
+  storage: 100Gi
+local:
+  path: /var/lib/omni/volumes/001
+nodeAffinity:
+  required:
+    nodeSelectorTerms:
+    - matchExpressions:
+    - key: kubernetes.io/hostname
+    operator: In
+    values:
+    - "node-name"
+persistentVolumeReclaimPolicy: Retain
+volumeMode: Filesystem
+```
+
+For more information on different types of Persistent Volumes and their setup procedures, please refer to the [official Kubernetes documentation](https://kubernetes.io/docs/concepts/storage/persistent-volumes/).
+
+## Microk8s CA certificate issues
+
+When using a microk8s cluster it may happen that some pods (e.g. <deployment name>-deepsearch-worker-thumb-gen-bg-...) would crash with the following error:
+
+```bash
+  File "/usr/local/lib/python3.13/site-packages/monitor/src/monitor_worker.py", line 640, in task_processor
+    raise Exception("Unexpected error: %s", str(exc)) from exc
+Exception: ('Unexpected error: %s', "Cannot connect to host <some IP>:443 ssl:True [SSLCertVerificationError: (1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: CA cert does not include key usage extension (_ssl.c:1032)')]")
+```
+
+This is a known issue with the microk8s server: https://github.com/canonical/microk8s/issues/4864.
+
+Please refer to the fix suggested in [this post](https://github.com/canonical/microk8s/issues/4864#issuecomment-2654714836) to manually generate certificates and update your micork8s cluster.
+
+**NOTE**: For a quick test it is possible to provide the following parameter to the helm chart deployment that disables SSL verification of CA kubernetes certificate:
+
+```bash
+  --set deepsearch.microservices.k8s_renderer.verify_k8s_ssl_cert=false
+```
+this, however, is strictly not recommended for production environments.
+
+## Redis CrashLoopBackOff
+
+In rare cases it could happen that Redis appendonly file ends up in a corrupted state. In this case the following line will be printed in the logs of the redis pod: 
+
+```
+Bad file format reading the append only file: make a backup of your AOF file, then use ./redis-check-aof --fix ....
+```
+
+This may happen if the node that is running redis got unexpectedly terminated or has run out of space.
+
+In order to fix this issue, please execute the following set of commands.
+
+**NOTE**: The steps below assume that there is only a single instance of USD Search API installed in a provided namespace. If that is not the case the way ``REDIS_STATEFULSET_NAME`` and ``REDIS_POD_NAME`` are computed need to be updated.
+
+```bash
+# prepare some settings
+export NAMESPACE=<namespace where USD Search API is running>
+export REDIS_AOF_FILE_NAME=<corrupted file name from the Redis log>
+# get the name of the statefulset that is controlling Redis
+export REDIS_STATEFULSET_NAME=$(kubectl get statefulset -n $NAMESPACE -o custom-columns=":metadata.name" | grep redis)
+# get the name of the pod running Redis
+export REDIS_POD_NAME=$(kubectl get pods -n $NAMESPACE -o custom-columns=":metadata.name" | grep redis)
+# patch Redis statefulset to sleep (to exit crashbackloop)
+kubectl patch statefulset -n $NAMESPACE $REDIS_STATEFULSET_NAME -p '{"spec": {"template": {"spec":{"containers":[{"name": "redis","args": ["-c", "sleep 1000000000"]}]}}}}'
+# give k8s 5 seconds to restart redis
+sleep 5
+# fix corrupted redis file
+kubectl exec -it -n $NAMESPACE $REDIS_POD_NAME -- redis-check-aof --fix /data/appendonlydir/$REDIS_AOF_FILE_NAME
+# revert statefulset patching
+kubectl patch statefulset -n $NAMESPACE $REDIS_STATEFULSET_NAME -p '{"spec": {"template": {"spec":{"containers":[{"name": "redis","args": ["-c", "/opt/bitnami/scripts/start-scripts/start-master.sh"]}]}}}}'
+# delete running container to make sure it restarts
+kubectl delete pods $REDIS_POD_NAME
+```
+
+## OpenSearch Persistent Volume Claim
+
+When using the instance of OpenSearch provided with the USD Search API helm chart, the [official OpenSearch Helm chart](https://opensearch.org/docs/latest/install-and-configure/install-opensearch/helm/) will be used for installation. 
+This Helm chart by default installs a 3-Node OpenSearch instance and requires Persistent Volume storage. Creation of Persistent Volumes can be done in the exactly same way as described in the previous section.
+
+
+## Incorrect Service Registration Token with Omniverse Nucleus storage backend
+
+When configuring USD Search API, a failure to register with the Nucleus Discovery service will happen if the provided Nucleus registration token is incorrect. If this occurs, the following error may be displayed:
+
+```bash
+Deployment: internal registration failed: DENIED
+```
+
+To solve this issue, the correct service registration token needs to be provided and can be located in the following subfolder within the Nucleus Docker Compose installation location:
+
+```bash
+base_stack/secrets/svc_reg_token
+```
+
+## OpenSearch Virtual Memory (vm.max_map_count)
+
+On some systems, the value of the kernel parameter ``vm.max_map_count`` may be too low for OpenSearch. If this is the case, it is required to update the default value for ``vm.max_map_count`` to at least ``262144``, as described in the [OpenSearch installation documentation](https://opensearch.org/docs/1.1/opensearch/install/important-settings/).
+
+To check the current value, run this command:
+
+```bash
+cat /proc/sys/vm/max_map_count
+```
+
+To increase the value, add the following line to ``/etc/sysctl.conf``:
+
+```
+vm.max_map_count=262144
+```
+
+Then run the following to reload and apply the settings change. 
+
+```
+sudo sysctl -p
+```
+
+## Storage backend connection
+
+Helm chart installation assumes that storage backend (AWS S3 bucket or Omniverse Nucleus Server) is available before installation and valid credential information is provided. 
+
+For convenience we have included a helm pre-installation hook that checks the backend connection before installing of the helm chart.
+
+If storage backend is not available, then depending on the backend type, one of the following errors will be printed during execution of helm install command:
+
+```bash
+Error: INSTALLATION FAILED: failed pre-install: 1 error occurred:
+	* job test-nucleus-storage-check failed: BackoffLimitExceeded
+```
+
+or 
+
+```bash
+Error: INSTALLATION FAILED: failed pre-install: 1 error occurred:
+	* job test-s3-storage-check failed: BackoffLimitExceeded
+```
+
+It could happen that connection with the storage backend is broken after helm chart is installed. This could occur if the storage backend is unreachable for some reason. In this case, you may notice that many pods enter the ``CrashLoopBackOff`` state. To confirm that the issue is indeed related to the storage backend connection, you can do one of the following:
+
+1. run helm test which will verify storage backend connection as follows:
+   
+   ```bash
+   helm test <deployment name>
+   ```
+
+2. check the logs of any pod that entered ``CrashLoopBackOff`` and if you see ConnectionError messages - that would mean that storage backend is for some reason unavailable.
+
+
+## Search speed improvement
+
+In case slow search speeds are encountered, it is possible to do several optimizations from the helm chart level.
+
+### Increase the number of OpenSearch replicas
+
+If the cluster permits - it is possible to increase the number of OpenSearch replicas that is used. By default the helm chart is set to use ``3`` replicas, which we found to be sufficient in our experiments, however, this parameter could be overwritten. Therefore, it is recommended to check ``opensearch.replicas`` setting in ``my-usdsearch-config.yaml`` and adjust it according the amount of available resources. Alternatively it is possible to set the desired number of OpenSearch replicas as a command line argument as follows:
+
+```bash
+	--set opensearch.replicas=<desired number of OpenSearch replicas>
+```
+
+## Indexing speed improvement
+
+In case slow indexing speeds are encountered, it is possible to do several optimizations from the helm chart level.
+
+### Enable shader caching in Rendering jobs
+
+By default Rendering Jobs are using memory medium for shader cache, which is only available during the lifetime of a job and therefore such cache needs to be re-calculated for each rendering job, which adds a significant overhead. Please refer to [Rendering Job configuration](#rendering-job-configuration) section for more information on how to setup persistence.
+
+### Scale the cluster
+
+Rendering jobs only get allocated, when enough resources are available on the cluster. So adding  a node with more GPUs will linearly increase indexing speed. 
+
+## Metrics are missing in Grafana with monitoring enabled
+
+It could happen that Prometheus metrics do not appear in Grafana installed by [Kube Prometheus Stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack). The most common reason for such behavior is that Prometheus operator may not be configured to monitor all namespaces on the kubernetes cluster. In order to let Prometheus monitor all namespaces set the following in Kube Prometheus stack configuration:
+
+```yaml
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+```
+
+# Get Help
+
+Enterprise Support
+
+Get access to knowledge base articles and support cases or [submit a ticket](https://www.nvidia.com/en-us/data-center/products/ai-enterprise-suite/support/).

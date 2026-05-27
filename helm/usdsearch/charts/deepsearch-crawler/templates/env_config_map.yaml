@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch-crawler.fullname" . -}}
+{{- $excludeIndexingStringsPatterns := include "deepsearch-crawler.excludeIndexingStringsPatterns" . -}}
+
+{{- if ne .Values.global.storage_backend_type "multi" }}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-env-config
+  labels:
+    {{- include "deepsearch-crawler.deploymentSelectorlabels" . | nindent 4 }}
+data:
+  OV_CONN_PING_S: "-1"
+  STORAGE_BACKEND_TYPE: "{{ .Values.global.storage_backend_type }}"
+{{- range .Values.env -}}
+  {{- .name | nindent 2 }}: {{ .value | quote }}
+{{- end }}
+  ASSETDB_PATH: "/tmp"
+  NGSEARCH_STORAGE_HOST: "{{ .Release.Name }}-ngsearch-storage.{{ .Release.Namespace }}.svc.cluster.local"
+  NGSEARCH_STORAGE_PORT: "3703"
+  ENABLE_TRACING: "{{ (.Values.global.tracing).enabled | default "False" }}"
+  EXTENDED_TRACING: "{{ (.Values.global.tracing).extended_tracing | default "False" }}"
+  LS_ACCESS_TOKEN: "{{ (.Values.global.tracing).ls_access_token | default "" }}"
+  TRACING_BACKEND: "{{ (.Values.global.tracing).tracing_backend | default "otlp" }}"
+  OV_INSTANCE: {{ $fullName }}
+  CACHE_URI: "redis://{{ .Release.Name }}-redis-master.{{ .Release.Namespace }}.svc.cluster.local"
+  REDIS_URL: "redis://{{ .Release.Name }}-redis-master.{{ .Release.Namespace }}.svc.cluster.local"
+  PYTHONOPTIMIZE: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  MKL_NUM_THREADS: "1"
+  NUMEXPR_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  ASSERT_ADMIN_USER: "{{ .Values.global.nucleus.assert_admin_user }}"
+  DEEPSEARCH_CRAWLER_IGNORE_PATTERNS: {{ $excludeIndexingStringsPatterns | quote }}
+  REDIS_STREAM_URL: "redis://{{ .Release.Name }}-redis-master.{{ .Release.Namespace }}.svc.cluster.local"
+  BASE_LOGGING_ENABLE_JSON_LOGGING: {{ .Values.global.enable_structured_logging | quote}}
+  LOGGING_CONFIG: /logging.yaml
+
+{{- end }}

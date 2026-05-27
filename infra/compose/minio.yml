@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    ports:
+      - "9000:9000"
+    environment:
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+    command: server /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  createbuckets:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    environment:
+      AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+      AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 minio minio123;
+      /usr/bin/mc mb local/deepsearch-test-bucket-minio-private;
+      /usr/bin/mc mb local/deepsearch-test-bucket-minio-public;
+      /usr/bin/mc anonymous set public local/deepsearch-test-bucket-minio-public;
+      /usr/bin/mc alias set aws https://s3.eu-central-1.amazonaws.com $AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY;
+      /usr/bin/mc ls aws/deepsearch-test-bucket;
+      /usr/bin/mc cp --recursive aws/deepsearch-test-bucket/Projects/DeepSearch/ local/deepsearch-test-bucket-minio-public/Projects/DeepSearch/;
+      /usr/bin/mc cp --recursive aws/deepsearch-test-bucket/Projects/DeepSearch/ local/deepsearch-test-bucket-minio-private/Projects/DeepSearch/;
+      /usr/bin/mc cp --recursive aws/deepsearch-test-bucket/Projects/ags_tests/ local/deepsearch-test-bucket-minio-public/Projects/ags_tests/;
+      /usr/bin/mc cp --recursive aws/deepsearch-test-bucket/Projects/ags_tests/ local/deepsearch-test-bucket-minio-private/Projects/ags_tests/;
+      exit 0;
+      "

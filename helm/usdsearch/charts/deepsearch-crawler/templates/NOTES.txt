@@ -1,0 +1,6 @@
+Deployment of {{ .Chart.Description | quote }}:
+ > version: {{ .Chart.AppVersion }}
+ > license agreement accepted: {{ .Values.global.accept_eula }}
+
+Crawler groups:
+  {{- toYaml .Values.crawlerGroups | nindent 2 }}

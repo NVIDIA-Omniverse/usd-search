@@ -1,0 +1,172 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $serviceName := "omni-writer" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $chartVersion := .Chart.Version -}}
+{{- $license := include "deepsearch.license" . -}}
+{{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}
+  labels:
+    release_name: {{ $releaseName }}
+    component: "deepsearch"
+    version: {{ $chartVersion }}
+    deepsearch.service.name: {{ $serviceName }}
+    {{- include "deepsearch.MainDeploymentlabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.microservices.omni_writer.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      deepsearch.service.name: {{ $serviceName }}
+      {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ include (print $.Template.BasePath "/env_config_map.yaml") . | sha256sum }}
+        checksum/plugin-config-config-map: {{ include (print $.Template.BasePath "/plugin_config.yaml") . | sha256sum }}
+        checksum/storage-backend-config: {{ include (print $.Template.BasePath "/storage_backend_config.yaml") . | sha256sum }}
+        checksum/logging-config: {{ include (print $.Template.BasePath "/logging_config_map.yaml") . | sha256sum }}
+      labels:
+        release_name: {{ $releaseName }}
+        component: "deepsearch"
+        version: {{ $chartVersion }}
+        deepsearch.service.name: {{ $serviceName }}
+        {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      hostname: {{ $fullName }}
+      volumes:
+      - name: logging-config
+        configMap:
+          name: {{ $fullName }}-logging
+          items:
+            - key: logging.yaml
+              path: logging.yaml
+      - name: pluginconfig
+        configMap:
+          name: {{ $fullName }}-plugin-config
+      - name: dshm
+        emptyDir:
+          medium: Memory
+      serviceAccountName: {{ include "deepsearch.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      dnsConfig:
+        searches:
+          {{- range .Values.global.dnsConfig.searches }}
+          - {{ . }}
+          {{- end }}
+      containers:
+        - name: omni-writer
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          workingDir: /monitor/src
+          command:
+          - python
+          - -m
+          - monitor.src.monitor_omni_writer
+          ports:
+          {{- if .Values.metrics.enabled }}
+          - name: metrics
+            containerPort: {{ .Values.microservices.metrics.omni_writer }}
+            protocol: TCP
+          {{- end}}
+          volumeMounts:
+          - mountPath: /logging.yaml
+            name: logging-config
+            subPath: logging.yaml
+          - name: dshm
+            mountPath: /dev/shm
+          - name: pluginconfig
+            mountPath: /plugin_config
+          resources:
+            {{- toYaml .Values.microservices.omni_writer.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            {{- with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+            - name: SENTRY_DSN
+              value: {{ .Values.sentry_dsn | default .Values.global.sentry_dsn | default "" }}
+            - name: USER_AGENT
+              value: "DeepSearch.Writer/{{ .Values.microservices.monitor.image.tag | default .Chart.AppVersion }}"
+            - name: WRITER_N_PARALLEL_QUEUE_PROCESSORS
+              value: {{ .Values.microservices.omni_writer.settings.n_concurrent_queue_workers | quote }}
+            - name: OMNI_WRITER_PROMETHEUS_PORT
+              value: {{ .Values.microservices.metrics.omni_writer | quote}}
+            - name: ACCEPT_EULA
+              value: {{ required "Please accept the license agreement: '--set global.accept_eula=true'" $license | quote}}
+          {{- if eq .Values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+          {{- end }}
+            {{- include "deepsearch-global.searchBackendComplete" . | nindent 12 }}
+            - name: OV_INSTANCE
+              value: {{ $fullName }}
+            - name: PLUGINS_CONFIG_PATH
+              value: /plugin_config/plugin.config.yaml
+      {{- if .Values.microservices.omni_writer.enableLivenessChecks }}
+      initContainers:
+        - name: redis-liveness-check
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command:
+          - python
+          - -m
+          - search_utils.redis.wait_ready
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+        {{- include "deepsearch-global.searchBackendCheck" (dict "ctx" . "image" $monitorDockerImage "fullName" $fullName) | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}

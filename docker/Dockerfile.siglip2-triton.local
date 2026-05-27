@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# SigLIP2 Triton — local-dev variant.
+#
+# Unlike docker/Dockerfile.siglip2-triton (used by CI and NGC publishing),
+# this image does NOT bake the 7.2 GB of ONNX model weights into the layer.
+# /models is expected to be bind-mounted from the host at runtime by the
+# compose stack (see infra/compose/quickstart/siglip2-triton.override.yml).
+#
+# Build context: services/siglip2-triton/docker (kept small so the daemon
+# does not have to tarball the model_repo/ tree on every rebuild).
+FROM nvcr.io/nvidia/tritonserver:26.04-py3
+
+WORKDIR /workspace
+
+RUN mkdir -p /models
+
+# Python dependencies for the tokenizer + image_preprocessing Python-backend
+# models. These still need to be present in the image even though the model
+# files themselves are mounted at runtime.
+ADD requirements.txt /workspace/requirements.txt
+RUN pip install --no-cache-dir -r /workspace/requirements.txt
+
+COPY PACKAGE-LICENSES /PACKAGE-LICENSES
+
+EXPOSE 8000 8001 8002
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/v2/health/ready || exit 1
+
+CMD ["tritonserver", \
+     "--model-repository=/models", \
+     "--log-verbose=0", \
+     "--strict-model-config=true", \
+     "--backend-config=onnxruntime,default-max-batch-size=32", \
+     "--response-cache-byte-size=536870912", \
+     "--exit-on-error=false"]

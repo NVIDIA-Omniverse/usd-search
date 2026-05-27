@@ -1,0 +1,118 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  if .Values.global.checks.embedding.enabled }}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $fullName := include "deepsearch.fullname" . -}}
+{{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $releaseName }}-embedding-service-verification
+  labels:
+    {{- include "deepsearch-global.labels" . | nindent 4 }}
+  annotations:
+  {{- toYaml .Values.global.checks.embedding.annotations | nindent 4}}
+spec:
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 3600
+  backoffLimit: {{ .Values.global.checks.embedding.backoff_limit }}
+  template:
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      restartPolicy: "OnFailure"
+      containers:
+        - name: embedding-liveness-check
+          image: {{ $monitorDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: 
+          - python
+          - -c
+          - |
+            import time
+            from siglip2_triton_client import TritonClientSettings, TritonEnsembleImageClient
+
+            triton_server_url = TritonClientSettings().triton_server_url
+            print("Connecting to inference service at: %s", triton_server_url)
+
+            while True:
+                try:
+                    client = TritonEnsembleImageClient()
+                    client.ping()
+                    break
+                except Exception as exc_info:
+                    print("Embedding client not available: %s", str(exc_info))
+                    time.sleep(1)
+            # from deepsearch_model_serving.triton.embedding_service import get_client
+            # import asyncio
+            # import numpy as np
+            # from PIL import Image
+
+            # ready = False
+            # client = get_client()
+
+            # async def task():
+            #   while True:
+            #       try: 
+            #           # sanity check
+            #           await client.demo_test()
+            #           print("Demo test passed")
+                      
+            #           # Test text processing
+            #           response = await client.process_text_list(["test"])
+            #           assert isinstance(response, np.ndarray)
+            #           print("Process text list passed")
+
+            #           # Test image processing
+            #           image_resolution = (448, 448)
+            #           dim = (*image_resolution, 3)
+            #           np_array = np.asarray(np.random.rand(*dim) * 255, dtype=np.uint8)
+            #           im = np.asarray(Image.fromarray(np_array))
+            #           dummy_image = [im] * 1
+            #           response = await client.process_image_list(dummy_image)
+            #           assert isinstance(response, np.ndarray)
+            #           print("Process image list passed")
+
+            #           break
+            #       except Exception as exc_info:
+            #         print(f"Embedding service is not ready: {exc_info}")
+            #         await asyncio.sleep(2)
+            #   print("Embedding service is ready")
+            # loop = asyncio.get_event_loop()
+            # loop.run_until_complete(task())
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            {{- if .Values.global.embedding_deployment.authentication.enabled }}
+            - name: TRITON_SERVER_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.global.embedding_deployment.authentication.secret_name }}
+                  key: {{ .Values.global.embedding_deployment.authentication.secret_key }}
+            {{- end }}
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+{{- end }}

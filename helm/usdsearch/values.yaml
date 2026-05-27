@@ -1,0 +1,3588 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+deepsearch_explorer_deployment:
+  enabled: false
+
+deepsearch-explorer:
+  containerPorts:
+    https: ""
+  service:
+    type: ClusterIP
+  image:
+    registry: nvcr.io/omniverse/deeptag-internal
+    repository: deepsearch-explorer
+    image: deepsearch
+    tag: latest
+
+  # this is required to allow using the images that are not default in the helm chart
+  global:
+    security:
+      allowInsecureImages: true
+
+api_gateway_deployment:
+  enabled: true
+
+api-gateway:
+  # # Note Uncomment if needed
+  # image:
+  #   pullSecrets:
+  #   - name: nvcr.io
+
+  image:
+    repository: bitnamilegacy/nginx
+
+  # --
+  # @raw
+  #
+  # API Gateway service configuration. By default the ClusterIP service type is
+  # used. Please refer to [NGINX helm chart service configuration](https://github.com/bitnami/charts/blob/main/bitnami/nginx/README.md#traffic-exposure-parameters)
+  # for a complete list of settings.
+  resources:
+    requests:
+      cpu: 1
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 512Mi
+  service:
+    type: ClusterIP
+  existingServerBlockConfigmap: "deepsearch-api-gateway-config"
+  envConfigmap: "deepsearch-api-gateway-env-config"
+  extraVolumeMounts:
+    - name: shared-localdir
+      mountPath: /usr/share/nginx/html/docs
+  extraVolumes:
+    - name: shared-localdir
+      configMap:
+        name: deepsearch-api-gateway-static-content
+
+
+  extraSettings:
+    # if true, redirect to the UI instead of the docs
+    redirectToUIWhenAvailable: true
+    cors:
+      enabled: false
+      allowedOrigins:
+        - "*"
+
+neo4j_deployment:
+  # -- (bool)
+  #
+  # trigger to enable Neo4j helm chart deployment
+  enabled: true
+
+asset_graph_service_deployment:
+  # -- (bool)
+  #
+  # trigger to enable Asset Graph Service (AGS) helm chart deployment
+  enabled: true
+
+asset-graph-service:
+  # -- (string)
+  #
+  # Sentry Data Source Name. By default this field is unset, however it is
+  # possible to configure it to an appropriate DSN value to be able to collect
+  # events that are associated with the AGS deployment.
+  sentry_dsn: ""
+
+  # Settings for interaction with Neo4j backend.
+  graphdb:
+
+    # -- (map)
+    # @raw
+    #
+    # Number of parallel workers that would be writing data to Neo4j.
+    # Increasing this number results in faster processing, but will in turn
+    # require scaling the Neo4j instance.
+    n_workers: 5
+
+neo4j:
+  # --
+  #
+  # Name of the Neo4j instance
+  #
+  fullnameOverride: neo4j
+  # -- (map)
+  #
+  # Neo4j authentication and resource settings
+  # @notationType -- yaml
+  neo4j:
+    name: neo4j
+    password: "password"
+    resources:
+      requests:
+        cpu: "4000m"
+        memory: "14Gi"
+      limits:
+        cpu: "4000m"
+        memory: "14Gi"
+  serviceMonitor:
+    enabled: false
+  volumes:
+    data:
+      # -- (string)
+      # @raw
+      #
+      # **REQUIRED**: specify a volume mode to use for data
+      # Valid values are:
+      #   * share
+      #   * selector
+      #   * defaultStorageClass
+      #   * volume
+      #   * volumeClaimTemplate
+      #   * dynamic
+      #
+      # To get up-and-running quickly, for development or
+      # testing, use ``defaultStorageClass`` for a dynamically
+      # provisioned volume of the default storage class.
+      mode: "defaultStorageClass"
+      defaultStorageClass:
+        accessModes:
+          - ReadWriteOnce
+        requests:
+          storage: 100Gi
+  # -- (map)
+  #
+  # Neo4j configuration settings
+  # @notationType -- yaml
+  config:
+    server.config.strict_validation.enabled: "false"
+    server.memory.heap.initial_size: "8000m"
+    server.memory.heap.max_size: "8000m"
+  env:
+    # --
+    #
+    # Neo4j plugins configuration
+    NEO4J_PLUGINS: '["graph-data-science", "apoc"]'
+  # -- (map)
+  #
+  # Neo4j service settings
+  # @notationType -- yaml
+  services:
+    neo4j:
+      enabled: true
+      annotations: {}
+      spec:
+        type: ClusterIP
+
+  livenessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - |
+          USER=$(cat /config/neo4j-auth/NEO4J_AUTH | cut -d'/' -f1)
+          PASS=$(cat /config/neo4j-auth/NEO4J_AUTH | cut -d'/' -f2)
+          cypher-shell --non-interactive -u "$USER" -p "$PASS" "RETURN 1" || exit 1
+
+# -- (map)
+# @raw
+#
+# It is possible to disable the USD Search Crawler functionality if it is not needed.
+# @notationType -- yaml
+deepsearch_crawler:
+  enabled: true
+
+# -- (map)
+# @raw
+#
+# By default an OpenSearch instance is deployed as part of the USD Search API
+# helm chart. It is, however, possible to rely on a separately installed instance
+# of OpenSearch. To do so, you can set the following command line argument during
+# helm chart deployment:
+#
+# ```bash
+#   --set opensearch_deployment.enabled=false
+# ```
+#
+# @notationType -- yaml
+opensearch_deployment:
+  enabled: true
+
+opensearch_dashboards_deployment:
+  enabled: false
+
+# -- (map)
+# @raw
+#
+# A Redis instance can be deployed as part of USD Search API helm chart.
+# Set ``enabled: false`` if you wish to use your own instance.
+#
+# @notationType -- yaml
+redis_deployment:
+  enabled: true
+
+# --
+# @raw
+#
+# Config maps with grafana dashboards cen be deployed as part of this helm chart.
+deployGrafanaDashboards: false
+
+# --
+# @raw
+#
+# ServiceMonitor resources for Prometheus Operator can be deployed as part of this helm chart.
+deployServiceMonitors: false
+
+# --
+# @raw
+#
+# Rendering service deployment configuration.
+# @notationType -- yaml
+rendering_service_deployment:
+  enabled: false
+
+global:
+
+  ################################################################################
+  ## End-User License Agreement (EULA)
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # Set the following to true to indicate your acceptance of EULA.
+  accept_eula: false
+
+  ################################################################################
+  ## Embedding services deployment setup
+  ################################################################################
+
+
+  # -- (map)
+  # @raw
+  #
+  # Embedding service instance is deployed with USD Search API Helm
+  # chart by default. It can be disabled, but in that case an alternative
+  # endpoint must be provided.
+  #
+  # @notationType -- yaml
+  embedding_deployment:
+    endpoint: ""
+    triton_server:
+      ssl:
+        enabled: false
+      headers: {}
+    authentication:
+      enabled: false
+      token:
+      secret_key: token
+      secret_name: embedding-service-secret
+
+  ################################################################################
+  ## IP of the kubernetes server node
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # Please specify (preferably) the hostname or the IP of the Kubernetes
+  # cluster node, where USD Search API helm chart is running. This address will
+  # be used for service registration when using NodePort services.
+  nodeIP: ""
+
+
+  s3proxy:
+    enabled: false
+
+  ################################################################################
+  ## Storage Backend configuration
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # Set the desired storage backend type. Supported options are the following:
+  #
+  #  * s3 - AWS S3 bucket storage
+  #  * nucleus - Omniverse Nucleus Server
+  #  * storage_api - Omniverse Storage API (beta functionality). Please refer to [Omniverse Storage API](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/omniverse/collections/storage_apis) for more information.
+  #
+  storage_backend_type: s3
+
+  # --
+  # @raw
+  #
+  # By default trace collection is disabled. Is it optionally possible to enable
+  # trace collection for USD Search REST API and AGS
+  # services. In order to do so, please set `OTEL_SDK_DISABLED` to "false" and `OTEL_TRACES_EXPORTER` to "true" and provide a valid `OTEL_EXPORTER_OTLP_ENDPOINT` URL as follows:
+  #
+  # ```bash
+  #   --set global.tracing.OTEL_SDK_DISABLED=false \
+  #   --set global.tracing.OTEL_TRACES_EXPORTER=true \
+  #   --set global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
+  # ```
+  #
+  # @notationType -- yaml
+  tracing:
+    OTEL_SDK_DISABLED: "true"
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo:4318"
+    OTEL_TRACES_EXPORTER: "false"
+
+  ################################################################################
+  ## Nucleus Base Stack Location
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # USD Search API service requires a service account with administrator rights
+  # in order to index the content stored on the Nucleus server. It is possible
+  # to use the main Nucleus service account, generated during the Nucleus
+  # service installation time. Alternatively, it is possible to create a
+  # dedicated service account for USD Search. For the exact steps on how such
+  # account could be created please follow [this guide](https://docs.omniverse.nvidia.com/nucleus/latest/config-and-info/auth_user_mgmt.html#service-accounts).
+  #
+  # When creating your own service account it is required to grant it admin
+  # access. [This guide](https://docs.omniverse.nvidia.com/nucleus/latest/config-and-info/auth_user_mgmt.html#grant-admin-access) explains this process in detail.
+  #
+  # After the service account's ``username`` and ``password`` are obtained, it
+  # is possible to deploy the USD Search Helm chart and connect it to an
+  # Omniverse Nucleus server for indexing, as follows:
+  #
+  # ```bash
+  # helm install <deployment name> usdsearch-1.3.1.tgz \
+  #  --set global.accept_eula=true \
+  #  --set global.storage_backend_type=nucleus \
+  #  --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
+  #  --set global.nucleus.username=<Omniverse service account name> \
+  #  --set global.nucleus.password=<Omniverse service account password> \
+  #  --set global.secrets.create.auth=true \
+  #  --set global.secrets.create.registry=true \
+  #  --set global.ngcAPIKey=<NGC API KEY> \
+  #  --set api-gateway.image.pullSecrets={nvcr.io} \
+  #  --set deepsearch-crawler.crawler.extraConfig.exclude_patterns={"omniverse://[^\/]+/NVIDIA.*"}
+  # ```
+  #
+  # __NOTE__: Please refer to
+  # [NGC documentation](https://docs.nvidia.com/ngc/gpu-cloud/ngc-user-guide/index.html#generating-api-key)
+  # for generating the NGC API Key.
+  #
+  # __NOTE__: The `/NVIDIA` sample data mount is excluded from indexing by
+  # default. To enable its indexing, remove the corresponding line from the
+  # command. You can also customize URL patterns for indexing, as explained in
+  # the [Indexing path filtering section](#indexing-path-filtering).
+  #
+  # ### Alternative installation options
+  #
+  # The above command creates all required secrets on helm chart deployment,
+  # which is done for convenience. It may, however, be not acceptable in some
+  # deployment scenarios to pass credential information through helm chart
+  # values. To address this issue it is possible to create kubernetes secret
+  # with access information manually with the following command:
+  #
+  # ```bash
+  # kubectl create secret generic deepsearch-service-account \
+  #   --from-literal=username=<Omniverse service account name> \
+  #   --from-literal=password=<Omniverse service account password>
+  # ```
+  #
+  # Similarly, it is possible to create a registry access secret with the
+  # following command:
+  #
+  # ```bash
+  # kubectl create secret docker-registry nvcr.io \
+  #   --docker-server=nvcr.io \
+  #   --docker-username='$oauthtoken' \
+  #   --docker-password=<NGC API KEY> \
+  #   --docker-email=<your-email>
+  # ```
+  #
+  # With the above secrets created, the helm chart installation command can be
+  # simplified to:
+  #
+  # ```bash
+  # helm install <deployment name> usdsearch-1.3.1.tgz \
+  #   --set global.accept_eula=true \
+  #   --set global.storage_backend_type=nucleus \
+  #   --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
+  #   --set deepsearch-crawler.crawler.extraConfig.exclude_patterns={"omniverse://[^\/]+/NVIDIA.*"}
+  #   --set api-gateway.image.pullSecrets={nvcr.io} \
+  #   --set global.imagePullSecrets={nvcr.io}
+  # ```
+  #
+  # #### Nucleus API token
+  #
+  # Instead of using service account it is possible to rely on
+  # [Nucleus API token](https://docs.omniverse.nvidia.com/nucleus/latest/config-and-info/api_tokens.html).
+  # To do so, you need to input ``$omni-api-token`` as the username and the API
+  # token value as the password. Additionally you need to pass the following
+  # parameter to disable permissions check that is not required for Nucleus API
+  # tokens:
+  #
+  # ```bash
+  #   --set global.nucleus.assert_admin_user='false'
+  # ```
+  #
+  nucleus:
+    # --
+    # @raw
+    #
+    # USD Search API is provided as a separate stack and can either run on the
+    # same machine as the Base Nucleus stack or on a different one. In order for
+    # USD Search API service to be able to connect to the Nucleus server please
+    # provide the (preferably) hostname or the IP of the server, where
+    # Nucleus Base Stack is running.
+    server:
+
+    # --
+    # @raw
+    #
+    # Name of the Kubernetes secret that stores the information about
+    # Nucleus service account authentication. The secret should have two keys
+    # ``username`` and ``password``.
+    #
+    service_account_secret: "deepsearch-service-account"
+
+
+    # --
+    # @raw
+    #
+    # It is possible to provide the username as a parameter in order to make
+    # the kubernetes secret with authentication information created on startup.
+    username:
+
+    # --
+    # @raw
+    #
+    # It is possible to provide the password as parameters in order to make the
+    # kubernetes secret with authentication information created on startup.
+    password:
+
+    # --
+    # @raw
+    #
+    # By default USD Search connects to the external interface of the Nucleus
+    # server.
+    #
+    # If both USD Search and Nucleus server is running in the same cluster
+    # (same network) it is possible to optimize the performance by letting the
+    # service use internal Nucleus server interface. In order to achieve this,
+    # please set the following variable to ``internal``.
+    #
+    # In order for interaction with internal Nucleus server interface to work,
+    # please make sure that USD Search is able to access the following list of
+    # ports: https://docs.omniverse.nvidia.com/nucleus/latest/ports_connectivity.html#enterprise-nucleus-server
+    deployment_lookup: "external"
+
+
+    # -- (bool)
+    #
+    # On start-up verify that created user has admin access. In case the provided
+    # user does not have admin access and the following parameter is disabled,
+    # the service would still work, it just may not be able to access all
+    # folders and write thumbnails in case thumbnail_generation plugin is enabled.
+    #
+    assert_admin_user: true
+
+    # -- (bool)
+    #
+    # In some cases it may be desired to skip processing for Nucleus mounts.
+    # This can be achieved by setting the following parameter to ``true``.
+    #
+    skip_mounts: false
+
+
+
+  ################################################################################
+  ## S3 storage backend configuration
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # To deploy the USD Search Helm chart and connect it to an AWS S3 bucket for
+  # indexing, run the following command:
+  #
+  #```bash
+  # helm install <deployment name> usdsearch-1.3.1.tgz \
+  #   --set global.accept_eula=true \
+  #   --set global.storage_backend_type=s3 \
+  #   --set global.s3.bucket_name=<S3 bucket name> \
+  #   --set global.s3.region_name=<S3 bucket region>  \
+  #   --set global.s3.aws_access_key_id=<AWS access key ID> \
+  #   --set global.s3.aws_secret_access_key=<AWS secret access key>  \
+  #   --set global.secrets.create.auth=true \
+  #   --set global.secrets.create.registry=true \
+  #   --set global.ngcAPIKey=<NGC API KEY> \
+  #   --set api-gateway.image.pullSecrets={nvcr.io}
+  #```
+  #
+  # __NOTE__: Please refer to [NGC documentation](https://docs.nvidia.com/ngc/gpu-cloud/ngc-user-guide/index.html#generating-api-key) for generating the NGC API Key.
+  #
+  # ### Alternative installation options
+  #
+  # The above command creates all required secrets on helm chart deployment,
+  # which is done for convenience. It may, however, be not acceptable in some
+  # deployment scenarios to pass credential information through helm chart
+  # values. To address this issue it is possible to create kubernetes secret
+  # with access information manually with the following command:
+  #
+  # ```bash
+  # kubectl create secret generic deepsearch-s3-credentials \
+  #   --from-literal=AWS_ACCESS_KEY_ID=<AWS access key ID> \
+  #   --from-literal=AWS_SECRET_ACCESS_KEY=<AWS secret access key>
+  # ```
+  #
+  # Similarly, it is possible to create a registry access secret with the
+  # following command:
+  #
+  # ```bash
+  # kubectl create secret docker-registry nvcr.io \
+  #   --docker-server=nvcr.io \
+  #   --docker-username='$oauthtoken' \
+  #   --docker-password=<NGC API KEY> \
+  #   --docker-email=<your-email>
+  # ```
+  #
+  # With the above secrets created, the helm chart installation command can be
+  # simplified to:
+  #
+  # ```bash
+  # helm install <deployment name> usdsearch-1.3.1.tgz \
+  #   --set global.accept_eula=true \
+  #   --set global.storage_backend_type=s3 \
+  #   --set global.s3.bucket_name=<S3 bucket name> \
+  #   --set global.s3.region_name=<S3 bucket region>  \
+  #   --set api-gateway.image.pullSecrets={nvcr.io} \
+  #   --set global.imagePullSecrets={nvcr.io}
+  # ```
+  #
+  s3:
+    # --
+    # @raw
+    #
+    # S3 bucket name
+    bucket_name:
+    # --
+    # @raw
+    #
+    # S3 bucket region name
+    region_name:
+    # --
+    # @raw
+    #
+    # Allow services to write to the USD Search API system location on the S3
+    # bucket
+    allow_system_writes: true
+    # --
+    # @raw
+    #
+    # Allow services to write to any other location on the S3 bucket
+    allow_non_system_writes: true
+    # --
+    # @raw
+    #
+    # It is possible to specify a custom endpoint to be able to work with different data providers that
+    # expose S3 interface. If it is not specified, it will use the default AWS S3 endpoint.
+    aws_endpoint_url:
+    # --
+    # @raw
+    #
+    # Name of the secret for storing AWS authentication information.
+    #
+    # Leave this variable unset if no authentication is required for accessing
+    # data on the S3 bucket (e.g., if the S3 bucket is public or if access is
+    # implicitly granted and does not require explicit credentials.)
+    #
+    # In case ``storage_backend_type`` is set to ``s3`` and authentication is
+    # needed for accessing data stored on the provided S3 bucket, it is
+    # required to create a Kubernetes secret with the following two keys:
+    #
+    #   * AWS_ACCESS_KEY_ID
+    #   * AWS_SECRET_ACCESS_KEY
+    #
+    # The secret can be created by running the following command:
+    #
+    # ```
+    # kubectl create secret generic deepsearch-s3-credentials --from-literal=AWS_ACCESS_KEY_ID=... --from-literal=AWS_SECRET_ACCESS_KEY=...
+    # ```
+    #
+    # __NOTE__: If you see an error message like "SignatureDoesNotMatch", check if special characters in the secret are
+    # escaped properly.
+    #
+    # check if s3proxy is set otherwise this is not needed
+    aws_credentials_secret_name: deepsearch-s3-credentials
+
+    # --
+    # @raw
+    #
+    # It is possible to provide the aws_endpoint_url as parameters in order to
+    # make the kubernetes secret with authentication information created on startup.
+    authentication_enabled: true
+
+    # --
+    # @raw
+    #
+    # It is possible to provide the aws_access_key_id as parameters in order to
+    # make the kubernetes secret with authentication information created on startup.
+    aws_access_key_id:
+
+    # --
+    # @raw
+    #
+    # It is possible to provide the aws_secret_access_key as parameters in order
+    # to make the kubernetes secret with authentication information created on startup.
+    aws_secret_access_key:
+
+    # --
+    # @raw
+    #
+    # Number of seconds before the next S3 bucket indexing will be triggered
+    re_scan_timeout: "86400"
+
+  ################################################################################
+  ## Omniverse Storage API configuration
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # To deploy the USD Search Helm chart and connect it to an Omniverse Storage API for
+  # indexing, run the following command:
+  #
+  #```bash
+  # helm install <deployment name> usdsearch-1.3.1.tgz \
+  #   --set global.accept_eula=true \
+  #   --set global.storage_backend_type=storage_api \
+  #   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
+  #   --set global.storage_api.base_uri=<Storage API base URI> \
+  #   --set global.secrets.create.registry=true \
+  #   --set api-gateway.image.pullSecrets={nvcr.io} \
+  #   --set global.imagePullSecrets={nvcr.io}
+  #```
+  #
+  # __NOTE__: Please refer to [Omniverse Storage API documentation](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/omniverse/collections/storage_apis) for more information about the Storage API.
+  #
+  # ### SSL support
+  #
+  # If the Storage API is configured to use SSL, set this to true.
+  # This is used to enable SSL for the Storage API connection.
+  #
+  # ```bash
+  #   --set global.storage_api.ssl=true
+  # ```
+  #
+  # ### Authentication
+  #
+  # If Omniverse Storage APIs are configured to use authentication, it is possible to authenticate with the Storage API using either a token or OpenID. To do so, please set the following parameters:
+  #   * authentication.enabled=true
+  #   * authentication.type=token or authentication.type=openid
+  #   * authentication.token=<Storage API token>
+  #   * authentication.openid.token_url=<OpenID token URL>
+  #   * authentication.openid.client_id=<OpenID client ID>
+  #   * authentication.openid.client_secret=<OpenID client secret>
+  #
+  # it is then required to add the following command line arguments during helm chart deployment for token authentication:
+  # ```bash
+  #   --set global.secrets.create.auth=true
+  #   --set global.storage_api.authentication.enabled=true \
+  #   --set global.storage_api.authentication.type=token \
+  #   --set global.storage_api.authentication.token=<Storage API token> \
+  #   --set global.secrets.create.auth=true \
+  # ```
+  # and for OpenID authentication:
+  # ```bash
+  #   --set global.secrets.create.auth=true
+  #   --set global.storage_api.authentication.enabled=true \
+  #   --set global.storage_api.authentication.type=openid \
+  #   --set global.storage_api.authentication.openid.token_url=<OpenID token URL> \
+  #   --set global.storage_api.authentication.openid.client_id=<OpenID client ID> \
+  #   --set global.storage_api.authentication.openid.client_secret=<OpenID client secret> \
+  # ```
+  #
+  # ### Thumbnail retrieval
+  #
+  # When using the Storage API backend, thumbnails are not resolved from the filesystem (the ``deepsearch.thumbnail_settings`` configuration does not apply). Instead, the service reads the thumbnail URL directly from a field in the asset's metadata.
+  #
+  # By default the field named ``thumbnail_url`` is used. You can override this with an ordered list of field names; the first field present in the asset metadata whose value is a non-empty string is used as the thumbnail URL:
+  #
+  # ```bash
+  #   --set global.storage_api.thumbnail_metadata_fields[0]=thumbnail_url
+  # ```
+  #
+  # or via a values file:
+  #
+  # ```yaml
+  # global:
+  #   storage_api:
+  #     thumbnail_metadata_fields:
+  #       - thumbnail_url
+  # ```
+  #
+  # ### Alternative installation options
+  #
+  # The above command creates all required secrets on helm chart deployment,
+  # which is done for convenience. It may, however, be not acceptable in some
+  # deployment scenarios to pass credential information through helm chart
+  # values. To address this issue it is possible to create kubernetes secret
+  # with access information manually with the following command:
+  #
+  # ```bash
+  # kubectl create secret generic deepsearch-storage-api-credentials \
+  #   --from-literal=token=<Storage API token>
+  # ```
+  #
+  # Similarly, it is possible to create a registry access secret with the
+  # following command:
+  #
+  # ```bash
+  # kubectl create secret docker-registry nvcr.io \
+  #   --docker-server=nvcr.io \
+  #   --docker-username='$oauthtoken' \
+  #   --docker-password=<NGC API KEY> \
+  #   --docker-email=<your-email>
+  # ```
+  #
+  # With the above secrets created, the helm chart installation command can be
+  # simplified to:
+  #
+  # ```bash
+  # helm install <deployment name> usdsearch-1.3.1.tgz \
+  #   --set global.accept_eula=true \
+  #   --set global.storage_backend_type=storage_api \
+  #   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
+  #   --set global.storage_api.base_uri=<Storage API base URI> \
+  #   --set global.storage_api.ssl=true \
+  #   --set global.storage_api.authentication.enabled=true \
+  #   --set global.storage_api.authentication.type=token \
+  #   --set global.storage_api.authentication.secret_name=storage-api-credentials \
+  #   --set global.storage_api.authentication.token=<Storage API token> \
+  #   --set api-gateway.image.pullSecrets={nvcr.io} \
+  #   --set global.imagePullSecrets={nvcr.io}
+  # ```
+  #
+  storage_api:
+    #
+    # Storage API backend type
+    backend_type: storage_api
+
+    # -- (string)
+    # @raw
+    #
+    # Storage API gRPC endpoint that points to the Storage API service
+    grpc_endpoint:
+
+    # Notifications API grpc endpoint
+    # if not set, main grpc endpoint is used
+    notifications_grpc_endpoint:
+
+    # -- (string)
+    # @raw
+    #
+    # Base URI of the Storage API. This should be the URL of the bucket / blob
+    # store or other entity that is exposed through the Storage API.
+    #
+    # Example:
+    #  * for an Azure blob store container it could be: ``https://my-account.blob.core.windows.net/my-container``
+    #  * for an S3 bucket it could be something like ``https://my-bucket.s3.us-east-1.amazonaws.com``
+    #  * for a Google Cloud Storage bucket it could be something like ``https://my-bucket.storage.googleapis.com``
+    #  * for a local file system it could be something like ``file-storage://fileservice`` (depending on your Storage API configuration)
+    #
+    base_uri:
+
+    # -- (bool)
+    # @raw
+    #
+    # Enable subscription to notifications from the Storage API.
+    # This is used to subscribe to notifications from the Storage API and process them in real-time.
+    notification_subscription_enabled: false
+
+    # -- (bool)
+    # @raw
+    #
+    # If GRPC endpoint is using SSL, set this to true.
+    # This is used to enable SSL for the Storage API connection.
+    ssl: false
+
+    # -- (map)
+    # @raw
+    #
+    # Authentication configuration.
+    # Could be token or openid.
+    #
+    # If using token authentication, the following parameters are required:
+    #   * token - the token to use for authentication
+    #   * secret_name - the name of the secret that stores the token
+    #   * secret_key - the key in the secret that stores the token
+    #
+    # If using openid authentication, the following parameters are required:
+    #   * token_url - the URL of the OpenID token endpoint
+    authentication:
+      enabled: false
+      type: token
+      secret_name: storage-api-credentials
+      token:
+      secret_key: token
+      openid:
+        token_url:
+        grant_type: client_credentials
+        client_id:
+        client_id_secret_key: "client_id"
+        client_secret:
+        client_secret_secret_key: "client_secret"
+        scope:
+        scope_secret_key: "scope"
+
+    #
+    # @raw
+    #
+    # By default USD Search relies on FileFolder API if it is available. In some cases,
+    # it may be desirable to ignore the FileFolder API and use purely FileObject API instead.
+    # This can be achieved by setting the following parameter to ``true``.
+    #
+    ignore_filefolder_api: false
+
+    # -- (string)
+    # @raw
+    #
+    # Number of seconds before the next full Storage API re-scan will be
+    # triggered by the storage client. Controlled by the
+    # ``STORAGE_API_RE_SCAN_TIMEOUT`` environment variable. Set to ``-1`` (or
+    # any non-positive value) to disable periodic re-scans.
+    re_scan_timeout: "86400"
+
+    # -- (list)
+    # @raw
+    #
+    # When using the Storage API backend, thumbnails are not resolved from the filesystem. Instead, the service reads the thumbnail URL directly from the asset's metadata fields. This setting specifies the ordered list of metadata field names to inspect: the first field present in the asset metadata whose value is a non-empty string is used as the thumbnail URL.
+    #
+    # Controlled by the ``STORAGE_API_THUMBNAIL_METADATA_FIELDS`` environment variable.
+    #
+    # Example — use a custom metadata field named ``preview_url``:
+    #
+    # ```yaml
+    # global:
+    #   storage_api:
+    #     thumbnail_metadata_fields:
+    #       - preview_url
+    # ```
+    #
+    # @notationType -- yaml
+    thumbnail_metadata_fields:
+      - thumbnail_url
+
+  ################################################################################
+  ## Search Backend Settings
+  ################################################################################
+
+  # -- (map)
+  # @raw
+  #
+  # By default an instance of OpenSearch is deployed as part of the USD Search API
+  # helm chart. The following parameters can be set to configure the search backend:
+  #  * ``index_name`` - name of the search index prefix (default: ``my-usdsearch-instance-index``). In practice there will be 2 indexes created in the Search Backend (OpenSearch):
+  #    * ``<index_name>-ver5.0`` - stores embedding data and is the main index, where search is being executed
+  #    * ``<index_name>-ver4.0-image-cache`` - non-indexed data storage for assets' renderings.
+  #  * ``number_of_shards`` - number of shards of search indices (default: ``3``). Please refer to [OpenSearch documentation](https://opensearch.org/blog/optimize-opensearch-index-shard-size/) for more information about the number of shards selection.
+  #
+  #    __NOTE__: The ``number_of_shards`` value can only be set during the first installation of the USD Search API helm chart. If the index is already created on the OpenSearch instance - changing this parameter in the helm chart would have no effect. In order to modify this parameter after installation, you need to create a new OpenSearch index with the correct amount of shards and apply re-indexing as described in [OpenSearch documentation](https://opensearch.org/blog/optimize-opensearch-index-shard-size/).
+  #
+  # ### External OpenSearch instance
+  #
+  # If you wish to rely on your own instance of OpenSearch (external to the USD Search API helm chart), you can do the following:
+  # * disable creation of the default OpenSearch instance by setting the following command line argument during helm chart deployment:
+  # ```bash
+  #   --set opensearch_deployment.enabled=false
+  # ```
+  #
+  # * set the following parameters:
+  #   * ``host`` - hostname of the OpenSearch instance (default: ``deepsearch-opensearch-cluster-master``)
+  #   * ``port`` - port of the OpenSearch instance (default: ``9200``)
+  #   * ``schema`` - schema of the OpenSearch instance (default: ``http``)
+  #   * ``use_ssl`` - whether to use SSL for the OpenSearch instance (default: ``false``)
+  #   * ``auth_secret_name`` - name of the secret that stores the authentication information for the OpenSearch instance. Please refer to [OpenSearch authentication](#opensearch-authentication) section for more information.
+  #   * ``hosts`` - comma-separated list of additional OpenSearch instances to use for search (default: ``[]``)
+  #
+  # @notationType -- yaml
+  search_backend_config:
+    backend_type: os_index
+
+    # --
+    # @raw
+    #
+    # Name of the search index.
+    #
+    # In practice there will be 3 indexes created in the Search Backend (Elastic
+    # Search or OpenSearch):
+    #
+    #  * ``{{ .index_name }}-ver5.0`` - stores embedding data and is
+    #    the main index, where search is being executed
+    #  * ``{{ .index_name }}-ver4.0-image-cache`` - non-indexed data
+    #    storage for assets' renderings.
+    #  * ``{{ .index_name }}-ver4.0-pointcloud-cache`` - non-indexed
+    #    data storage for assets' pointcloud data. This index is not used by
+    #    default, but is created for compatibility purposes.
+    index_name: my-usdsearch-instance-index
+
+    # --
+    # @raw
+    #
+    # Number of shards of search indices.
+    #
+    # __NOTE__: The value can only be set during the installation.
+    #
+    number_of_shards: 3
+
+    # --
+    # @raw
+    #
+    # ``HOST`` of the OpenSearch instance. If using the included OpenSearch
+    # instance, keep the default values.
+    host: deepsearch-opensearch-cluster-master
+
+    # --
+    # @raw
+    #
+    # ``PORT`` of the OpenSearch instance. If using the included OpenSearch
+    # instance, keep the default values.
+    port: 9200
+
+    # --
+    # @raw
+    #
+    # ``SCHEMA`` of the OpenSearch instance. If using the included OpenSearch
+    # instance, keep the default values.
+    schema: http
+
+    use_ssl: false
+
+    # --
+    # @raw
+    #
+    # In order to authenticate with OpenSearch cluster a kubernetes secret that stores a subset of the following parameters can be created:
+    #  * username
+    #  * password
+    #
+    # The name of the secret can be specified by providing the following command line argument during helm chart deployment:
+    # ```bash
+    #   --set global.search_backend_config.auth_secret_name=<secret-name>
+    # ```
+    # Please refer to [OpenSearch authentication](https://docs.opensearch.org/docs/latest/security/authentication-backends/authc-index/) for more information about different authentication possibilities within OpenSearch. If any of these parameters are not required for the chosen authentication method, they don't need to be set within a secret.
+    #
+    # __NOTE__: By default there is no authentication enabled on the test OpenSearch instance that can be deployed with the USD Search API helm chart. Therefore, when using the test installation a secret with these parameters does not need to be created and the following variable can be left unchanged. Authentication on the test OpenSearch instance can be enabled if one needs it, as the test OpenSearch endpoint is exposed on the internal k8s network, so if there are other services running in the cluster they can also access it.
+    #
+    auth_secret_name:
+
+    # Additional search backend hosts can be provided by passing a
+    # comma-separated list of values in the following variable. If this
+    # functionality is not need - leave this value commented out
+
+    # hosts:
+
+    # --
+    # @raw
+    #
+    # Maximum chunk size for bulk insert operations (in bytes).
+    # If the parameter is unset, then the default value that is configured on the service side
+    # will be used.
+    max_chunk_size:
+
+    # --
+    # @raw
+    #
+    # Serializer used for OpenSearch request/response payloads.
+    # Supported values: ``orjson``, ``json``.
+    #
+    # ``orjson`` is significantly faster than the standard ``json`` serializer
+    # and is the recommended default. Switch to ``json`` only if compatibility
+    # issues arise with a specific OpenSearch version or client.
+    serializer: orjson
+
+  ################################################################################
+  ## Indexing configuration parameters
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # It is possible to exclude some file name patterns from processing. In order
+  # to do so please update the following variable. The syntax of this variable
+  # should follow the following pattern:
+  #
+  # ```yaml
+  # exclude_patterns:
+  # - "regex 1"
+  # - "regex 2"
+  # ```
+  # Here ``regex 1`` and ``regex 2`` are some regular expressions that can be found in
+  # a file path. For example the following values:
+  #
+  # ```yaml
+  # exclude_patterns:
+  # - "/.thumbs/"
+  # - ".__omni_channel__"
+  # ```
+  # will filter out all items that are within ``.thumbs`` folders and all those
+  # assets that contain ``__omni_channel__`` in the file path
+  exclude_patterns:
+  - /.thumbs/
+  - .__omni_channel__
+
+
+  ################################################################################
+  ## Logging configuration
+  ################################################################################
+
+  # --
+  # Enable structured logging that could then be collected from container
+  # standard output and forward to any system for keeping log data
+  #
+  enable_structured_logging: false
+
+  ################################################################################
+  ## Registry for containers
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # Container Registry root URL
+  registry: nvcr.io/nvidia/usdsearch
+
+  # -- (map)
+  # @raw
+  #
+  # Unified container images for the USD Search stack. Every Helm-deployed pod
+  # runs one of three images published from this repo on each `images-X.Y.Z`
+  # tag at ``{{ global.registry }}/<repository>:<tag>``:
+  #
+  #  * ``usdsearch`` — combined Python image (deepsearch-api, info-endpoint,
+  #    monitor / plugin workers, asset-graph-service, deepsearch-crawler,
+  #    ngsearch indexers, ...).
+  #  * ``siglip2_triton`` — Triton Inference Server with the SigLIP2 ONNX
+  #    model bundled.
+  #  * ``rendering_job`` — GPU-accelerated Omniverse Kit image. Reused for the
+  #    asset-graph-builder sidecar via ``MODE=graph-builder``.
+  #
+  # The ``tag`` defaults to the chart ``appVersion`` (set on each
+  # ``images-X.Y.Z`` release). Per-service ``image.{name,tag}`` values still
+  # take precedence when set, so existing overrides keep working.
+  #
+  # @notationType -- yaml
+  image:
+    pullPolicy: IfNotPresent
+    usdsearch:
+      repository: usdsearch
+      tag: ""
+    siglip2_triton:
+      repository: siglip2-triton
+      tag: ""
+    rendering_job:
+      repository: usdsearch-kit-workflows
+      tag: ""
+
+  # -- (string)
+  # @raw
+  #
+  # Default tag for the unified container images defined in ``global.image``.
+  # Defaults to the latest published image set so local installs pull real
+  # tags from NGC. CI overrides this at chart-package time from the latest
+  # ``images-X.Y.Z`` tag (same value as the chart ``appVersion``). Per-image
+  # ``global.image.<name>.tag`` overrides take precedence; this field is the
+  # shared fallback so all three unified images track the same release by
+  # default.
+  appVersion: "1.3.1"
+
+  # -- (map)
+  # @raw
+  #
+  # Kubernetes secret that stores authentication information for pulling images
+  # from the registry.
+  # @notationType -- yaml
+  imagePullSecrets:
+  #- name: nvcr.io
+
+  # -- (string)
+  # @raw
+  #
+  # As an alternative to the ``imagePullSecrets`` field, it is possible to
+  # provide the name for the docker container secret.
+  ngcImagePullSecretName: "nvcr.io"
+
+  # -- (string)
+  # @raw
+  #
+  # It is possible to provide NGC API Key on the first deployment of the helm
+  # chart, such that the appropriate docker registry pull secret is created.
+  ngcAPIKey:
+
+  # -- (string)
+  # @raw
+  #
+  # It is possible to provide NGC API Key on the first deployment of the helm
+  # chart, such that the appropriate docker registry pull secret is created.
+  ngcAPIKeySecretName: ngc-api
+
+  # -- (map)
+  # @raw
+  #
+  # Additional optional DNS configuration parameters can be passed using the
+  # following parameter:
+  # @notationType -- yaml
+  dnsConfig:
+    searches: []
+
+  ################################################################################
+  ## Global secrets settings
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # Auto-generated secrets configuration. By setting the respective field in the
+  # ``create`` section to ``true`` it is possible to create authentication and
+  # container registry secrets on helm chart deployment.
+  secrets:
+    create:
+      auth: false
+      registry: false
+      ngc_api: false
+      vlm: false
+      embedding: false
+      explorer_ui: false
+      rendering_service: false
+    annotations:
+      helm.sh/resource-policy: keep
+
+
+  ################################################################################
+  ## Global checks settings
+  ################################################################################
+
+  # --
+  # @raw
+  #
+  # Configuration of helm hooks that are used for testing storage backend
+  # availability and API readiness.
+  checks:
+    storage_backend:
+      enabled: true
+      backoff_limit: 5
+      annotations:
+        helm.sh/hook: pre-install,test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+      s3_proxy_annotations:
+        helm.sh/hook: test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    ags:
+      enabled: true
+      backoff_limit: 5
+      annotations:
+        helm.sh/hook: test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    rest_api:
+      enabled: true
+      backoff_limit: 5
+      annotations:
+        helm.sh/hook: test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    embedding:
+      enabled: true
+      backoff_limit: 5
+      annotations:
+        helm.sh/hook: test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    explorer_ui:
+      enabled: true
+      backoff_limit: 5
+      annotations:
+        helm.sh/hook: test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    rendering_service:
+      enabled: true
+      backoff_limit: 5
+      annotations:
+        helm.sh/hook: test
+        helm.sh/hook-weight: "0"
+        helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+
+# --
+# @raw
+#
+# Maintenance mode disables all background indexing services while keeping the
+# API and databases operational.
+#
+# This mode is useful when you want to perform maintenance on the system (e.g.
+# resizing / clean-up of redis, opensearch, etc.)
+#
+# @notationType -- yaml
+maintenance:
+  enable: false
+
+# Configuration for the default Redis cluster, which gets deployed when
+# redis_deployment.enabled is set to True.
+redis:
+  # --
+  # @raw
+  #
+  # Redis architecture type
+  architecture: standalone
+  # -- (map)
+  # @raw
+  #
+  # Redis authentication
+  # @notationType -- yaml
+  auth:
+    enabled: False
+  # -- (map)
+  # @raw
+  #
+  # Redis master configuration
+  # @notationType -- yaml
+  master:
+    disableCommands: []
+    persistence:
+      enabled: True
+      size: 64Gi
+    resources:
+      limits:
+        memory: 10Gi
+        ephemeral-storage: 2Gi
+        cpu: 1000m
+
+  # -- (map)
+  # @raw
+  #
+  # Redis additional replica count
+  # @notationType -- yaml
+  replica:
+    replicaCount: 0
+  # -- (tpl/array)
+  # @raw
+  #
+  # Redis common configuration
+  # @notationType -- tpl
+  commonConfiguration: |-
+    appendonly yes
+    save ""
+    databases 32
+
+  # Due to bitnami restructuring of container the following parameters are required to be set
+  image:
+    repository: bitnamilegacy/redis
+
+opensearch:
+  # --
+  # @raw
+  #
+  # Default opensearch cluster name
+  clusterName: "deepsearch-opensearch-cluster"
+  # --
+  # @raw
+  #
+  # Default number of OpenSearch replicas.
+  #
+  # The larger is the number of replicas - the higher is availability of the
+  # service (that is more search requests can be processed in parallel) however,
+  # as a drawback - more resources will be occupied.
+  replicas: 3
+    # --
+  # @raw
+  #
+  #  Default opensearch master service name
+  masterService: "deepsearch-opensearch-cluster-master"
+  # --
+  # @raw
+  #
+  #  Default opensearch Java options
+  opensearchJavaOpts: "-Xmx4096M -Xms4096M"
+  # -- (map)
+  # @raw
+  #
+  # Default opensearch resource requests per replica
+  # @notationType -- yaml
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8Gi"
+    limits:
+      cpu: "3"
+      memory: "8Gi"
+  # -- (map)
+  # @raw
+  #
+  # Default opensearch persistent configuration
+  # @notationType -- yaml
+  persistence:
+    enabled: true
+    size: 100Gi
+  config:
+    # -- (tpl/array)
+    # @raw
+    #
+    # Default opensearch deployment configuration
+    # @notationType -- tpl
+    opensearch.yml: |
+      network.host: 0.0.0.0
+      #knn.algo_param.index_thread_qty: 8
+      plugins:
+        security:
+          disabled: true
+  extraEnvs:
+  - name: DISABLE_INSTALL_DEMO_CONFIG
+    value: "true"
+
+  # -- (map)
+  # @raw
+  #
+  # Set optimal sysctl's through securityContext. This requires privilege. Can be disabled if
+  # the system has already been pre-configured. (Ex: https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html)
+  # Also see: https://kubernetes.io/docs/tasks/administer-cluster/sysctl-cluster/
+  # @notationType -- yaml
+  sysctl:
+    enabled: false
+
+  # -- (map)
+  # @raw
+  #
+  # Set optimal sysctl's through privileged initContainer.
+  sysctlInit:
+    enabled: false
+
+opensearch-dashboards:
+  config:
+    opensearch_dashboards.yml: |
+     server.name: dashboards
+     server.host: "0.0.0.0"
+     server.ssl.enabled: false
+     opensearch.ssl.verificationMode: none
+     opensearch.username: kibanaserver
+     opensearch.password: kibanaserver
+     opensearch.requestHeadersWhitelist: [authorization, securitytenant]
+     opensearch.hosts: ["http://deepsearch-opensearch-cluster-master:9200"]
+#  plugins:
+#    enabled: "true"
+#    installList:
+#      # hacky way to change the default container command
+#      - "'' || true; /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin remove securityDashboards"
+  extraEnvs:
+    - name: DISABLE_SECURITY_DASHBOARDS_PLUGIN
+      value: "true"
+  opensearchHosts: "http://deepsearch-opensearch-cluster-master:9200"
+  ingress:
+    enabled: false
+    ingressClassName: nginx
+    annotations: { }
+    labels: { }
+    hosts:
+      - host: ""
+        paths:
+          - path: /
+            backend:
+              serviceName: ""
+              servicePort: ""
+
+# DeepSearch services stack configuration
+deepsearch:
+  #
+  # It is possible to override the global exclude_patterns setting for DeepSearch
+  # service specifically. In order to do so please update the following variable.
+  # The syntax of this variable should follow the same pattern as in exclude_patterns:
+  #
+  #  exclude_patterns:
+  #  - /.thumbs/
+  #  - .__omni_channel__
+  #
+
+  # -- (map)
+  # @raw
+  #
+  # (Beta) Vision Language Model (VLM) configuration functionality settings
+  #
+  vision_endpoint:
+    # --
+    # @raw
+    #
+    # Vision endpoint allows to automatically tag and caption various assets stored on the storage backend using an external Vision Language Model (VLM) service.
+    #
+    # The following types of VLM services providers could be configured with the helm chart:
+    #   * azure_openai
+    #   * openai
+    #   * anthropic
+    #   * mistralai
+    #   * google
+    #   * nim
+    #   * qwen
+    #   * inference_hub
+    #
+    # In order to select one VLM for the whole service globally you can pass the following command line parameter:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.vlm_service=<VLM service provider>
+    # ```
+    #
+    # or specify `deepsearch.vision_endpoint.vlm_service` setting in the `my-usdsearch-config.yaml` file as follows:
+    #
+    # ```yaml
+    # deepsearch:
+    #   vision_endpoint:
+    #     vlm_service: <VLM service provider>
+    #  ```
+    #
+    # __NOTE__: This setting can be overwritten for any USD Search API plugin (e.g. ``rendering_to_vision_metadata`` plugin) by passing the following command line arguments:
+    # ```bash
+    #     --set deepsearch.plugins.rendering_to_vision_metadata.vision_endpoint.vlm_service=<VLM service provider>
+    # ```
+    #
+    # Alternatively, for each plugin your can provide respective setting in the `my-usdsearch-config.yaml` file as follows:
+    #
+    # ```yaml
+    # deepsearch:
+    #   plugins:
+    #     rendering_to_vision_metadata:
+    #       vision_endpoint:
+    #         vlm_service: <VLM service provider>
+    #  ```
+    #
+    # If no ``vision_endpoint`` setting is provided for the plugin, the global VLM configuration will be used.
+    #
+    # For more information about the available USD Search API plugins, please refer to [Plugin Settings section](#plugin-settings).
+    #
+    vlm_service: ""
+    # --
+    # @raw
+    #
+    # Azure OpenAI VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing Azure OpenAI service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic azure-openai-vlm-api-key-secret \
+    #     --from-literal=api-key=<Azure OpenAI API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.azure_openai.api_key=<Azure OpenAI API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the Azure OpenAI VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.azure_openai.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    azure_openai:
+      api_key_secret_name: "azure-openai-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "AZURE_OPENAI_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: gpt-4o-20241120
+        api_version: 2025-03-01-preview
+        azure_endpoint:
+        max_tokens: 2048
+        temperature: 0
+        azure_deployment: gpt-4o-20241120
+    # --
+    # @raw
+    #
+    # OpenAI VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing OpenAI service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic openai-vlm-api-key-secret \
+    #     --from-literal=api-key=<OpenAI API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.openai.api_key=<OpenAI API Key>
+    # ```
+    #
+    # __NOTE__: Instead of relying on the OpenAI model, it is possible to provide on a custom VLM model endpoint, provided this custom VLM model has OpenAI API compatible interface. This could be achieved by appropriately setting the ``base_url`` parameter:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.openai.parameters.base_url=<your custom LLM model>
+    # ```
+    #
+    # If it also possible to customize various other parameters of the OpenAI VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.openai.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    openai:
+      api_key_secret_name: "openai-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "OPENAI_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: "gpt-4o"
+        max_tokens: 2048
+        temperature: 0
+        base_url:
+    # --
+    # @raw
+    #
+    # Anthropic VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing Anthropic service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic anthropic-vlm-api-key-secret \
+    #     --from-literal=api-key=<Anthropic API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.anthropic.api_key=<Anthropic API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the Anthropic VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.anthropic.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    anthropic:
+      api_key_secret_name: "anthropic-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "ANTHROPIC_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: "claude-3-5-sonnet-latest"
+        max_tokens: 2048
+        temperature: 0
+    # --
+    # @raw
+    #
+    # Mistral AI VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing Mistral AI service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic mistralai-vlm-api-key-secret \
+    #     --from-literal=api-key=<Mistral AI API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.mistralai.api_key=<Mistral AI API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the Mistral AI VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.mistralai.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    mistralai:
+      api_key_secret_name: "mistralai-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "MISTRALAI_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: pixtral-large-latest
+        max_tokens: 1024
+        temperature: 0
+
+    # --
+    # @raw
+    #
+    # Google Gemini VLM service endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing Google Gemini service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic google-vlm-api-key-secret \
+    #     --from-literal=api-key=<Google Gemini API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.google.api_key=<Google Gemini API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the Google Gemini VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.google.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # For example, it is possible to customize the base URL for the Google Gemini VLM endpoint to the following:
+    # ```bash
+    #     --set deepsearch.vision_endpoint.google.parameters.base_url=<target base URL>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    google:
+      api_key_secret_name: "google-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "GOOGLE_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: gemini-2.5-pro
+        max_tokens: 2048
+        temperature: 0
+        base_url: https://generativelanguage.googleapis.com/v1beta/openai
+
+    # --
+    # @raw
+    #
+    # NIM VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing NIM service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic nim-vlm-api-key-secret \
+    #     --from-literal=api-key=<NIM API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.nim.api_key=<NIM API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the NIM VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.nim.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    nim:
+      api_key_secret_name: "nim-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "NIM_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: "meta/llama-4-maverick-17b-128e-instruct"
+        max_tokens: 2048
+        temperature: 0
+
+
+    # --
+    # @raw
+    #
+    # Qwen VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing Qwen service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic qwen-vlm-api-key-secret \
+    #     --from-literal=api-key=<Qwen API Key>
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.qwen.api_key=<Qwen API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the Qwen VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.qwen.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    qwen:
+      api_key_secret_name: "qwen-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "QWEN_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: "qwen3-vl-235b-a22b-instruct"
+        max_tokens: 2048
+        temperature: 0
+
+    # --
+    # @raw
+    #
+    # Inference Hub VLM endpoint configuration.
+    #
+    # It is required to provide a secret with the API key for accessing Inference Hub service, which could be done with the following command:
+    # ```bash
+    # kubectl create secret generic inference-hub-vlm-api-key-secret \
+    #     --from-literal=api-key=<Inference Hub API Key>
+
+    # ```
+    #
+    # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+    # ```bash
+    #     --set global.secrets.create.vlm=true \
+    #     --set deepsearch.vision_endpoint.inference_hub.api_key=<Inference Hub API Key>
+    # ```
+    #
+    # If it possible to customize various parameters of the Inference Hub VLM endpoint. This can be done using the following command line arguments:
+    #
+    # ```bash
+    #     --set deepsearch.vision_endpoint.inference_hub.parameters.<parameter name>=<parameter value>
+    # ```
+    #
+    # The full list of parameters with pre-set default values can be found below:
+    inference_hub:
+      api_key_secret_name: "inference-hub-vlm-api-key-secret"
+      api_key_secret_field: "api-key"
+      api_key: ""
+      env_prefix: "INFERENCE_HUB_"
+      # --
+      #
+      # Model parameters
+      parameters:
+        model: "azure/openai/gpt-5.1"
+        max_tokens: 2048
+        temperature: 0
+
+    # --
+    # @raw
+    #
+    # Metadata fields extracted by the VLM-based auto-captioning system could be
+    # adjusted to the target use-case by appropriately setting the
+    # ``deepsearch.vision_endpoint.metadata_fields`` parameter in the
+    # ``values.yaml`` file. This parameter is a list ``fields`` each of which
+    # is required to to have the following settings:
+    #
+    #   - **name**: name of the metadata field
+    #   - **description**: description of the metadata field and some guidance for the VLM model on how this metadata field should be extracted.
+    #   - **type**: type of the metadata field
+    #
+    # The following represents the default configuration for the metadata fields:
+    #
+    metadata_fields:
+    - name: caption
+      description: a brief, descriptive title or caption for the object. The caption should be concise and informative, providing a general overview of the object's appearance, function, or significance. It should be written in clear, accessible language that is easy for users to understand and should accurately reflect the content and context of the object.
+      type: str
+
+    - name: queries
+      description: a list of potential search terms or phrases that someone could use to find this object using a text-based search engine. The terms should describe the object accurately, considering aspects such as its shape, material, style, color, and any distinctive features that might help in identifying it. All values should be returned comma-separated.
+      type: list[str]
+
+    - name: tags
+      description: a list of tags, keywords, and relevant phrases that accurately describe the object and would make it searchable using text. Consider aspects such as the object's form, material, color, function, style, and any notable or unique features that could help in identifying or categorizing the object for search purposes.
+      type: list[str]
+
+    - name: scene_type
+      description: a list of scene types that the object could be found in. Consider the context in which the object is typically used or displayed, such as a living room, kitchen, office, or outdoor setting.
+      type: list[str]
+
+    - name: colors
+      description: a list of colors that are present in the object. Consider the primary colors, secondary colors, and any other hues or shades that are visible in the object.
+      type: list[str]
+
+    - name: materials
+      description: a list of materials that the object is made of or composed of. Consider the primary materials, secondary materials, and any other substances or components that are used in the construction or fabrication of the object.
+      type: list[str]
+
+    - name: grayscale
+      description: a boolean value indicating whether the object is grayscale or monochromatic in appearance. If the object is primarily black, white, or shades of gray, set this value to true; otherwise, set it to false.
+      type: bool
+
+    - name: broken_textures
+      description: a boolean value indicating whether the object has broken or missing textures that affect its appearance or quality. If the object displays unnatural red coloration or other visual artifacts that suggest texture issues, set this value to true; otherwise, set it to false.
+      type: bool
+
+    - name: good_quality
+      description: a boolean value indicating whether the object is of good quality and suitable for use in a variety of applications. If the object is reasonably well-crafted, detailed, and visually appealing, set this value to true; otherwise, set it to false.
+      type: bool
+
+    - name: geometric_shape
+      description: a boolean value indicating whether the object is a simple geometric shape or blob with no distinctive features or characteristics. If the object lacks complexity, detail, or visual interest, set this value to true; otherwise, set it to false.
+      type: bool
+
+    - name: photorealistic
+      description: a boolean value indicating whether the object is photorealistic in appearance, meaning that it closely resembles a real-world object or scene. If the object is highly detailed, textured, and realistic in its depiction, set this value to true; otherwise, set it to false.
+      type: bool
+
+    # --
+    # @raw
+    #
+    # Image prompt provided to the VLM-based auto-captioning system is fully
+    # customizable and can be controlled by setting
+    # ``deepsearch.vision_endpoint.image_prompt`` parameter in the
+    # ``values.yaml`` file. Below is the default configuration for the image
+    # prompt, however it could be adjusted to better fit the needs of the
+    # specific use case.
+    #
+    # __NOTE__: there are two fields defined in the prompt: ``{metadata_types}``
+    # and ``{metadata_definitions}``. Those get populated with the respective values
+    # defined in ``deepsearch.vision_endpoint.metadata_fields`` parameter.
+    #
+    image_prompt: |
+      Write a detailed analysis of the provided image of a 3D object or a scene.
+      Your analysis should focus on identifying key features, textures, colors, and any other notable characteristics visible from the images.
+
+      Based on your analysis, generate a JSON object that encapsulates the metadata about the 3D object.
+      This metadata should include searchable terms and keywords that accurately describe the object's visual aspects, such as shape, color, texture, and any unique features.
+      Additionally, craft a concise caption that summarizes the object's appearance and distinctive attributes.
+
+      Ensure that the JSON object is structured in a way that facilitates its inclusion in a searchable index, making the 3D object easily discoverable based on its visual characteristics.
+      The metadata should be comprehensive yet succinct, enabling efficient search and retrieval in a database or search engine context.
+
+      The JSON output should follow this structure:
+      {metadata_types}
+
+      with these field definitions:
+      {metadata_definitions}
+
+      Your analysis must strive to be as precise and comprehensive as possible, using only the visual information available in the provided thumbnails.
+      Assume the role of an intelligent vision system tasked with generating actionable metadata for cataloging or identification purposes.
+
+  # -- (map)
+  # @raw
+  #
+  # Configuration for how the service locates thumbnail files for each asset.
+  #
+  # There are two modes for specifying which files are considered thumbnails:
+  #
+  # * **Without ``filepath_patterns``** (default) — thumbnails are resolved using
+  #   ``relative_location`` and ``suffixes``. For each asset the service looks
+  #   for files matching:
+  #
+  #   ```
+  #   {folder_name}/{relative_location}/256x256/{file_name}{suffix}.png
+  #   ```
+  #
+  #   where ``{folder_name}`` and ``{file_name}`` are derived from the original
+  #   asset path, and each value in ``suffixes`` is tried in order. For example,
+  #   the default configuration:
+  #
+  #   ```yaml
+  #   thumbnail_settings:
+  #     relative_location: ".thumbs"
+  #     suffixes:
+  #       - ""
+  #       - ".auto"
+  #   ```
+  #
+  #   will search for both ``{folder_name}/.thumbs/256x256/{file_name}.png``
+  #   and ``{folder_name}/.thumbs/256x256/{file_name}.auto.png``, and use all
+  #   available thumbnails for indexing.
+  #
+  # * **With ``filepath_patterns``** — the service matches thumbnail files against
+  #   the provided list of regex patterns instead. Each pattern may reference
+  #   ``{folder_name}`` and ``{file_name}`` (populated from the original asset
+  #   path at runtime). All patterns are tried and all matching thumbnails are
+  #   used for indexing. For example:
+  #
+  #   ```yaml
+  #   thumbnail_settings:
+  #     filepath_patterns:
+  #       # Numbered thumbnails: asset.png1, asset.png2, ...
+  #       - "{folder_name}/\\.thumbs/256x256/{file_name}\\.png(?:\\d+)$"
+  #       # Standard and auto thumbnails: asset.png, asset.auto.png
+  #       - "{folder_name}/\\.thumbs/256x256/{file_name}(\\.auto)?\\.png$"
+  #       # Thumbnails stored in a sibling folder named "previews"
+  #       - "{folder_name}/previews/{file_name}\\.png$"
+  #   ```
+  #
+  # The following thumbnail file formats are supported: all formats supported by the [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html) and GIF. When a thumbnail is a GIF file, it will be split into multiple frames using a fixed time offset (default: ``1000`` ms), configurable per plugin via the ``gif_offset_ms`` parameter of the ``thumbnail_to_embedding`` and ``thumbnail_to_vision_metadata`` plugins.
+  #
+  # __NOTE__: These settings apply only to the **Nucleus** and **S3** storage backends. When using the **Storage API** backend, thumbnails are not resolved from the filesystem. Instead, the thumbnail URL is read directly from the asset metadata. The metadata field (or fields) that hold the thumbnail URL are controlled by the ``global.storage_api.thumbnail_metadata_fields`` setting. Please refer to the [Thumbnail retrieval](#thumbnail-retrieval) section for more information.
+  #
+  # @notationType -- yaml
+  thumbnail_settings:
+    relative_location: ".thumbs"
+    suffixes:
+      - ""
+      - ".auto"
+    filepath_patterns:
+
+  microservices:
+    # -- (map)
+    # @raw
+    #
+    # Configuration of the Monitor service that runs in the
+    # background and indexes data on the storage backend
+    #
+    monitor:
+      replicas: 1
+      # -- (map)
+      # @raw
+      # Resource requests and limits for the monitor service.
+      #
+      # resources:
+      #   requests:
+      #     cpu: 0.5
+      #     memory: 256Mi
+      #   limits:
+      #     # __NOTE__: here 2 CPUs are: 1 for the main python loop and the
+      #     # other one for prometheus metrics exporter
+      #     cpu: 2
+      #     # __NOTE__: this limit is set quite large by default, adjust it
+      #     # based on the Nucleus Server size the memory usage of the
+      #     # service starts to grow, when updates from the Nucleus server
+      #     # arrive faster than they are being processed.
+      #     memory: 1Gi
+
+    plugin_worker:
+      replicas: 1
+      service:
+        type: ClusterIP
+      #   # ------------------------------------------
+      #   #  NodePort configuration example
+      #   # ------------------------------------------
+      #   type: nodeport
+      #   nodeport: 30507
+      #   # ------------------------------------------
+      #   #  Ingress service configuration example
+      #   # ------------------------------------------
+      #   # type: ingress
+      #   # host: <my ingress host name>
+      #   # path: "/"
+      # # ------------------------------------------
+      # #  Load Balancer service configuration example
+      # #  IMPORTANT: Selected Load Balancer type must support WebSockets.
+      # #    For example in the case of an AWS deployment "NLB" loadbalancer
+      # #    type would be a suitable option, while "ELB" loadbalancer type
+      # #    will not work.
+      # # ------------------------------------------
+      # #     type: loadbalancer
+      # # ------------------------------------------
+      # #  Additional service annotations
+      # #    could be useful when setting type loadbalancer
+      # # ------------------------------------------
+      #   annotations:
+      #     service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      #
+      # ----------------------------------
+      # Additional service settings
+      # ----------------------------------
+      # it is possible to override the default port value for the
+      # service by updating the following
+      #
+      # port: 8765
+
+      #   endpoint_override:
+      #     enabled: false
+      # # resources for a single replica
+      # resources:
+      #   requests:
+      #     cpu: 0.25
+      #     memory: 512Mi
+      #   limits:
+      #     cpu: 2
+      #     memory: 5Gi
+
+      # -- (map)
+      # @raw
+      #
+      # Configuration of the temporary directory for the service. By default, it is
+      # set to use Memory medium.
+      # @notationType -- yaml
+      tmpDir:
+        emptyDir: {}
+
+    # Configuration of the kubernetes Rendering Job
+    #
+    k8s_renderer:
+      # --
+      # @raw
+      #
+      # Amount of time pod is kept after completion
+      #
+      ttlSecondsAfterFinished: 3600
+
+      # --
+      # @raw
+      #
+      # By default, the rendering job timeout is set to 1 hour. This can be adjusted by setting the `activeDeadlineSeconds` parameter as follows:
+      #
+      # ```bash
+      #  --set deepsearch.microservices.k8s_renderer.activeDeadlineSeconds=<max amount of time that is allocated for job execution>
+      # ```
+      #
+      # or by modifying the ``my-usdsearch-config.yaml`` file as follows:
+      #
+      # ```yaml
+      # deepsearch:
+      #   microservices:
+      #     k8s_renderer:
+      #       activeDeadlineSeconds: <max amount of time that is allocated for job execution>
+      # ```
+      #
+      #
+      activeDeadlineSeconds: 3600
+
+      # -- (map)
+      # @raw
+      #
+      # Additional optional annotations of the Rendering Job pod can be configured by setting the `render_job_pod_annotations` parameter as follows:
+      #
+      # ```bash
+      #  --set deepsearch.microservices.k8s_renderer.render_job_pod_annotations.<annotation name>=<annotation value>
+      # ```
+      #
+      # or by modifying the ``my-usdsearch-config.yaml`` file as follows:
+      #
+      # ```yaml
+      # deepsearch:
+      #   microservices:
+      #     k8s_renderer:
+      #       render_job_pod_annotations:
+      #         <annotation name>: <annotation value>
+      # ```
+      #
+      # If this parameter is left unset - no additional annotations will be applied to the Rendering Job pod.
+      #
+      # Please refer to the [Kubernetes documentation](https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/) for more information on how to use annotations
+      #
+      # @notationType -- yaml
+      render_job_pod_annotations: {}
+
+      # -- (map)
+      # @raw
+      #
+      # Additional optional tolerations of the Rendering Job pod can be configured by modifying the ``my-usdsearch-config.yaml`` file as follows:
+      #
+      # ```yaml
+      # deepsearch:
+      #   microservices:
+      #     k8s_renderer:
+      #       tolerations:
+      #         - key: "nvidia.com/gpu"
+      #           operator: "Exists"
+      #           effect: "NoSchedule"
+      # ```
+      #
+      # Please refer to the [Kubernetes documentation](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) for more information on how to use tolerations
+      #
+      # @notationType -- yaml
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+      # --
+      # @raw
+      #
+      # USD Search relies on kubernetes native scheduling functionality for scheduling rendering jobs depending on the availability of the resources on the kubernetes cluster. In some cases, however, (e.g. when working with Omniverse Nucleus server backend) it could be desired to limit the number of parallel rendering jobs created in order to control the load that is imposed on the storage backend.
+      #
+      # To do so, one could use the ``maxRenderingJobsCount`` parameter, which could be provided to the helm installation command via the following command line argument:
+      #
+      # ```bash
+      #  --set deepsearch.microservices.k8s_renderer.maxRenderingJobsCount=<max number of parallel rendering jobs>
+      # ```
+      #
+      # or by modifying the ``my-usdsearch-config.yaml`` file as follows:
+      #
+      # ```yaml
+      # deepsearch:
+      #   microservices:
+      #     k8s_renderer:
+      #       maxRenderingJobsCount: <max number of parallel rendering jobs>
+      # ```
+      #
+      # If this parameter is left unset - no limit on the number of rendering jobs will be applied.
+      #
+      maxRenderingJobsCount:
+
+      # --
+      # @raw
+      #
+      # USD relies on Omniverse Kit for rendering USD assets. By default only one Kit instance is created per GPU (rendering job). It is, however, possible to increase the number of parallel Kit workers that would process assets on a single GPU to improve throughput.
+      #
+      # To do so, one could use the ``n_parallel_kit_workers`` parameter, which could be provided to the helm installation command via the following command line argument:
+      #
+      # ```bash
+      #  --set deepsearch.microservices.k8s_renderer.n_parallel_kit_workers=<number of parallel Kit workers>
+      # ```
+      #
+      # or by modifying the ``my-usdsearch-config.yaml`` file as follows:
+      #
+      # ```yaml
+      # deepsearch:
+      #   microservices:
+      #     k8s_renderer:
+      #       n_parallel_kit_workers: <number of parallel Kit workers>
+      # ```
+      #
+      #
+      n_parallel_kit_workers: 1
+
+      # -- (map)
+      # @raw
+      #
+      # Resources that are allocated for single job execution
+      #
+      # __NOTE__: Rendering job requires RTX GPU, which can not be requested as a resource. If your cluster has both RTX
+      # and non-RTX GPUs, it is recommended to use an additional method to select the node with RTX GPU, e.g. by
+      # setting appropriate taints on RTX and non-RTX GPUs and adding a toleration in
+      # `.Values.microservices.k8s_renderer.tolerations` .
+      # @notationType -- yaml
+      resources:
+        requests:
+          memory: "30Gi"
+          cpu: "4"
+          nvidia.com/gpu: "1"
+        limits:
+          memory: "30Gi"
+          cpu: "11"
+          nvidia.com/gpu: "1"
+
+      persistence:
+        # -- (bool)
+        # @raw
+        #
+        # Depending on the volume, where shared cache is stored it may be necessary to update permissions of the
+        # folder, where cache data is written. To enable this functionality, please set this setting to ``true``.
+        initVolumePermissions: false
+
+      # -- (bool)
+      # @raw
+      #
+      # High Speed Static Cache (HSSC) configuration
+      hssc:
+        # -- (bool)
+        # @raw
+        #
+        # Enable High Speed Static Cache (HSSC) for the rendering service.
+        # @notationType -- yaml
+        enabled: false
+
+        # -- (string)
+        # @raw
+        #
+        # URI of the HSSC server.
+        # @notationType -- yaml
+        uri:
+
+        # -- (bool)
+        # @raw
+        #
+        # Enable shader cache for the rendering service.
+        # @notationType -- yaml
+        enable_shader_cache_wrapper: true
+
+      # -- (bool)
+      # @raw
+      #
+      # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
+      load_asset_as_reference: true
+    # -- (map)
+    # @raw
+    #
+    # Configuration of the Writer service
+    # @notationType -- yaml
+    omni_writer:
+      replicas: 1
+
+    embedding:
+      # --
+      #
+      # Number of replicas of the embedding service.
+      replicas: 1
+
+      # -- (tpl/array)
+      #
+      # Embedding service tolerations.
+      tolerations: []
+
+      # -- (map)
+      #
+      # Embedding service affinity.
+      affinity: {}
+
+      # -- (map)
+      # @raw
+      #
+      # Resources that are allocated for embedding deployment
+      #
+      # __NOTE__: Embedding service could rely on either CPU or GPU. Using GPU, however, significantly speeds up inference.
+      # @notationType -- yaml
+      resources:
+        requests:
+          nvidia.com/gpu: 1
+          cpu: 2
+          memory: 7Gi
+        limits:
+          nvidia.com/gpu: 1
+          cpu: 4
+          memory: 15Gi
+
+      # -- (map)
+      # @raw
+      #
+      # Configuration of the temporary directory for the service. By default, it is
+      # set to use Memory medium.
+      # @notationType -- yaml
+      tmpDir:
+        emptyDir:
+          medium: Memory
+          sizeLimit: 256Mi
+      #
+      #
+
+  #  imagePullPolicy: IfNotPresent
+  #  nameOverride: ""
+  #  fullnameOverride: ""
+  #
+  #  # override omni config
+  #  OVERRIDE_CONFIG: false
+  #
+  #  # create omniverse service user
+  #  CREATE_SERVICE_USER: false
+  #
+  #  # environment variables
+  #  env:
+  #    # You can provide additional environment variables as follows
+  #    #  - name: 'VARIABLE NAME'
+  #    #    value: 'VARIABLE VALUE'
+  #
+  #
+  #  ################################################################################
+  #  ## Plugin configuration
+  #  ################################################################################
+
+  plugins:
+    # -- (map)
+    # @raw
+    #
+    # Asset Graph Search (AGS) component allows searching various properties
+    # defined as part of USD files. By default all the properties that are have
+    # the ``semantic:`` prefix are indexed, however it is possible to customize
+    # this behavior as follows:
+    #
+    # ```yaml
+    # plugins:
+    #   asset_graph_generation:
+    #     indexed_property_prefixes: "<custom_prefix_1>:,<custom_prefix_2>:"
+    # ```
+    #
+    # Here ``<custom_prefix_1>``, ``<custom_prefix_2>`` are the prefixes of USD
+    # properties that should be indexed. One could provide multiple prefixes
+    # separated by commas.
+    #
+    # Alternatively, it is possible to specify the list of property names that
+    # should be indexed as follows:
+    #
+    # ```yaml
+    # plugins:
+    #   asset_graph_generation:
+    #     indexed_properties: "<property_name1>,<property_name2>,<property_name3>"
+    # ```
+    #
+    # Here `<property_name1>`,`<property_name2>`,`<property_name3>` is the list
+    # of property names that should be indexed. One could provide multiple
+    # property names separated by commas. If ``indexed_properties`` parameter
+    # remains unset - all the properties with the prefixes defined above are
+    # indexed.
+    #
+    # __NOTE__: Only the properties from the default prims inside a USD stage
+    # are indexed and searchable.
+    #
+    # @notationType -- yaml
+    asset_graph_generation:
+      active: True
+
+    # -- (map)
+    # @raw
+    #
+    # Automatic generation of thumbnails for USD assets found on the storage
+    # backend based on the rendered views received from the Rendering service.
+    #
+    # @notationType -- yaml
+    thumbnail_generation:
+      active: True
+      n_concurrent_queue_workers: 256
+
+    # -- (map)
+    # @raw
+    #
+    # Rendering USD assets from multiple views and extraction of CLIP embeddings
+    # from each view to better characterize the asset.
+    #
+    # @notationType -- yaml
+    rendering_to_embedding:
+      active: True
+      n_concurrent_queue_workers: 256
+
+    # -- (map)
+    # @raw
+    #
+    # Extraction of CLIP embeddings from thumbnails of assets that are found on the Storage backend. GIF thumbnails are also supported — GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms), configurable via the optional ``gif_offset_ms`` parameter. Please refer to the [Thumbnail indexing settings](#thumbnail-indexing-settings) section for more information on how to configure the service to read GIF thumbnails.
+    #
+    # @notationType -- yaml
+    thumbnail_to_embedding:
+      active: True
+      # gif_offset_ms: 1000
+
+    # -- (map)
+    # @raw
+    #
+    # Extraction of CLIP embeddings from images. The following image types are
+    # supported:
+    #  * all the formats supported by [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html)
+    #  * EXR
+    #  * GIF
+    #
+    # __NOTE__: GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms). The offset can be customized via the optional ``gif_offset_ms`` parameter.
+    #
+    # @notationType -- yaml
+    image_to_embedding:
+      active: True
+      # gif_offset_ms: 1000
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of Vision metadata from Images. The following image types are
+    # supported:
+    #  * all the formats supported by [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html)
+    #  * EXR
+    #  * GIF
+    #
+    # __NOTE__: GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms). The offset can be customized via the optional ``gif_offset_ms`` parameter.
+    #
+    # @notationType -- yaml
+    image_to_vision_metadata:
+      active: False
+      # gif_offset_ms: 1000
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of Vision metadata from multi-view renderings of 3D assets that
+    # are found on the Storage backend.
+    #
+    # @notationType -- yaml
+    rendering_to_vision_metadata:
+      active: False
+      n_concurrent_queue_workers: 256
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of Vision metadata from thumbnails of assets that are found on the Storage backend. GIF thumbnails are also supported — GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms), configurable via the optional ``gif_offset_ms`` parameter. Please refer to the [Thumbnail indexing settings](#thumbnail-indexing-settings) section for more information on how to configure the service to read GIF thumbnails.
+    #
+    # @notationType -- yaml
+    thumbnail_to_vision_metadata:
+      active: False
+      # gif_offset_ms: 1000
+
+  # -- (map)
+  # @raw
+  #
+  # Rendering job is using Omniverse Kit to render USD assets. When doing rendering Omniverse Kit saves some information in cache to make processing more efficient. This information includes shader cache, which takes between 100 and 300 seconds to compute. By default cache it created as a memory volume that is preserved during the lifetime of the job and is removed after it has completed.
+  #
+  # In order to optimize processing it is, however, possible to persist this cached information, so that subsequent runs of the job are faster. In order to achieve
+  # this it is required to appropriately configure ``deepsearch.persistence`` section.
+  #
+  # For each of these cache locations there are several set-up options that are controlled by setting the type of cache:
+  #
+  # <ul>
+  #   <li> <b>emptyDir</b>: creates the cache volume that is available only through out the lifetime of the job. It does not keep cache information during between the runs, which reduces performance as every time shaders need to be re-complied and shader cache re-created. </li>
+  #   <li> <b>pvc</b>: creates PVC to for caching the data, which allows it to be preserved between execution, which in turn improves the speed of sub-sequent rendering runs. When using pvc persistence type it is possible to provide a custom PVC name by setting <em>persistentVolumeClaim.claimName</em> accordingly. Alternatively, it is possible to set <em>pvc.createPvc</em> to <em>true</em> in which case PVC will be automatically created on demand.
+  #     <ul>
+  #        <li> <b>NOTE</b>: In case of a custom PVC setup - it is important to make sure it is set with <em>accessModes: [ReadWriteMany]</em> so that multiple workers are able to access it. Not all storage classes support this setting (e.g. in AWS EFS storage class is required), so it is important to make sure that an appropriate storage class is used. </li>
+  #     </ul>
+  #   <li> <b>hostPath</b>: uses local host storage to store cache information
+  #     <ul>
+  #        <li> <b>NOTE</b>: when using local storage, the target directory <em>hostPath.path</em> has to be manually created on the host machine.
+  #     </ul>
+  # </ul>
+  #
+  # @notationType -- yaml
+  persistence:
+    type: emptyDir
+    pvc:
+      createPvc: false
+      size: 50Gi
+      storageClassName: ""
+  # persistentVolumeClaim:
+  #   claimName: ""
+    emptyDir:
+      sizeLimit: 10Gi
+    hostPath:
+      path: /var/lib/omni/cache
+      type: Directory
+
+ngsearch:
+  #
+  # It is possible to override the global exclude_patterns setting for NGSearch
+  # service specifically. In order to do so please update the following variable.
+  # The syntax of this variable should follow the same pattern as in exclude_patterns:
+  #
+  #  exclude_patterns:
+  #  - /.thumbs/
+  #  - .__omni_channel__
+  #
+  microservices:
+    search_rest_api:
+
+      # -- (map)
+      # @raw
+      #
+      # Horizontal Pod Autoscaler configuration for the search-rest-api deployment. By default it is disabled. In order to enable it, please set the following parameter to true:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.hpa.enabled=true
+      # ```
+      #
+      # To set the maximum number of replicas for the search-rest-api deployment, set the following parameter:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.hpa.maxReplicas=<number of replicas>
+      # ```
+      #
+      # To set the minimum number of replicas for the search-rest-api deployment, set the following parameter:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.hpa.minReplicas=<number of replicas>
+      # ```
+      #
+      # @notationType -- yaml
+      hpa:
+        enabled: false
+        maxReplicas: 5
+        minReplicas: 1
+        targetCPUUtilizationPercentage: 80
+        targetMemoryUtilizationPercentage: 90
+
+      admin_authentication:
+        # --
+        #
+        # Enabled admin authentication functionality
+        enabled: true
+        # --
+        # @raw
+        #
+        # If admin token authentication if enabled - it is the possible to define
+        # the access with which admins would be able to browse search results by
+        # setting the following field.
+        #
+        # If this field is left unchanged - a random token would be generated.
+        # The value of this token could be recovered by running the following
+        # command:
+        #
+        # ```bash
+        # export NAMESPACE=<deployment namespace>
+        # export HELM_NAME=<helm deployment name>
+        # echo $(kubectl get cm $HELM_NAME-ngsearch-env-config -n $NAMESPACE -o "jsonpath={.data.DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY}")
+        # ```
+        #
+        access_key:
+
+      # --
+      # @raw
+      #
+      # Number of search results that are returned by the NGSearch Search Service by
+      # default, when using non-paginated search functionality. This value can be
+      # overridden from the input search query using the ``max`` prefix.
+      default_search_size: 64
+
+      # --
+      # @raw
+      #
+      # In order to verify that client application has access to view certain assets
+      # all search results are verified with the Storage backend. While this functionality
+      # is crucial for Omniverse Nucleus servers with fine-grained access. It may
+      # not be required for AWS S3 bucket or in the cases when all users have
+      # access to all the assets on the storage backend. In that case it is
+      # possible to switch off this functionality by setting the following parameter
+      # to false, which would also decrease the time for processing search request.
+      # __NOTE__: This functionality checks both the permissions and existence of the asset.
+      # If immediate reflection of asset deletions in the API is required,
+      # please enable this functionality.
+      enable_access_verification: true
+
+      # --
+      # @raw
+      #
+      # Search service has the possibility to gather telemetry information about
+      # searches executed by the users of the system. This information can
+      # then be used to understand what queries are most frequently executed and also
+      # allow to track down issues if inconsistency appears in the search
+      # results.
+      #
+      # Telemetry information includes:
+      #
+      #  * Overall duration of request processing
+      #  * Time spent waiting for response from the Search backend
+      #  * Parsed version of the input query that is then converted to a request to
+      #    OpenSearch service
+      #
+      # __NOTE__: that no information about the user is stored in the system.
+      #
+      # By default telemetry logging is switched off.  In order to enable telemetry collection, please set the following command line parameters during helm chart deployment:
+      # ```bash
+      #     --set global.tracing.OTEL_SDK_DISABLED=false \
+      #     --set ngsearch.microservices.search_rest_api.use_search_telemetry=true \
+      #     --set ngsearch.microservices.search_rest_api.search_telemetry_stdout=true
+      # ```
+      # You will then be able to see telemetry information being printed in the logs of the REST API service.
+      #
+      #
+      use_search_telemetry: false
+      search_telemetry_stdout: false
+
+      # resources for the deployment
+      # resources:
+      #   requests:
+      #     cpu: "1"
+      #     memory: 256Mi
+      #   limits:
+      #     cpu: 2
+      #     memory: 1Gi
+
+      # -- (map)
+      # @raw
+      #
+      # VLM validation uses a Vision Language Model to verify that each search
+      # result visually matches the input query. It compares the query against
+      # the result's thumbnail and returns a match decision with confidence
+      # score and reasoning.
+      #
+      # The following types of VLM services providers could be configured with
+      # the helm chart:
+      #   * azure_openai
+      #   * openai
+      #   * anthropic
+      #   * mistralai
+      #   * google
+      #   * nim
+      #   * qwen
+      #   * inference_hub
+      #
+      # To enable validation of search results, set the following parameter to true:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.enabled=true
+      # ```
+      #
+      # or specify `ngsearch.microservices.search_rest_api.validation.enabled` setting in the `my-usdsearch-config.yaml` file as follows:
+      # ```yaml
+      # ngsearch:
+      #   microservices:
+      #     search_rest_api:
+      #       validation:
+      #         enabled: true
+      # ```
+      #
+      # To set the maximum number of concurrent requests to the VLM service, set the following parameter:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.max_concurrent_requests=<number of concurrent requests>
+      # ```
+      #
+      # or specify `ngsearch.microservices.search_rest_api.validation.max_concurrent_requests` setting in the `my-usdsearch-config.yaml` file as follows:
+      # ```yaml
+      # ngsearch:
+      #   microservices:
+      #     search_rest_api:
+      #       validation:
+      #         max_concurrent_requests: <number of concurrent requests>
+      # ```
+      #
+      # To set the VLM service provider, set the following parameter:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service=<VLM service provider>
+      # ```
+      #
+      # or specify `ngsearch.microservices.search_rest_api.validation.vlm_service` setting in the `my-usdsearch-config.yaml` file as follows:
+      # ```yaml
+      # ngsearch:
+      #   microservices:
+      #     search_rest_api:
+      #       validation:
+      #         vlm_service: <VLM service provider>
+      # ```
+      #
+      # To set the API key for the VLM service, set the following parameter:
+      # ```bash
+      #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.<VLM service provider>.api_key=<API key>
+      # ```
+      #
+      # or specify `ngsearch.microservices.search_rest_api.validation.vlm_service.<VLM service provider>.api_key` setting in the `my-usdsearch-config.yaml` file as follows:
+      # ```yaml
+      # ngsearch:
+      #   microservices:
+      #     search_rest_api:
+      #       validation:
+      #         vlm_service: <VLM service provider>
+      #         api_key: <API key>
+      # ```
+      #
+      # @notationType -- yaml
+      validation:
+        # --
+        # @raw
+        #
+        # Enable validation of search results.
+        #
+        # @notationType -- yaml
+        enabled: false
+        # --
+        # @raw
+        #
+        # Maximum number of concurrent requests to the VLM service.
+        #
+        # @notationType -- yaml
+        max_concurrent_requests: 50
+        # --
+        # @raw
+        #
+        # Vision endpoint allows to automatically tag and caption various assets stored on the storage backend using an external Vision Language Model (VLM) service.
+        #
+        # The following types of VLM services providers could be configured with the helm chart:
+        #   * azure_openai
+        #   * openai
+        #   * anthropic
+        #   * mistralai
+        #   * google
+        #   * nim
+        #   * qwen
+        #   * inference_hub
+        #
+        # In order to select one VLM for the whole service globally you can pass the following command line parameter:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service=<VLM service provider>
+        # ```
+        #
+        # or specify `ngsearch.microservices.search_rest_api.validation.vlm_service` setting in the `my-usdsearch-config.yaml` file as follows:
+        #
+        # ```yaml
+        # ngsearch:
+        #   microservices:
+        #     search_rest_api:
+        #       validation:
+        #         vlm_service: <VLM service provider>
+        #  ```
+        #
+        vlm_service: ""
+        # --
+        # @raw
+        #
+        # Azure OpenAI VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing Azure OpenAI service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic azure-openai-vlm-api-key-secret \
+        #     --from-literal=api-key=<Azure OpenAI API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.api_key=<Azure OpenAI API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the Azure OpenAI VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * api_version
+        #   * azure_endpoint
+        #   * max_tokens
+        #   * temperature
+        #   * azure_deployment
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.parameters.model=gpt-4o-20241120
+        # ```
+        #
+        # @notationType -- yaml
+        azure_openai:
+          api_key_secret_name: "azure-openai-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "AZURE_OPENAI_"
+          parameters:
+            model: gpt-4o-20241120
+            api_version: 2025-03-01-preview
+            azure_endpoint:
+            max_tokens: 2048
+            temperature: 0
+            azure_deployment: gpt-4o-20241120
+        # --
+        # @raw
+        #
+        # OpenAI VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing OpenAI service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic openai-vlm-api-key-secret \
+        #     --from-literal=api-key=<OpenAI API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.api_key=<OpenAI API Key>
+        # ```
+        #
+        # __NOTE__: Instead of relying on the OpenAI model, it is possible to provide on a custom VLM model endpoint, provided this custom VLM model has OpenAI API compatible interface. This could be achieved by appropriately setting the ``base_url`` parameter:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.base_url=<your custom LLM model>
+        # ```
+        #
+        # If it also possible to customize various other parameters of the OpenAI VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #   * base_url
+        #
+        # @notationType -- yaml
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.model=gpt-4o
+        # ```
+        #
+        # @notationType -- yaml
+        openai:
+          api_key_secret_name: "openai-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "OPENAI_"
+          parameters:
+            model: "gpt-4o"
+            max_tokens: 2048
+            temperature: 0
+            base_url:
+
+        # --
+        # @raw
+        #
+        # Anthropic VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing Anthropic service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic anthropic-vlm-api-key-secret \
+        #     --from-literal=api-key=<Anthropic API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.api_key=<Anthropic API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the Anthropic VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.parameters.model=claude-3-5-sonnet-latest
+        # ```
+        #
+        # @notationType -- yaml
+        anthropic:
+          api_key_secret_name: "anthropic-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "ANTHROPIC_"
+          parameters:
+            model: "claude-3-5-sonnet-latest"
+            max_tokens: 2048
+            temperature: 0
+        # --
+        # @raw
+        #
+        # Mistral AI VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing Mistral AI service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic mistralai-vlm-api-key-secret \
+        #     --from-literal=api-key=<Mistral AI API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.api_key=<Mistral AI API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the Mistral AI VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.parameters.model=pixtral-large-latest
+        # ```
+        #
+        # @notationType -- yaml
+        mistralai:
+          api_key_secret_name: "mistralai-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "MISTRALAI_"
+          parameters:
+            model: pixtral-large-latest
+            max_tokens: 1024
+            temperature: 0
+
+        # --
+        # @raw
+        #
+        # Google Gemini VLM service endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing Google Gemini service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic google-vlm-api-key-secret \
+        #     --from-literal=api-key=<Google Gemini API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.api_key=<Google Gemini API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the Google Gemini VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # For example, it is possible to customize the base URL for the Google Gemini VLM endpoint to the following:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.base_url=<target base URL>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #   * base_url
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.model=gemini-2.5-pro
+        # ```
+        #
+        # @notationType -- yaml
+        google:
+          api_key_secret_name: "google-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "GOOGLE_"
+          parameters:
+            model: gemini-2.5-pro
+            max_tokens: 2048
+            temperature: 0
+            base_url: https://generativelanguage.googleapis.com/v1beta/openai
+
+        # --
+        # @raw
+        #
+        # NIM VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing NIM service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic nim-vlm-api-key-secret \
+        #     --from-literal=api-key=<NIM API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.api_key=<NIM API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the NIM VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.parameters.model=meta/llama-4-maverick-17b-128e-instruct
+        # ```
+        #
+        # @notationType -- yaml
+        nim:
+          api_key_secret_name: "nim-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "NIM_"
+          parameters:
+            model: "meta/llama-4-maverick-17b-128e-instruct"
+            max_tokens:
+            temperature: 0
+
+        # --
+        # @raw
+        #
+        # Qwen VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing Qwen service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic qwen-vlm-api-key-secret \
+        #     --from-literal=api-key=<Qwen API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.api_key=<Qwen API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the Qwen VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.parameters.model=qwen3-vl-235b-a22b-instruct
+        # ```
+        #
+        # @notationType -- yaml
+        qwen:
+          api_key_secret_name: "qwen-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "QWEN_"
+          parameters:
+            model: "qwen3-vl-235b-a22b-instruct"
+            max_tokens: 4096
+            temperature: 0
+        # --
+        # @raw
+        #
+        # Inference Hub VLM endpoint configuration.
+        #
+        # It is required to provide a secret with the API key for accessing Inference Hub service, which could be done with the following command:
+        # ```bash
+        # kubectl create secret generic inference-hub-vlm-api-key-secret \
+        #     --from-literal=api-key=<Inference Hub API Key>
+        # ```
+        #
+        # Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
+        # ```bash
+        #     --set global.secrets.create.vlm=true \
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.api_key=<Inference Hub API Key>
+        # ```
+        #
+        # If it possible to customize various parameters of the Inference Hub VLM endpoint. This can be done using the following command line arguments:
+        #
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.parameters.<parameter name>=<parameter value>
+        # ```
+        #
+        # The full list of parameters with pre-set default values can be found below:
+        #   * model
+        #   * max_tokens
+        #   * temperature
+        #
+        # For example, it is possible to customize the model parameter as follows:
+        # ```bash
+        #     --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.parameters.model=gcp/google/gemini-3-flash-preview
+        # ```
+        #
+        # @notationType -- yaml
+        inference_hub:
+          api_key_secret_name: "inference-hub-vlm-api-key-secret"
+          api_key_secret_field: "api-key"
+          api_key: ""
+          env_prefix: "INFERENCE_HUB_"
+          parameters:
+            model: "azure/openai/gpt-5.1"
+            max_tokens: 4096
+            temperature: 0
+
+        # Domain context to use for validation
+        domain_context: |
+          You are validating search results for a 3D asset search engine used by professional 3D artists and developers.
+
+          ## Asset Types
+          The assets being searched are 3D models (USD files) used in simulation, robotics, and visual effects. These include objects like vehicles, furniture, tools, food items, industrial equipment, architectural elements, nature elements, and characters.
+
+          ## Thumbnail Limitations
+          Reference images are rendered thumbnails of 3D assets. Keep in mind:
+          - Colors may shift slightly between renderers — allow minor hue/saturation variance
+          - Materials (wood, metal, plastic) may not be perfectly distinguishable at thumbnail resolution
+          - A single thumbnail may not capture all parts of a complex asset — do not penalize for occluded geometry
+          - Lighting and background vary per render; do not factor these into your decision
+
+          ## Match Decision Guidelines
+
+          **is_match = true** when the asset is something a user searching for this query would reasonably want in their results. Apply these principles:
+
+          1. **Semantic match over literal match**: "office chair" matches an ergonomic desk chair even if the word "office" doesn't appear anywhere. Think about what a 3D artist searching this term actually wants.
+          2. **Supertype queries are inclusive**: A query for "vehicle" should match cars, trucks, motorcycles. A query for "furniture" should match chairs, tables, shelves.
+          3. **Subtype queries are exclusive**: A query for "sedan" should NOT match an SUV. A query for "bar stool" should NOT match a dining chair.
+          4. **Attribute queries must be verified**: If the query specifies color, material, or style, the asset must visibly exhibit that attribute. "Red car" must show a red car, not a blue one.
+          5. **Partial overlap is not enough**: The query's primary subject must match the asset's primary subject. Incidental or background objects don't count.
+
+          **is_match = false** when:
+          - The asset is a fundamentally different object than what was queried
+          - A specified attribute (color, material, type) clearly contradicts what's visible
+          - The query names a specific item and the asset is a different item in the same broad category (e.g., "lemon" vs "lime", "screwdriver" vs "wrench")
+
+          **When both a query image AND text query are provided**: The text query takes priority over the image for validation. The text reflects the user's explicit intent:
+          - If the text specifies attributes like color or material (e.g., "red forklift"), the reference asset **must** match those attributes to be considered a match, even if the geometry matches the query image.
+          - The query image provides shape/category context, but the text query's specific attributes are the deciding factor.
+          - A geometrically identical asset with a different color than specified in the text query is **not a match**.
+
+          **When uncertain**: If similarity_score is 65 or higher and you cannot find clear disqualifying evidence, lean toward is_match = true. A borderline relevant result is better than a missed relevant one.
+
+          ## Scoring Precision
+          - Use the full 0–100 range. Don't cluster scores around 50 or 80.
+          - An exact object-type match with wrong color (e.g., "red car" → blue car) should score 40–55, not 0–20. The object type is correct; only the attribute is wrong.
+          - A correct object with all attributes matching should score 85+.
+          - A completely unrelated object should score below 20.
+
+
+    # -- (map)
+    # @raw
+    #
+    # Storage backend indexing configuration
+    #
+    indexing:
+      replicas: 1
+      #
+      # It is possible to define the number of retries to limit the number of
+      # times each of the assets in the redis stream will be attempted to be
+      # processed by default this parameter is unset, which means it will try
+      # to process each asset indefinitely.
+      #
+      # autoclaim_n_retries: 1000
+      #
+      # resources:
+      #   requests:
+      #     cpu: 1
+      #     memory: 1Gi
+      #   limits:
+      #     cpu: 2
+
+    # -- (map)
+    # @raw
+    #
+    # Storage backend tag-crawler configuration
+    #
+    tagcrawler:
+      replicas: 1
+      #
+      # It is possible to define the number of retries to limit the number of
+      # times each of the assets in the redis stream will be attempted to be
+      # processed by default this parameter is unset, which means it will try
+      # to process each asset indefinitely.
+      #
+      # autoclaim_n_retries: 1000
+      #
+      # resources:
+      #   requests:
+      #     cpu: 0.5
+      #     memory: 1Gi
+      #   limits:
+      #     cpu: 2
+
+    # -- (map)
+    # @raw
+    #
+    # Storage service configuration
+    #
+    storage:
+      replicas: 1
+      # resources:
+      #   requests:
+      #     cpu: 1
+      #     memory: 256Mi
+      #   limits:
+      #     cpu: 2
+
+    # -- (map)
+    # @raw
+    #
+    # Storage Cron Job configuration
+    #
+    storage_cron:
+      replicas: 1
+
+#
+#  imagePullPolicy: IfNotPresent
+#  imagePullSecrets:
+#    - name: "nvcr.io"
+#  nameOverride: ""
+#  fullnameOverride: ""
+#
+#  # create omniverse service user
+#  CREATE_SERVICE_USER: false
+#
+#  # environment variables
+#  env:
+#    # You can provide additional environment variables as follows
+#    #  - name: 'VARIABLE NAME'
+#    #    value: 'VARIABLE VALUE'
+#
+#  ##############################################
+#  ## Ingress set-up
+#  ##############################################
+#  #
+#  # If any of the service endpoint had ingress type you need to additionally
+#  # set ingress.enabled parameter from below to "true".
+#
+#  ingress:
+#    enabled: false
+#    annotations:
+#      ingress.kubernetes.io/service-upstream: "true"
+#
+#  # set-up metrics backend
+#  metrics:
+#    enabled: true
+#    port: 8000
+#    type: ClusterIP
+#
+#  ## Account to use
+#  serviceAccount:
+#    create: true
+
+deepsearch-crawler:
+
+  crawler:
+
+    # -- (string)
+    # @raw
+    #
+    # Default path on the storage backend that would be used for indexing and
+    # listening to file updates.
+    #
+    # __NOTE__: this should be a path on the server without the server URL prefix.
+    #
+    path: "/"
+
+    # -- (map)
+    # @raw
+    #
+    # extra Configuration parameters allow specifying file patterns that are
+    # included or excluded from indexing as follows:
+    #
+    # ```yaml
+    # deepsearch-crawler:
+    #   ...
+    #   extraConfig:
+    #     include_patterns:
+    #     - ".*include_path_pattern_1.*"
+    #     - ".*include_path_pattern_2.*"
+    #     exclude_patterns:
+    #     - ".*exclude_path_pattern_1.*"
+    #     - ".*exclude_path_pattern_2.*"
+    # ```
+    #
+    extraConfig:
+    # include_patterns:
+    # - ".*include_path_pattern_1.*"
+    # - ".*include_path_pattern_2.*"
+    # exclude_patterns:
+    # - ".*exclude_path_pattern_1.*"
+    # - ".*exclude_path_pattern_2.*"
+
+  # -- (map)
+  # @raw
+  #
+  # Default USD Search Crawler resource requests and limits
+  # @notationType -- yaml
+  resources:
+    requests:
+      cpu: 1
+      memory: 10Gi
+    limits:
+      cpu: 1
+      memory: 10Gi
+
+# -- (map)
+# @raw
+#
+# Rendering service can be deployed as an alternative to creating rendering jobs on demand. This has the following advantages:
+# - allows service administrators to better control resource utilization.
+# - improves rendering throughput as rendering service caches both shader and
+#   rendering data throughout the lifetime of the rendering service pod.
+# - no need for RBAC creation as the service is created by helm chart (not by worker pods)
+#
+# In order to deploy the rendering service, the following additional parameters need to be set:
+#
+# ```bash
+#   --set rendering_service_deployment.enabled=true \
+#   --set deepsearch.microservices.rendering_service.enabled=true \
+#   --set deepsearch.microservices.k8s_renderer.enabled=false \
+#   --set deepsearch.microservices.plugin_worker.rendering_settings.renderer_type=rendering_service \
+#   --set deepsearch.rbac.create=false
+# ```
+#
+# The rendering service can also be hosted externally (e.g. on NVCF) in which case the following parameters need to be set:
+#
+# ```bash
+#   --set rendering_service_deployment.enabled=false \
+#   --set deepsearch.microservices.rendering_service.settings.rendering_service_url=<rendering service URL>
+# ```
+#
+# ### Authentication
+#
+# If the rendering service endpoint is protected with an API key - it can be provided via a kubernetes secret as follows:
+#
+# ```bash
+#   --set global.secrets.create.rendering_service=true \
+#   --set deepsearch.microservices.rendering_service.authentication.enabled=true \
+#   --set deepsearch.microservices.rendering_service.authentication.api_key=<rendering service API key> \
+# ```
+#
+# alternatively, it is possible to create the secret manually with the following command:
+#
+# ```bash
+#   kubectl create secret generic rendering-service-api-key-secret \
+#     --from-literal=api-key=<rendering service API key> \
+#     --namespace <namespace>
+# ```
+#
+# and then set the following parameter:
+#
+# ```bash
+#   --set global.secrets.create.rendering_service=false \
+#   --set deepsearch.microservices.rendering_service.authentication.enabled=true \
+#   --set deepsearch.microservices.rendering_service.authentication.api_key_secret_name=rendering-service-api-key-secret \
+#   --set deepsearch.microservices.rendering_service.authentication.api_key_secret_field=api-key
+# ```
+#
+rendering-service:
+  replicas: 1
+  settings:
+    # --
+    # @raw
+    #
+    # USD relies on Omniverse Kit for rendering USD assets. By default only one Kit instance is created per GPU (rendering service replica). It is, however, possible to increase the number of parallel Kit workers that would process assets on a single GPU to improve throughput.
+    #
+    # To do so, one could use the ``n_parallel_kit_workers`` parameter, which could be provided to the helm installation command via the following command line argument:
+    #
+    # ```bash
+    #  --set rendering-service.settings.n_parallel_kit_workers=<number of parallel Kit workers>
+    # ```
+    #
+    # or by modifying the ``my-usdsearch-config.yaml`` file as follows:
+    #
+    # ```yaml
+    # rendering-service:
+    #   settings:
+    #     n_parallel_kit_workers: <number of parallel Kit workers>
+    # ```
+    #
+    #
+    n_parallel_kit_workers: 1
+
+    # -- (int)
+    # @raw
+    #
+    # Memory limit for a Kit worker in MB. This is the total memory limit for a single Kit worker spawned inside the rendering service replica.
+    #
+    # Setting this parameter appropriately, according to the resource limits and the number of parallel Kit workers is important as in case of memory exhaustion - the assets that still await processing will be marked as failed.
+
+    # @notationType -- yaml
+    kit_worker_memory_limit: 20480 # 20GB
+
+    # -- (int)
+    # @raw
+    #
+    # Limit the number of waiting requests that can be processed by the rendering service to avoid the situation, when a lot of requests are hanging in the queue while rendering service is processing an asset. If the number of waiting requests is greater or equal to this value, the rendering service will start to reject new requests with 429 status code.
+    #
+    # By default this parameter is set to 0, which means that the service can only handle the number of assets equal to the number of parallel Kit workers at a time and will reject new requests.
+    #
+    # Setting this parameter to a negative value will disable this functionality and all incoming requests will be stored in the queue and processed in the order of arrival.
+    #
+    # @notationType -- yaml
+    n_allowed_waiting_requests: 0
+
+    # -- (map)
+    # @raw
+    #
+    # Extra arguments passed to the Kit worker. By default the Kit worker is configured to use the local data store with a large chunk disk budget of 30GB. Depending on the available disk space of the node this can be adjusted by setting the ``/UJITSO/datastore/localDataStore/largeChunkDiskBudgetMB`` argument.
+    #
+    # @notationType -- yaml
+    kit_extra_args:
+      /UJITSO/enabled: true
+      /UJITSO/geometry: true
+      /UJITSO/textures: true
+      /UJITSO/datastore/localDataStore/largeChunkDiskBudgetMB: "30720"
+
+    # -- (bool)
+    # @raw
+    #
+    # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
+    load_asset_as_reference: true
+
+  resources:
+    requests:
+      cpu: 10
+      memory: 20Gi
+      nvidia.com/gpu: 1
+    limits:
+      cpu: 10
+      memory: 20Gi
+      nvidia.com/gpu: 1
+
+  # --
+  # @raw
+  #
+  # High Speed Static Cache (HSSC) configuration
+  hssc:
+    # -- (bool)
+    # @raw
+    #
+    # Enable High Speed Static Cache (HSSC) for the rendering service.
+    # @notationType -- yaml
+    enabled: false
+
+    # -- (string)
+    # @raw
+    #
+    # URI of the HSSC server. Here it is possible to provide a custom URI of the HSSC server.
+    #
+    # @notationType -- yaml
+    uri:
+
+    # -- (bool)
+    # @raw
+    #
+    # Enable shader cache to be stored in HSSC. If false - shader cache will be stored in pod memory and will be lost after the pod is restarted.
+    # @notationType -- yaml
+    enable_shader_cache_wrapper: true
+
+################################################################################
+## S3proxy Configuration
+################################################################################
+
+# --
+# @raw
+#
+# USD Search supports integration with an S3-compatible proxy, such as S3proxy, for indexing. By default, no specific image is configured for S3proxy (``image.repository.url`` is unset), allowing flexibility for users to choose their preferred image. However, the official [andrewgaul/s3proxy](https://hub.docker.com/r/andrewgaul/s3proxy/) image is recommended, as it is Apache-licensed, regularly updated.
+#
+# To deploy the USD Search Helm chart with S3proxy, ensure that the s3proxy feature is enabled and configured in the ``values.yaml`` file or through Helm overrides. Below you will find commands to install S3proxy with different backends.
+#
+# For more details on configuring different storage backends, refer to the official [S3proxy documentation](https://github.com/gaul/s3proxy/wiki/Storage-backend-examples) or consult the cloud provider documentation for AWS S3, Azure Blob Storage, and Google Cloud Storage.
+#
+# ### Examples for Different Storage Backends
+#
+# #### Any S3 compatible Storage Backend
+#
+# Using S3proxy functionality is it possible to seamlessly connect to any S3 compatible storage backends (e.g. Dell ObjectScale, DreamObjects, etc.)
+#
+# ```bash
+# helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
+#   --namespace <namespace> \
+#   --set global.s3proxy.enabled=true \
+#   --set global.accept_eula=true \
+#   --set global.s3.bucket_name=<your-bucket-name> \
+#   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
+#   --set s3proxy.jclouds.provider="s3" \
+#   --set s3proxy.jclouds.endpoint=<your-storage-backend-endpoint> \
+#   --set s3proxy.jclouds.identity=<your-storage-backend-identity> \
+#   --set s3proxy.jclouds.credential=<your-storage-backend-key> \
+#   --set global.ngcAPIKey=<NGC-API-KEY> \
+#   --set global.secrets.create.registry=true \
+#   --set global.secrets.create.auth=true \
+#   --set api-gateway.image.pullSecrets={nvcr.io}
+# ```
+#
+# #### Azure Blob Storage Backend
+#
+# Using S3proxy functionality is it possible to seamlessly connect to Azure Blob Storage.
+#
+# ```bash
+# helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
+#   --namespace <namespace> \
+#   --set global.s3proxy.enabled=true \
+#   --set global.accept_eula=true \
+#   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
+#   --set global.s3.bucket_name=<your-bucket-name> \
+#   --set s3proxy.jclouds.provider="azureblob-sdk" \
+#   --set s3proxy.jclouds.endpoint="https://<azure-storage-account-name>.blob.core.windows.net/" \
+#   --set s3proxy.jclouds.identity=<your-storage-backend-identity> \
+#   --set s3proxy.jclouds.credential=<your-storage-backend-key> \
+#   --set global.ngcAPIKey=<NGC-API-KEY> \
+#   --set global.secrets.create.registry=true \
+#   --set global.secrets.create.auth=true \
+#   --set api-gateway.image.pullSecrets={nvcr.io}
+# ```
+#
+# #### Google Cloud Storage Backend
+#
+# Using S3proxy functionality is it possible to seamlessly connect to Google Cloud Storage.
+#
+# ```bash
+# helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
+#   --namespace <namespace> \
+#   --set global.s3proxy.enabled=true \
+#   --set global.accept_eula=true \
+#   --set global.s3.bucket_name=<your-gcs-bucket-name> \
+#   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
+#   --set s3proxy.jclouds.provider="google-cloud-storage" \
+#   --set s3proxy.jclouds.endpoint="https://storage.googleapis.com" \
+#   --set s3proxy.jclouds.identity=<your-storage-backend-identity> \
+#   --set s3proxy.jclouds.credential=<your-storage-backend-key> \
+#   --set global.ngcAPIKey=<NGC-API-KEY> \
+#   --set global.secrets.create.registry=true \
+#   --set global.secrets.create.auth=true \
+#   --set api-gateway.image.pullSecrets={nvcr.io}
+# ```
+#
+# ### Alternative installation options
+#
+# Sample installation commands illustrated in the above sections create all
+# required secrets on helm chart deployment, which is done for convenience. It
+# may, however, be not acceptable in some deployment scenarios to pass
+# credential information through helm chart values. To address this issue it is
+# possible to create kubernetes secret with access information manually with the
+# following command:
+#
+# ```bash
+# kubectl create secret generic s3proxy-credentials \
+#   --from-literal=jclouds-identity=<your-storage-backend-identity> \
+#   --from-literal=jclouds-credential=<your-storage-backend-key> \
+#   --namespace <namespace>
+# ```
+
+# It is also possible to create a registry access secret with the
+# following command:
+
+# ```bash
+# kubectl create secret docker-registry nvcr.io \
+#   --docker-server=nvcr.io \
+#   --docker-username='$oauthtoken' \
+#   --docker-password=<NGC API KEY> \
+#   --docker-email=<your-email> \
+#   --namespace <namespace>
+# ```
+
+# With the above secrets created, the helm chart installation command can be
+# simplified to:
+
+# ```bash
+# helm install <deployment name> usdsearch-1.3.1.tgz \
+#   --namespace <namespace> \
+#   --set global.s3proxy.enabled=true \
+#   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
+#   --set global.accept_eula=true \
+#   --set global.storage_backend_type=s3 \
+#   --set global.s3.bucket_name=<your bucket name (depending on the provider)> \
+#   --set s3proxy.jclouds.provider="<your-storage-backend-provider>" \
+#   --set s3proxy.jclouds.endpoint="<your-storage-backend-endpoint>" \
+#   --set api-gateway.image.pullSecrets={nvcr.io} \
+#   --set global.imagePullSecrets={nvcr.io}
+# ```
+# @notationType -- yaml
+s3proxy:
+  image:
+    url: ""
+  service:
+    type: ClusterIP
+    port: 80
+  jclouds:
+    provider: ""
+    secret_name: "s3proxy-credentials"
+    identity: ""
+    identity_key: "jclouds-identity"
+    credential: ""
+    credential_key: "jclouds-credential"
+    endpoint: ""
+  # --
+  # @raw
+  #
+  # Additional Java options could be provided to the S3proxy container by setting the following value:
+  #
+  # ```bash
+  #   --set s3proxy.extraJavaOpts=<additional java options>
+  # ```
+  #
+  # For example in some cases it may be required to disable SSL verification by setting the following value:
+  #
+  # ```bash
+  #   --set s3proxy.extraJavaOpts="-Djclouds.trust-all-certs=true -Djclouds.relax-hostname=true"
+  # ```
+  #
+  # @notationType -- yaml
+  extraJavaOpts: ""
+  resources:
+    requests:
+      cpu: 0.25
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 1Gi
+
+data_loader:
+  enabled: false
+  wait: true
+  es_data_loader_image: nvcr.io/omniverse/deeptag-internal/es-data-loader:latest
+  config:
+    data_dir: /data
+  env:
+    - name: NUMBER_OF_SHARDS
+      value: "2"
+    - name: LOAD_LIMIT
+      value: "100"
+
+  ################################################################################
+  ## END
+  ################################################################################

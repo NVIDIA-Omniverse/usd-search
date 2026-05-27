@@ -1,0 +1,32 @@
+{
+  "_comment": "Non-Python third-party components bundled or shipped with USD Search. Picked up by scripts/_generate_third_party_notice.py via --extras. Fields: name (required), version (optional), license (SPDX or short name), homepage (URL), license_text_url (optional; fetched and saved under licenses/), sources (list of artifact tags), notes (optional, free-form).",
+  "components": [
+    {
+      "name": "google/siglip2-giant-opt-patch16-384",
+      "version": "main",
+      "license": "Apache-2.0",
+      "homepage": "https://huggingface.co/google/siglip2-giant-opt-patch16-384",
+      "license_text_url": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "sources": ["siglip2-triton"],
+      "notes": "Pre-trained vision-language model weights; exported to ONNX and served by the siglip2-triton image."
+    },
+    {
+      "name": "NVIDIA Omniverse Kit (kit-app-template)",
+      "version": "110.1.0",
+      "license": "NVIDIA Software License Agreement",
+      "homepage": "https://github.com/NVIDIA-Omniverse/kit-app-template",
+      "license_text_url": "https://raw.githubusercontent.com/NVIDIA-Omniverse/kit-app-template/main/LICENSE",
+      "sources": ["rendering-job", "asset-graph-builder"],
+      "notes": "Omniverse Kit kernel + extensions used by the rendering-job and asset-graph-builder images for USD rendering and scene-graph extraction."
+    },
+    {
+      "name": "NVIDIA Triton Inference Server",
+      "version": "26.04",
+      "license": "BSD-3-Clause",
+      "homepage": "https://github.com/triton-inference-server/server",
+      "license_text_url": "https://raw.githubusercontent.com/triton-inference-server/server/main/LICENSE",
+      "sources": ["siglip2-triton"],
+      "notes": "Base image (nvcr.io/nvidia/tritonserver:26.04-py3) used to serve the SigLIP2 ONNX model ensemble."
+    }
+  ]
+}

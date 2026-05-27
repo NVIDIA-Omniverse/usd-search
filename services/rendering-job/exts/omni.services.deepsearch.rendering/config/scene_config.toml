@@ -1,0 +1,43 @@
+domelight_shade = 255
+up_axis = "Y"
+render_existing_views = "true"
+object_min_size = 0.75
+recreate_stage_on_loading = "false"
+
+[camera]
+fov = 60
+base_camera_distance_multiplier = 1.0
+camera_fov_multiplier = 4
+
+[[prims]]
+path = "/DeepSearch/DomeLight"
+enabled = "true"
+prim_type = "DomeLight"
+  [prims.attributes]
+  "inputs:intensity" = 1500
+  "inputs:texture:format" = "latlong"
+
+
+[[prims]]
+path = "/DeepSearch/Light"
+enabled = "false"
+prim_type = "SphereLight"
+translation = [200, 200, 200]
+  [prims.attributes]
+  "inputs:radius" = 100
+  "inputs:intensity" = 30000
+
+[[prims]]
+path = "/DeepSearch/CameraRig1/Ground"
+prim_type = "Cube"
+scale = [100000, 100000, 1]
+  [prims.attributes]
+  size = 1
+
+[kit]
+renderer = "RayTracedLighting"  # "RayTracedLighting"
+width = 448
+height = 448
+headless = "true"
+allowroot = "true"
+subdivision_refinement_level = 2

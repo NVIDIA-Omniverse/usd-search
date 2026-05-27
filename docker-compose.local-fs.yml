@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Local Filesystem Backend — overlay that uses s3proxy to serve local files as S3.
+#
+# Mounts your local directory directly into s3proxy (an S3-compatible gateway
+# backed by the filesystem). Files appear and disappear in real time — no copy
+# step, no Docker volume indirection. A companion fs-watcher service detects
+# changes and triggers reindexing automatically.
+#
+# Usage:
+#   # Set LOCAL_FS_DATA_DIR to the directory containing your 3D assets:
+#   export LOCAL_FS_DATA_DIR=/path/to/my-assets
+#
+#   # Start the stack:
+#   docker compose -f docker-compose.yml -f docker-compose.local-fs.yml up --build
+#
+#   # With GPU plugins:
+#   LOCAL_FS_DATA_DIR=/path/to/my-assets \
+#     docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml \
+#       -f docker-compose.local-fs.yml up --build
+#
+# Environment variables:
+#   LOCAL_FS_DATA_DIR  — (required) host path to your assets directory
+#   LOCAL_FS_BUCKET    — bucket name inside s3proxy (default: usdsearch-local)
+#
+# How it works:
+#   - s3proxy exposes your directory as an S3-compatible endpoint
+#   - The deepsearch-crawler lists/scans the bucket like any other S3 backend
+#   - The fs-watcher detects new/changed files and triggers priority reindexing
+#   - API responses rewrite s3:// URIs back to your local filesystem paths
+#   - Input queries accept local filesystem paths and translate them internally
+#
+# Alternative: docker-compose.local-s3.yml (MinIO-based)
+#   - Copies files into MinIO at startup — closer to a production S3 deployment
+#   - MinIO can later be moved or scaled for larger deployments
+#   - Better for testing production-like S3 behavior
+#   - Use this (local-fs) overlay when you want a transparent dev experience
+
+x-local-fs-env: &local-fs-env
+  S3_STORAGE_AWS_ENDPOINT_URL: http://s3proxy:80
+  S3_STORAGE_BUCKET_NAME: ${LOCAL_FS_BUCKET:-usdsearch-local}
+  S3_STORAGE_REGION_NAME: us-east-1
+  LOCAL_FS_MODE: "true"
+  LOCAL_FS_HOST_PATH: ${LOCAL_FS_DATA_DIR:?Set LOCAL_FS_DATA_DIR to your assets directory}
+
+services:
+  # ─── s3proxy (S3 API backed by local filesystem) ────────────────────────────
+
+  s3proxy:
+    image: andrewgaul/s3proxy
+    container_name: usdsearch-s3proxy
+    restart: unless-stopped
+    ports:
+      - "9000:80"
+    environment:
+      JCLOUDS_PROVIDER: filesystem-nio2
+      JCLOUDS_FILESYSTEM_BASEDIR: /data
+      S3PROXY_AUTHORIZATION: none
+      JCLOUDS_REGIONS: us-east-1
+      LOG_LEVEL: info
+    volumes:
+      # Mount the user's directory as the bucket subdirectory.
+      # s3proxy maps: s3://usdsearch-local/path/file → /data/usdsearch-local/path/file
+      # which is: ${LOCAL_FS_DATA_DIR}/path/file on the host
+      - ${LOCAL_FS_DATA_DIR:?}:/data/${LOCAL_FS_BUCKET:-usdsearch-local}:rw
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:80/ 2>/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ─── Filesystem watcher (triggers reindexing on file changes) ────────────────
+
+  fs-watcher:
+    build:
+      context: services/fs-watcher
+    container_name: usdsearch-fs-watcher
+    restart: unless-stopped
+    volumes:
+      - ${LOCAL_FS_DATA_DIR:?}:/watch:ro
+    environment:
+      WATCH_DIR: /watch
+      INFO_ENDPOINT_URL: http://info-endpoint:8000
+      S3_BUCKET_NAME: ${LOCAL_FS_BUCKET:-usdsearch-local}
+      DEBOUNCE_MS: "2000"
+    depends_on:
+      info-endpoint:
+        condition: service_healthy
+
+  # ─── Service overrides (point all services at s3proxy + enable local-fs) ─────
+
+  deepsearch-api:
+    environment:
+      <<: *local-fs-env
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  info-endpoint:
+    environment:
+      <<: *local-fs-env
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  asset-graph-service:
+    environment:
+      <<: *local-fs-env
+
+  deepsearch-crawler:
+    environment:
+      <<: *local-fs-env
+      # Faster rescan for local dev iteration (default is 3600s)
+      S3_STORAGE_RE_SCAN_TIMEOUT: "60"
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  indexing-crawler:
+    environment:
+      <<: *local-fs-env
+
+  monitor-crawler:
+    environment:
+      <<: *local-fs-env
+
+  monitor-worker-image-to-embedding:
+    environment:
+      <<: *local-fs-env
+
+  monitor-worker-thumbnail-to-embedding:
+    environment:
+      <<: *local-fs-env
+
+  monitor-worker-asset-graph-generation:
+    environment:
+      <<: *local-fs-env
+
+  omni-writer:
+    environment:
+      <<: *local-fs-env
+
+  graph-builder:
+    environment:
+      S3_STORAGE_AWS_ENDPOINT_URL: http://s3proxy:80
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  # ─── GPU plugin worker overrides (active only when gpu-plugins overlay is also used) ─
+
+  rendering-job:
+    environment:
+      - S3_STORAGE_AWS_ENDPOINT_URL=http://s3proxy:80
+
+  monitor-worker-thumbnail-generation:
+    environment:
+      <<: *local-fs-env
+
+  monitor-worker-rendering-to-embedding:
+    environment:
+      <<: *local-fs-env

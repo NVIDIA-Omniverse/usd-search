@@ -1,0 +1,102 @@
+[package]
+authors = ["Artem Rozantsev <arozantsev@nvidia.com>"]
+category = "Services"
+changelog = "docs/CHANGELOG.md"
+description = "Render multiple views of a USD file for Deepsearch inference."
+icon = "data/icon.png"
+preview_image = "data/preview.png"
+keywords = ["kit", "services", "deepsearch", "asset"]
+readme = "docs/README.md"
+repository = "https://gitlab-master.nvidia.com/omniverse/kit-extensions/kit-deepsearch"
+title = "DeepSearch rendering service"
+version = "1.0.0"
+
+[dependencies]
+
+### from omni.dev.app extension
+
+# Viewport and Renderer
+"omni.kit.renderer.core" = {}
+"omni.kit.viewport.bundle" = {}
+
+# MDL
+"omni.mdl" = {}
+"omni.mdl.neuraylib" = {}
+"omni.kit.material.library" = {}
+
+# Graphics Stats
+"omni.stats" = {}
+
+#####################
+
+# nucleus connection
+"omni.client" = {}
+"omni.services.pip_archive" = { order=-1000000 }
+# kit services
+"omni.services.client" = {}
+"omni.services.core" = {}
+"omni.services.transport.client.http_async" = {}
+"omni.services.transport.server.http" = {}
+
+# sensors
+"omni.syntheticdata" = { version="^0.6.15" }
+"omni.kit.hydra_texture" = { version="^1.5.3" }
+
+# MDL
+"omni.kit.thumbnails.mdl" = {}
+
+# [[python.module]]
+# path = "pip_prebundle"
+
+[[python.module]]
+name = "omni.services.deepsearch.rendering"
+
+[settings]
+exts."omni.services.deepsearch.rendering".farm_address = "http://localhost:8222"
+exts."omni.kit.test".testExtDefaultTimeout = 900
+timeout = 900
+
+[[test]]
+timeout = 900
+exts."omni.kit.test".testExtDefaultTimeout = 900
+args = [
+    # SDG does not work well in multi-gpu setting
+    "--/renderer/multiGpu/enabled=false",
+    "--/renderer/multiGpu/maxGpuCount=1",
+    "--/renderer/activeGpu=0",
+    "--no-window",
+    "--/crashreporter/enabled=false",
+    "--/app/python/logSysStdOutput=0",
+    "--/app/file/ignoreUnsavedOnExit=true",
+    "--/app/extensions/excluded/0=omni.kit.window.privacy",
+    "--/app/hangDetector/enabled=0",
+    "--/app/asyncRendering=false",
+    "--/app/omni.graph.scriptnode/opt_in=true",  # Enables script (augmentation) nodes without prompt
+    "--/rtx-transient/aov/enableRtxAovs",
+    "--/rtx-transient/aov/enableRtxAovsSecondary",
+    "--/rtx/materialDb/syncLoads=true",
+    "--/omni.kit.plugin/syncUsdLoads=true",
+    "--/rtx/hydra/materialSyncLoads=true",
+    "--/rtx-transient/resourcemanager/texturestreaming/async=false",
+    "--/rtx-transient/resourcemanager/enableTextureStreaming=false",
+    "--/app/settings/fabricStageFrameHistoryCount=3",
+    "--/app/settings/fabricDefaultStageFrameHistoryCount=3",
+    "--/rtx/raytracing/cached/enabled=false",
+    "--/rtx/raytracing/lightcache/spatialCache/enabled=false"
+]
+stdoutFailPatterns.exclude = [
+    "*called on non-existent path*",  # Exclude carb.flatcache.plugin until fixed
+    "*[Error] [omni.graph.core.plugin] *SkipWriterWriter: Assertion raised in compute*",   # Exclude graph.core plugin error,
+    "*SyntheticData extension needs at least a stageFrameHistoryCount of 3*", # Exclude SyntheticData extension notification error
+    "*[Error] [omni.usd] Stage opening or closing already in progress!!*", # Exclude notification that stage openning was interrupted
+    "*[Error] [omni.syntheticdata.plugin] SdRenderVarToRawArray not on display device 0 (1)*", # Exclude Synthetic data exception
+    "*OgnSdRenderVarToRawArray*invalid render product*", # Exclude Synthetic data exception during sensor initialization
+    "*[omni.syntheticdata.plugin] OgnSdRenderVarToRawArray*", # Exclude any OgnSdRenderVarToRawArray errors
+    "*[Error] [omni.syntheticdata.plugin] CUDA error 801: cudaErrorNotSupported - operation not supported)*", # Synthetic data exception
+    "*[Error] [omni.syntheticdata.plugin] CUDA ERROR at*", # Synthetic data exception
+    "*/Replicator/SDGPipeline/OgnWriteSemantics: [/Replicator/SDGPipeline] Assertion raised in compute*", # replicator 1.10.10+ exception that does not prevent from correct execution
+    "*[ERROR]*argument after * must be an iterable, not int*", # replicator 1.10.10+ exception that does not prevent from correct execution
+    "*[Error]*in the config. It is not conforming semver*", # some extensions irrelevant to rendering
+    "*GLInteropContext::init: carb::windowing is not available*", # irrelevant (cannot open a GL window)
+]
+stdoutFailPatterns.include = ["*[fatal]*"]

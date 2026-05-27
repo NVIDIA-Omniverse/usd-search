@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  # Override: deepsearch-api has no healthcheck in its base compose, but the
+  # openapi-merger needs to wait for its FastAPI app to start serving
+  # /openapi.json before fetching the spec.
+  deepsearch-api:
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json')"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  # Override: expose the redis container under an extra DNS alias so the
+  # merger stack can reach it by a name that won't collide with anything
+  # in the runner's resolver. On the K8s-based CI runners the bare name
+  # "redis" resolves to a cluster ClusterIP (10.x.x.x) that the DinD
+  # bridge can't route to (EHOSTUNREACH), wedging info-endpoint's lifespan
+  # on its redis-cache connect. "redis-compose" only exists in Docker's
+  # embedded DNS, so it resolves to the bridge IP correctly.
+  redis:
+    networks:
+      default:
+        aliases:
+          - redis-compose
+
+  info-endpoint:
+    environment:
+      - REDIS_URL=redis://redis-compose:6379
+    restart: unless-stopped
+
+  # Sidecar: pulls openapi.json from each service and writes a merged spec to
+  # the host-mounted output directory. Built from its dedicated lean image so
+  # the merger's deps (httpx, pyyaml, openapi-spec-validator) stay out of the
+  # production usdsearch runtime.
+  openapi-merger:
+    build:
+      context: ../../tools/openapi-merge
+      dockerfile: ../../docker/Dockerfile.openapi-merge
+    container_name: openapi-merger
+    # Run as the invoking host user so the generated /output/openapi.json
+    # is not owned by root. HOST_UID / HOST_GID are exported by
+    # scripts/build-openapi-docs.sh; default to 0 (root) for CI runners.
+    user: "${HOST_UID:-0}:${HOST_GID:-0}"
+    command:
+      - "python"
+      - "-m"
+      - "openapi_merge"
+      - "--source"
+      - "ags=http://asset-graph-service:8000/openapi.json"
+      - "--source"
+      - "info=http://info-endpoint:8000/openapi.json"
+      - "--source"
+      - "search=http://deepsearch-api:8000/openapi.json"
+      - "--output"
+      - "/output/openapi.json"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - API_VERSION=${API_VERSION:-}
+    volumes:
+      - ${OPENAPI_OUTPUT_DIR:-../../docs}:/output
+    depends_on:
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      deepsearch-api:
+        condition: service_healthy
+      info-endpoint:
+        condition: service_healthy
+      asset-graph-service:
+        condition: service_healthy

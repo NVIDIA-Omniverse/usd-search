@@ -1,0 +1,81 @@
+{{ $apiGateway := ( index .Values "api-gateway" ) }}
+{{ $serviceName := printf "%s-api-gateway" .Release.Name }}
+{{- $renderingJobLabels := include "deepsearch.renderingJobLabels" (dict "Values" .Values.deepsearch "Release" .Release "Chart" (dict "Name" "deepsearch" "Version" "1.0.0") ) -}}
+
+1. USD Search Deployment Information:
+    - Release Name: {{ .Release.Name }}
+    - Namespace: {{ .Release.Namespace }}
+
+2. Storage backend information:
+    {{- if eq .Values.global.storage_backend_type "nucleus" }}
+    - Omniverse Nucleus:
+      server: {{ .Values.global.nucleus.server }}
+      {{- with .Values.global.nucleus.username }}
+      service account username: {{ . }}
+      {{- end }}
+    {{- else if eq .Values.global.storage_backend_type "s3" }}
+    - AWS S3:
+      bucket: {{ .Values.global.s3.bucket_name }}
+      region: {{ .Values.global.s3.region_name }}
+      allow system writes: {{ .Values.global.s3.allow_system_writes }}
+      allow non system writes: {{ .Values.global.s3.allow_non_system_writes }}
+    {{- end}}
+
+3. USD Search Service Information:
+{{- if .Values.api_gateway_deployment.enabled }}
+    - Service Name: {{ .Release.Name }}-api-gateway
+    - Service Type: {{ $apiGateway.service.type }}
+    - Service Port: {{ $apiGateway.service.ports.http }}
+{{- else }}
+    - API gateway not available
+{{- end }}
+    
+4. Accessing USD Search. 
+{{- if .Values.api_gateway_deployment.enabled }}
+    - Once the service is ready, you can access USD Search
+    {{- if and $apiGateway.service.ingress $apiGateway.service.ingress.enabled }}
+      at: http://{{ $apiGateway.service.ingress.hostname }}
+    {{- else if eq $apiGateway.service.type "NodePort" }}
+      at: http://<external cluster IP>:{{ $apiGateway.service.nodePorts.http | default ( printf "<nodePort of the 'http' port of the '%s' service>" $serviceName )}}
+    {{- else if eq $apiGateway.service.type "ClusterIP" }}
+      by utilizing port-forwarding from the k8s cluster as follows:
+      $ kubectl port-forward -n {{ .Release.Namespace }} svc/{{ .Release.Name }}-api-gateway 8080:80
+      the endpoint should then be accessible at http://localhost:8080
+    {{- end }}
+    {{- if .Values.ngsearch.microservices.search_rest_api.admin_authentication.enabled }}
+    - get admin access key: echo $(kubectl get cm {{ .Release.Name }}-ngsearch-env-config -n {{ .Release.Namespace }} -o "jsonpath={.data.DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY}") 
+    {{- end }}
+{{- else }}
+    - API gateway not available
+{{- end }}
+
+5. Useful Commands:
+    - Check the USD Search Deployment Status:
+      helm status {{ .Release.Name }}
+
+    - Get Detailed Information about the USD Search Deployment:
+      helm get all {{ .Release.Name }}
+
+    - Verify storage backend connection and API readiness
+      helm test {{ .Release.Name }}
+
+6. Clean Up:
+    - To uninstall/delete the USD Search deployment, run:
+      helm uninstall {{ .Release.Name }}
+
+    - Rendering jobs created during deployment are not automatically removed on helm uninstall and may occupy resource on the cluster.
+      In order to remove them run:
+      kubectl delete jobs -n {{ .Release.Namespace }} -l '{{- include "dictToCommaList" ($renderingJobLabels | toYaml) -}}' --field-selector status.successful=0
+
+    - Secrets and Persistent Volume Claims are not automatically removed on helm uninstall. 
+      They are retained in case the instance needs to be re-created. 
+      The following commands could be used to manually remove them:
+
+      - Secrets:
+        kubectl delete secrets -n {{ .Release.Namespace }} $(kubectl get secrets -n {{ .Release.Namespace }} -l 'app.kubernetes.io/instance={{ .Release.Name }}' -o custom-columns=":metadata.name" | awk '{print}' ORS=' ')
+
+      - PVCs:
+        kubectl delete pvc -n {{ .Release.Namespace }} $(kubectl get pvc -n {{ .Release.Namespace }} -l 'app.kubernetes.io/instance={{ .Release.Name }}' -o custom-columns=":metadata.name" | awk '{print}' ORS=' ')
+        
+        # Neo4j PVC does get the same deployment label automatically assigned, therefore a separate command is need to clean it up
+        kubectl delete pvc -n {{ .Release.Namespace }} data-neo4j-0 

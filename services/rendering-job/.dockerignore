@@ -1,0 +1,5 @@
+shadercache/
+nv_shadercache/
+.pytest_cache/
+tests/
+test-sample.png

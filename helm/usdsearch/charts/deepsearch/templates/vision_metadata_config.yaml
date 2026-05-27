@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $values := .Values -}}
+{{- $labels := include "deepsearch.labels" . }}
+
+
+{{- range $plugin_name, $plugin_config := $values.plugins }}
+
+  {{- if and ( $plugin_config.requires_vision_metadata ) ( $plugin_config.active )  }}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-vlm-config-{{ $plugin_name | replace "_" "-"  }}
+  labels:
+    {{- $labels | nindent 4 }}
+data:
+  metadata_fields.yaml: |
+    metadata_fields:
+    {{- $plugin_config.vision_endpoint.metadata_fields | default $values.vision_endpoint.metadata_fields | toYaml | nindent 4 }}
+  image_prompt.txt: |
+    {{- $plugin_config.vision_endpoint.image_prompt | default $values.vision_endpoint.image_prompt | nindent 4 }}
+---
+
+  {{- end }}
+{{- end }}

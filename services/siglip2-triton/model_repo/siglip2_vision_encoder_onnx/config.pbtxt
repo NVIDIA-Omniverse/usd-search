@@ -1,0 +1,65 @@
+name: "siglip2_vision_encoder_onnx"
+backend: "onnxruntime"
+max_batch_size: 32
+
+input [
+  {
+    name: "pixel_values"
+    data_type: TYPE_FP32
+    dims: [3, 384, 384]
+  }
+]
+
+output [
+  {
+    name: "image_embeds"
+    data_type: TYPE_FP32
+    dims: [1536]
+  }
+]
+
+dynamic_batching {
+  preferred_batch_size: [4, 8, 16]
+  max_queue_delay_microseconds: 50000
+}
+
+instance_group [
+  {
+    count: 2
+    kind: KIND_AUTO
+  }
+]
+
+parameters {
+  key: "execution_accelerators"
+  value: { string_value: "cuda:0" }
+}
+parameters {
+  key: "enable_mem_pattern"
+  value: { string_value: "1" }
+}
+parameters {
+  key: "enable_mem_reuse"
+  value: { string_value: "1" }
+}
+
+optimization {
+  graph {
+    level: 0
+  }
+}
+
+model_warmup [
+  {
+    name: "warmup_batch_1"
+    batch_size: 1
+    inputs {
+      key: "pixel_values"
+      value: {
+        data_type: TYPE_FP32
+        dims: [3, 384, 384]
+        zero_data: true
+      }
+    }
+  }
+]

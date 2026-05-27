@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "ngsearch.fullname" . -}}
+{{- $values := .Values -}}
+
+{{- if eq .Values.global.storage_backend_type "multi" }}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ngsearch.fullname" . }}-storage-backend-config
+  labels:
+    {{- include "ngsearch.labels" . | nindent 4 }}
+data:
+  settings.yaml: |
+    backends:
+    {{- range $name, $backend := .Values.global.multi }}
+      {{ $name }}:
+        client_type: {{ $backend.storage_backend_type }}
+        config:
+          {{- if eq $backend.storage_backend_type "nucleus"}}
+          ov_server: {{ $backend.config.server }}
+          auth:
+            user: "{{ printf "${%s-OV_USERNAME}" ($name | upper) }}"
+            password: "{{ printf "${%s-OV_PASSWORD}" ($name | upper) }}"
+          {{- end }}
+          {{- if eq $backend.storage_backend_type "azure"}}
+          url: {{ $backend.config.url }}
+          container_name: {{ $backend.config.container_name }}
+            {{- if $backend.config.azure_credentials_secret_name }}
+          access_key: "{{ printf "${%s-AZURE_STORAGE_ACCESS_KEY}" ($name | upper) }}"
+          account_name: "{{ printf "${%s-AZURE_STORAGE_ACCOUNT_NAME}" ($name | upper) }}"
+            {{- end }}
+          {{- end }}
+          {{- if eq $backend.storage_backend_type "s3"}}
+          bucket_name: {{ $backend.config.bucket_name }}
+          region_name: {{ $backend.config.region_name }}
+            {{- if $backend.config.aws_credentials_secret_name }}
+          aws_access_key_id: "{{ printf "${%s-AWS_ACCESS_KEY_ID}" ($name | upper) }}"
+          aws_secret_access_key: "{{ printf "${%s-AWS_SECRET_ACCESS_KEY}" ($name | upper) }}"
+            {{- end }}
+          {{- end }}
+        search_backend_config:
+          {{- if $backend.search_backend_config }}
+          name: {{ $backend.search_backend_config.name | default $values.global.search_backend_config.index_name | quote }}
+          host: {{ $backend.search_backend_config.host | default $values.global.search_backend_config.host | quote }}
+          port: {{ $backend.search_backend_config.port | default $values.global.search_backend_config.port | quote }}
+          {{- else }}
+          name: {{ $values.global.search_backend_config.index_name | quote }}
+          host: {{ $values.global.search_backend_config.host | quote }}
+          port: {{ $values.global.search_backend_config.port | quote }}
+          {{- end}}
+    {{- end }}
+
+{{- end }}

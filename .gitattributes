@@ -1,0 +1,7 @@
+*.exr filter=lfs diff=lfs merge=lfs -text
+data/** filter=lfs diff=lfs merge=lfs -text
+services/asset-graph/samples/** filter=lfs diff=lfs merge=lfs -text
+services/siglip2-triton/model_repo/siglip2_text_encoder_onnx/1/** filter=lfs diff=lfs merge=lfs -text
+services/siglip2-triton/model_repo/siglip2_vision_encoder_onnx/1/** filter=lfs diff=lfs merge=lfs -text
+services/siglip2-triton/model_repo/tokenizer/1/tokenizer/tokenizer.json filter=lfs diff=lfs merge=lfs -text
+packages/siglip2-triton-client/siglip2_triton_client/tokenizer/tokenizer.json filter=lfs diff=lfs merge=lfs -text

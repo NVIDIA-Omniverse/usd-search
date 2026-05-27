@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+FROM ubuntu:22.04 AS kit-loader
+
+ARG KIT_KERNEL_VERSION=110.1.0+feature.manylinux_2_35_x86_64.release
+
+USER root
+RUN apt-get update && apt-get install -y curl unzip
+
+RUN VERSION_ENC=$(echo "${KIT_KERNEL_VERSION}" | sed 's/+/%2B/g') && \
+    curl -fL "https://d4i3qtqj3r0z5.cloudfront.net/kit-kernel%40${VERSION_ENC}.zip" \
+         -o /tmp/kit-kernel.zip && \
+    mkdir -p /opt/nvidia/omniverse/kit-kernel && \
+    unzip -q /tmp/kit-kernel.zip -d /opt/nvidia/omniverse/kit-kernel && \
+    rm /tmp/kit-kernel.zip
+
+FROM nvcr.io/nvidia/omniverse/ov-base-ubuntu-22:2026.2.3
+
+COPY --from=kit-loader /opt/nvidia/omniverse/kit-kernel /opt/nvidia/omniverse/kit-kernel
+
+USER root
+RUN mkdir /cache && chown -R ubuntu:ubuntu /cache && chmod 777 /cache
+RUN chown -R ubuntu:ubuntu /opt/nvidia/omniverse/kit-kernel
+RUN ln -sf /opt/nvidia/omniverse/kit-kernel/python/python /usr/bin/python
+RUN rm /root/.pip/pip.conf
+ADD exts /exts
+RUN chown -R ubuntu:ubuntu /exts && chmod 777 /exts
+USER ubuntu
+
+RUN /opt/nvidia/omniverse/kit-kernel/kit \
+    --enable omni.services.deepsearch.rendering \
+    --enable omni.services.convert.asset \
+    --enable omni.kit.thumbnails.mdl \
+    --enable omni.kit.material.library \
+    --allow-root \
+    --ext-precache-mode \
+    --ext-folder /exts \
+    --/app/exts/devFolders/0=/exts
+
+RUN /opt/nvidia/omniverse/kit-kernel/kit \
+    --enable omni.usd.schema.semantics \
+    --enable omni.usd \
+    --enable omni.usd.libs \
+    --enable omni.client \
+    --enable omni.materialx.libs \
+    --enable omni.mdl \
+    --enable omni.mdl.neuraylib \
+    --enable omni.kit.usd.mdl \
+    --allow-root \
+    --ext-precache-mode
+
+USER root
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/setuptools*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/urllib3*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/urllib3*
+RUN rm -rf /opt/nvidia/omniverse/kit-kernel/extscore/omni.kit.registry.nucleus/pip_registry/urllib3*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.0.0.lx64.cp312/pip_prebundle/urllib3*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/urllib3*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/aiohttp*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.0.0.lx64.cp312/pip_prebundle/aiohttp*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/aiohttp*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/aiohttp*
+RUN rm -rf /opt/nvidia/omniverse/kit-kernel/extscore/omni.kit.registry.nucleus/pip_registry/aiohttp*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/starlette*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/aiomysql*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/python_multipart*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/python_multipart*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/pil*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/Pillow*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/Pillow*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/pil*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/cryptography*
+RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/pyjwt*
+RUN apt-get purge --auto-remove -y libnghttp2-14
+USER ubuntu
+
+COPY _licenses /PACKAGE-LICENSES
+
+# Install rendering-job package
+WORKDIR /deepsearch-rendering-job
+COPY pyproject.toml README.md ./
+COPY deepsearch_rendering_job ./deepsearch_rendering_job/
+RUN python -m pip install --no-cache-dir .
+
+# Install graph-builder package (from named build context)
+WORKDIR /graph-builder-src
+COPY --from=graph-builder graph_builder ./graph_builder/
+COPY --from=graph-builder pyproject.toml ./
+RUN python -m pip install --no-cache-dir .
+
+COPY data/startup.sh /startup.sh
+COPY data/entrypoint.sh /entrypoint.sh
+COPY data/usd /data/usd
+
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]

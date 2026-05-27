@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# VLM Plugin Workers — optional overlay for vision-language model metadata generation.
+#
+# Adds workers that call external VLM APIs (OpenAI, NIM, Anthropic, etc.) to
+# generate rich metadata (descriptions, tags) from images/thumbnails/renderings.
+#
+# No local GPU required — VLM inference happens on the remote API.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.vlm-plugins.yml up
+#
+# With GPU rendering (for rendering_to_vision_metadata):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml -f docker-compose.vlm-plugins.yml up
+#
+# Required environment variables (set in .env or shell):
+#   METADATA_GENERATION_VLM_SERVICE  — provider name. Supported values match
+#   `vision_endpoint.vlm.base_vlm.VLMService`:
+#     "inference_hub" (default), "openai", "anthropic", "nim", "azure_openai",
+#     "google", "qwen", "qwen_alibaba", "mistralai"
+#   Plus the provider-specific API key. The convention is
+#   `<PROVIDER_UPPERCASED>_API_KEY`, e.g.:
+#     INFERENCE_HUB_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, NIM_API_KEY,
+#     AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, QWEN_API_KEY,
+#     QWEN_ALIBABA_API_KEY, MISTRALAI_API_KEY
+#   Optional `inference_hub` overrides: INFERENCE_HUB_MODEL,
+#   INFERENCE_HUB_BASE_URL.
+
+# Provider API keys — null-pass-through (`KEY:` with no value): forwards the
+# var from the host if set, omits it from the container otherwise. Shared by
+# the metadata workers (read via vision-endpoint's `<provider>_` env_prefix)
+# and by `deepsearch-api`'s VLM validation path (same provider configs).
+# Only the key matching the active VLM service is read at runtime.
+x-vlm-provider-env: &vlm-provider-env
+  INFERENCE_HUB_API_KEY:
+  INFERENCE_HUB_MODEL:
+  INFERENCE_HUB_BASE_URL:
+  OPENAI_API_KEY:
+  ANTHROPIC_API_KEY:
+  NIM_API_KEY:
+  AZURE_OPENAI_API_KEY:
+  GOOGLE_API_KEY:
+  QWEN_API_KEY:
+  QWEN_ALIBABA_API_KEY:
+  MISTRALAI_API_KEY:
+
+x-vlm-worker-env: &vlm-worker-env
+  # Storage backend — overridable from the host shell (kept in sync with the
+  # main compose's x-common-env so /quickstart settings reach VLM workers too).
+  STORAGE_BACKEND_TYPE: ${STORAGE_BACKEND_TYPE:-s3}
+  S3_STORAGE_BUCKET_NAME: ${S3_STORAGE_BUCKET_NAME:-omniverse-content-production}
+  S3_STORAGE_REGION_NAME: ${S3_STORAGE_REGION_NAME:-us-west-2}
+  # Null-pass-through for storage credentials — see the comment on
+  # x-vlm-provider-env above. Required for anonymous public-bucket access:
+  # pydantic-settings reads an empty-string env var as `""` (not `None`),
+  # which prevents the S3 client from registering `disable_signing`.
+  S3_STORAGE_AWS_ACCESS_KEY_ID:
+  S3_STORAGE_AWS_SECRET_ACCESS_KEY:
+  S3_STORAGE_AWS_ENDPOINT_URL:
+  OV_SERVER:
+  OV_USERNAME:
+  OV_PASSWORD:
+  LOGGING_CONFIG: /logging.yml
+  PYTHONUNBUFFERED: "1"
+  REDIS_URL: redis://redis:6379
+  OTEL_SDK_DISABLED: "true"
+  METADATA_GENERATION_VLM_SERVICE: ${METADATA_GENERATION_VLM_SERVICE:-openai}
+  <<: *vlm-provider-env
+
+services:
+  # ─── DeepSearch API: enable VLM validation ──────────────────────────────
+  # Flips the base compose's `VLM_VALIDATION_ENABLED: "false"` and supplies
+  # the same provider keys + service the metadata workers use, so the
+  # `/vlm_validate/...` endpoints can call out to the VLM. The validation
+  # config (`services/deepsearch_api/.../validation/config.py`) reads the
+  # `VLM_VALIDATION_*` env vars below; pinning VLM_VALIDATION_VLM_SERVICE
+  # to METADATA_GENERATION_VLM_SERVICE keeps validation aligned with whatever
+  # provider the workers were started with.
+  deepsearch-api:
+    environment:
+      <<: *vlm-provider-env
+      VLM_VALIDATION_ENABLED: "true"
+      VLM_VALIDATION_VLM_SERVICE: ${METADATA_GENERATION_VLM_SERVICE:-openai}
+      VLM_VALIDATION_MAX_CONCURRENT: ${VLM_VALIDATION_MAX_CONCURRENT:-30}
+
+  # ─── VLM Metadata Workers (CPU-only, call remote VLM APIs) ───────────────
+
+  monitor-worker-image-to-vision-metadata:
+    image: usdsearch:latest
+    container_name: usdsearch-worker-img2meta
+    restart: unless-stopped
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=image_to_vision_metadata"]
+    environment:
+      <<: *vlm-worker-env
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: image_to_vision_metadata
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  monitor-worker-thumbnail-to-vision-metadata:
+    image: usdsearch:latest
+    container_name: usdsearch-worker-thumb2meta
+    restart: unless-stopped
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=thumbnail_to_vision_metadata"]
+    environment:
+      <<: *vlm-worker-env
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: thumbnail_to_vision_metadata
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # NOTE: rendering_to_vision_metadata requires both the rendering service (from
+  # docker-compose.gpu-plugins.yml) AND a VLM API. Only include this overlay
+  # together with gpu-plugins if you need this worker.
+  monitor-worker-rendering-to-vision-metadata:
+    image: usdsearch:latest
+    container_name: usdsearch-worker-rend2meta
+    restart: unless-stopped
+    command: ["python", "-m", "monitor.src.monitor_worker", "--plugin_name=rendering_to_vision_metadata"]
+    environment:
+      <<: *vlm-worker-env
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_PLUGIN_NAME: rendering_to_vision_metadata
+      DEEPSEARCH_MONITOR_WORKER_CONFIG_JOB_ITEM_TYPE: '["priority","normal","none"]'
+      DEEPSEARCH_RENDERER_CONFIG_RENDERER_TYPE: rendering_service
+      DEEPSEARCH_RENDERER_CONFIG_RENDERING_SERVICE_URL: http://rendering-job:8000
+    depends_on:
+      redis:
+        condition: service_healthy

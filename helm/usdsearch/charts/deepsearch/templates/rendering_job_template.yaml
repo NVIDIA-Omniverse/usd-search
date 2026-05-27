@@ -1,0 +1,240 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "deepsearch.fullname" . -}}
+{{- $k8sRendererDockerImage := include "deepsearch.k8sRendererDockerImage" . -}}
+{{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
+{{- $values := .Values -}}
+{{- $renderingJobLabels := include "deepsearch.renderingJobLabels" . -}}
+{{- $podLabels := include "deepsearch.labels" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $listerJobServiceAccountName := include "deepsearch.listerJobServiceAccountName" . }}
+{{- $serviceAccountName := include "deepsearch.serviceAccountName" . }}
+
+
+{{- if .Values.microservices.k8s_renderer.enabled }}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-rendering-job-template
+  labels:
+    {{- include "deepsearch.labels" . | nindent 4 }}
+data:
+  rendering_job_labels: |
+    {{- $renderingJobLabels | nindent 4 }}
+  rendering_job_template: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata: 
+      name: {{ $fullName }}-rendering-job
+      labels: 
+        {{- $renderingJobLabels | nindent 8 }}
+    spec: 
+      ttlSecondsAfterFinished: {{ .Values.microservices.k8s_renderer.ttlSecondsAfterFinished | default 3600 }}
+      activeDeadlineSeconds: {{ .Values.microservices.k8s_renderer.activeDeadlineSeconds | default 3600 }}
+      template:
+        metadata:
+          annotations:
+            {{- toYaml .Values.microservices.k8s_renderer.render_job_pod_annotations | nindent 14 }}
+          labels:
+            {{- $podLabels | nindent 12 }}
+        spec:
+          tolerations:
+          {{- toYaml .Values.microservices.k8s_renderer.tolerations | nindent 12 }}
+          {{- with .Values.microservices.k8s_renderer.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $globalImagePullSecrets | nindent 10 }}
+          serviceAccountName: {{ $listerJobServiceAccountName }}
+          volumes: 
+            - name: general-cache
+              emptyDir:
+                medium: Memory
+            - name: cache
+              {{- with .Values.persistence }}
+                {{- if eq .type "pvc" }}
+              persistentVolumeClaim:
+                {{- if .persistentVolumeClaim }}
+                {{- toYaml .persistentVolumeClaim | nindent 16 }}
+                {{- else}}
+                claimName: {{ $fullName }}-cache
+                {{- end }}
+                {{- else if eq .type "emptyDir" }}
+              emptyDir:
+                {{- toYaml .emptyDir | nindent 16 }}
+                {{- else if eq .type "hostPath" }}
+              hostPath:
+                {{- toYaml .hostPath | nindent 16 }}
+                {{- end }}
+              {{- end }}
+          containers:
+            - name: deepsearch-renderer
+              securityContext:
+                {{- toYaml .Values.microservices.k8s_renderer.securityContext | nindent 16 }}
+              image: {{ $k8sRendererDockerImage }}
+              resources:
+                {{- toYaml .Values.microservices.k8s_renderer.resources | nindent 16 }}
+              env: 
+              - name: PYTHONUNBUFFERED
+                value: "1"
+              - name: KIT_WORKER_SETTINGS_N_WORKERS
+                value: {{ .Values.microservices.k8s_renderer.n_parallel_kit_workers | quote }}
+              - name: KIT_WORKER_SETTINGS_BATCH_SIZE
+                value: {{ .Values.microservices.k8s_renderer.n_assets_per_worker | quote }}
+              {{- if .Values.microservices.k8s_renderer.hssc.enabled }}
+              - name: RENDERING_SERVICE_SETTINGS_HSSC_URI
+                value: {{ required "deepsearch.microservices.k8s_renderer.hssc.uri is required when deepsearch.microservices.k8s_renderer.hssc.enabled is true" .Values.microservices.k8s_renderer.hssc.uri | quote }}
+              - name: RENDERING_SERVICE_SETTINGS_ENABLE_SHADER_CACHE_WRAPPER
+                value: {{ .Values.microservices.k8s_renderer.hssc.enable_shader_cache_wrapper | quote }}
+              {{- end }}
+              - name: LOAD_ASSET_AS_REFERENCE
+                value: {{ .Values.microservices.k8s_renderer.load_asset_as_reference | quote }}
+              {{- with .Values.microservices.k8s_renderer.env }}
+              {{- toYaml . | nindent 14 }}
+              {{- end }}
+              volumeMounts: 
+                - mountPath: /cache/shaders
+                  name: cache
+                  subPath: shaders
+          initContainers:
+          {{- if .Values.microservices.k8s_renderer.persistence.initVolumePermissions }}
+            - name: permissions
+              image: {{ $k8sRendererDockerImage }}
+              securityContext:
+                runAsUser: 0
+              {{- with $values.microservices.k8s_renderer.securityContext }}
+              command: 
+                - sh
+                - -c
+                - chown -R {{ .fsGroup }}:{{ .runAsUser }} /cache
+              {{- end }}
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 50Mi
+              volumeMounts:
+                - mountPath: /cache/shaders
+                  name: cache
+                  subPath: shaders
+          {{- end }}
+          {{- if .Values.microservices.k8s_renderer.maxRenderingJobsCount }}
+            - name: check-max-rendering-jobs
+              image: {{ $monitorDockerImage }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              command:
+              - python
+              - -c
+              - |
+                from kubernetes_asyncio import client, config
+                from kubernetes_asyncio.client.api_client import ApiClient
+                import yaml, os
+                import asyncio
+                import time
+
+                max_parallel_jobs = int(os.getenv('PARALLEL_LIMIT'))
+                if max_parallel_jobs <= 0:
+                  raise ValueError(f"Maximum number of parallel rendering jobs has to be above 0 {max_parallel_jobs}")
+
+                job_labels = os.getenv("K8S_RENDER_JOB_LABELS")
+                job_labels = yaml.load(job_labels, Loader=yaml.FullLoader)
+                job_labels = ",".join([f"{k}={v}" for k, v in job_labels.items()])
+
+                # get namespace
+                ns_path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+                namespace = "default"
+                if os.path.exists(ns_path):
+                  with open(ns_path, "r", encoding="utf-8") as f:
+                    namespace = f.read().strip()
+
+                async def check_parallel_jobs():
+                  while True:
+                    # Load kube config asynchronously
+                    config.load_incluster_config()
+                    
+                    # Create API client
+                    async with ApiClient() as k8s_api:
+                      v1_batch = client.BatchV1Api(k8s_api)
+                      jobs = await v1_batch.list_namespaced_job(
+                        namespace=namespace,
+                        label_selector=job_labels
+                      )
+                    
+                    running_jobs = 0
+                    for job in jobs.items:
+                      if job.status.active:
+                        running_jobs += 1
+
+                    if running_jobs > max_parallel_jobs:
+                      print(f"Creation of Rendering job is not allowed. Current: {running_jobs} [limit: {max_parallel_jobs}]")
+                      time.sleep(2)
+                    else:
+                      print(f"Number of parallel rendering jobs are within the limit. Current: {running_jobs} [limit: {max_parallel_jobs}]")
+                      break
+
+                asyncio.run(check_parallel_jobs())
+
+              resources:
+                limits:
+                  cpu: "0.5"
+                  memory: 512Mi
+              env:
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+                - name: PARALLEL_LIMIT 
+                  value: {{ .Values.microservices.k8s_renderer.maxRenderingJobsCount | quote }}
+                - name: K8S_RENDER_JOB_LABELS
+                  valueFrom:
+                    configMapKeyRef:
+                      name: {{ $fullName }}-rendering-job-template
+                      key: rendering_job_labels
+          {{- end }}
+          {{- if .Values.microservices.k8s_renderer.checkStorageBackendAccess }}
+            - name: connection-check
+              image: {{ $monitorDockerImage }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              command:
+              - python
+              - -c
+              - |
+                from search_utils.storage_client import get_client, StorageClient
+                from search_utils.storage_client.config import StorageConfig
+                import asyncio
+
+                async def task():
+                    client: StorageClient
+                    async with get_client(client_type=StorageConfig().storage_backend_type).connection_context() as client:
+                        assert await client.check_connection()
+
+                asyncio.run(task())
+              env:
+                - name: STORAGE_BACKEND_TYPE 
+                  value: "{{ .Values.global.storage_backend_type }}"
+                {{- if eq .Values.global.storage_backend_type "nucleus" }}
+                {{- include "deepsearch-global.nucleusComplete" . | nindent 16 }}
+                {{- else if eq .Values.global.storage_backend_type "s3" }}
+                {{- include "deepsearch-global.s3Complete" . | nindent 16 }}
+                {{- else if eq .Values.global.storage_backend_type "azure" }}
+                {{- include "deepsearch-global.azureComplete" . | nindent 16 }}
+                {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+                {{- include "deepsearch-global.storageApiComplete" . | nindent 16 }}
+                {{- end}}
+              {{- end }}
+          restartPolicy: "Never"
+      backoffLimit: 0
+{{- end }}

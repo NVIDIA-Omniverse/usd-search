@@ -1,0 +1,168 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "ngsearch.fullname" . -}}
+{{- $serviceName := "tag-crawler" -}}
+{{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
+{{- $dockerImage := include "ngsearch.ngsearchDockerImage" . -}}
+{{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
+{{- $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $chartVersion := .Chart.Version -}}
+
+{{- if not .Values.global.maintenance_mode }}
+
+{{- if ne .Values.global.storage_backend_type "s3" }}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullServiceName }}
+  labels:
+    release_name: {{ $releaseName }}
+    component: "ngsearch"
+    version: {{ $chartVersion }}
+    {{- include "ngsearch.MainDeploymentlabels" . | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}
+spec:
+  replicas: {{ .Values.microservices.tagcrawler.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ngsearch.MainDeploymentSelectorlabels" . | nindent 6 }}
+      ngsearch.service.name: {{ $serviceName }}
+  template:
+    metadata:
+      annotations:
+        checksum/env-config-map: {{ include (print $.Template.BasePath "/env_config_map.yaml") . | sha256sum }}
+        checksum/storage-backend-config: {{ include (print $.Template.BasePath "/storage_backend_config.yaml") . | sha256sum }}
+        checksum/logging-config: {{ include (print $.Template.BasePath "/logging_config_map.yaml") . | sha256sum }}
+        {{- with .Values.microservices.tagcrawler.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        release_name: {{ $releaseName }}
+        component: "ngsearch"
+        version: {{ $chartVersion }}
+        {{- include "ngsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
+        ngsearch.service.name: {{ $serviceName }}
+    spec:
+      {{- $globalImagePullSecrets | nindent 6 }}
+      # hostname: {{ $fullName }}
+      subdomain: {{ $fullName }}-subdomain
+      serviceAccountName: {{ include "ngsearch.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      dnsConfig:
+        searches:
+          {{- range .Values.global.dnsConfig.searches }}
+          - {{ . }}
+          {{- end }}
+      volumes:
+      - name: logging-config
+        configMap:
+          name: {{ $fullName }}-logging
+          items:
+            - key: logging.yaml
+              path: logging.yaml
+      containers:
+        - name: tag-crawler
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          command:
+          - python
+          - -m
+          - crawlers.src.tag_crawler
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          ports:
+          - name: metrics
+            containerPort: 8002
+            protocol: TCP
+          resources:
+            {{- toYaml .Values.microservices.tagcrawler.resources | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          env:
+            - name: LOGGING_CONFIG
+              value: /logging.yaml
+            - name: OV_INSTANCE
+              value: {{ $fullName }}
+            {{- if .Values.microservices.tagcrawler.autoclaim_n_retries }}
+            - name: REDIS_STREAM_AUTOCLAIM_N_RETRIES
+              value: {{ .Values.microservices.tagcrawler.autoclaim_n_retries | quote }}
+            {{- end }}
+            - name: PROM_METRICS_PORT
+              value: "8002"
+          {{- if eq .Values.global.storage_backend_type "nucleus" }}
+            {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "s3" }}
+            {{- include "deepsearch-global.s3Complete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "azure" }}
+            {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
+          {{- else if eq .Values.global.storage_backend_type "storage_api" }}
+            {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+          {{- end}}
+            {{- include "deepsearch-global.searchBackendComplete" . | nindent 12 }}
+            - name: USER_AGENT
+              value: "NGSearch.TagCrawler/{{ .Values.image.tag }}"
+            - name: ASSETDB_PATH
+              value: /data
+            - name: TAG_PROBE_TIMEOUT
+              value: "3600"
+          volumeMounts:
+          - mountPath: /logging.yaml
+            name: logging-config
+            subPath: logging.yaml
+      {{- if .Values.microservices.tagcrawler.enableLivenessChecks }}
+      initContainers:
+        - name: redis-liveness-check
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $dockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command:
+          - python
+          - -m
+          - search_utils.redis.wait_ready
+          envFrom:
+            - configMapRef:
+                name: {{ $fullName }}-env-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+        {{- include "deepsearch-global.searchBackendCheck" (dict "ctx" . "image" $dockerImage "fullName" $fullName) | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    {{- with (.Values.microservices.tagcrawler.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+
+{{- end }}
+
+{{- end }}

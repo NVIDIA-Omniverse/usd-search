@@ -1,0 +1,984 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Default values for inference.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# # ----------------------------------------------------
+# # ------- MAIN parameters to set-up ------------------
+
+################################################################################
+## Indexing configuration parameters
+################################################################################
+
+# It is possible to override the global exclude_patterns setting for DeepSearch 
+# service specifically. In order to do so please update the following variable. 
+# The syntax of this variable should follow the same pattern as in exclude_patterns:
+# 
+# exclude_patterns:
+# - <regex 1>
+# - <regex 2>
+#
+# Here regex 1 and regex 2 are some regular expressions that can be found in 
+# a file path. For example the following value:
+# 
+# exclude_patterns:
+# - /.thumbs/
+# - .__omni_channel__
+#
+# will filter out all items that are within ".thumbs" folders and all those 
+# assets that contain "__omni_channel__" in the file path
+
+# --
+# @raw
+#
+# Vision endpoint configuration settings. 
+#
+# The following types of services are currently supported:
+#   * azure_openai
+#   * openai
+#   * anthropic
+#   * mistralai
+#   * google
+#   * nim
+#   * qwen
+#   * inference_hub
+#
+vision_endpoint:
+  vlm_service: ""
+  azure_openai:
+    api_key_secret_name: "azure-openai-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "AZURE_OPENAI_"
+    parameters:
+      model: gpt-4o-20241120
+      api_version: 2025-03-01-preview
+      azure_endpoint: "https://llm-proxy.perflab.nvidia.com"
+      max_tokens: 2048
+      temperature: 0
+      azure_deployment: gpt-4o-20241120
+  openai:
+    api_key_secret_name: "openai-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "OPENAI_"
+    parameters:
+      model: "gpt-4o"
+      max_tokens: 2048
+      temperature: 0
+      base_url: 
+  anthropic:
+    api_key_secret_name: "anthropic-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "ANTHROPIC_"
+    parameters:
+      model: "claude-3-5-sonnet-latest"
+      max_tokens: 2048
+      temperature: 0
+  mistralai:
+    api_key_secret_name: "mistralai-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "MISTRALAI_"
+    parameters:
+      model: pixtral-large-latest
+      max_tokens: 1024
+      temperature: 0
+  google:
+    api_key_secret_name: "google-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "GOOGLE_"
+    parameters:
+      model: gemini-2.5-pro
+      max_tokens: 2048
+      temperature: 0
+  nim:
+    api_key_secret_name: "nim-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "NIM_"
+    parameters:
+      model: "meta/llama-4-maverick-17b-128e-instruct"
+      max_tokens: 2048
+      temperature: 0
+  qwen:
+    api_key_secret_name: "qwen-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "QWEN_"
+    parameters:
+      model: "qwen3-vl-235b-a22b-instruct"
+      max_tokens: 2048
+      temperature: 0
+  inference_hub:
+    api_key_secret_name: "inference-hub-vlm-api-key-secret"
+    api_key_secret_field: "api-key"
+    api_key: ""
+    env_prefix: "INFERENCE_HUB_"
+    parameters:
+      model: "azure/openai/gpt-5.1"
+      max_tokens: 2048
+      temperature: 0
+      
+  #
+  # Configuration of metadata fields extracted by the VLM-based auto-captioning system
+  #
+  metadata_fields:
+
+  - name: caption
+    description: a brief, descriptive title or caption for the object. The caption should be concise and informative, providing a general overview of the object's appearance, function, or significance. It should be written in clear, accessible language that is easy for users to understand and should accurately reflect the content and context of the object.
+    type: str
+
+  - name: queries
+    description: a list of potential search terms or phrases that someone could use to find this object using a text-based search engine. The terms should describe the object accurately, considering aspects such as its shape, material, style, color, and any distinctive features that might help in identifying it. All values should be returned comma-separated.
+    type: list[str]
+
+  - name: tags
+    description: a list of tags, keywords, and relevant phrases that accurately describe the object and would make it searchable using text. Consider aspects such as the object's form, material, color, function, style, and any notable or unique features that could help in identifying or categorizing the object for search purposes.
+    type: list[str]
+
+  - name: scene_type
+    description: a list of scene types that the object could be found in. Consider the context in which the object is typically used or displayed, such as a living room, kitchen, office, or outdoor setting.
+    type: list[str]
+
+  - name: colors
+    description: a list of colors that are present in the object. Consider the primary colors, secondary colors, and any other hues or shades that are visible in the object.
+    type: list[str]
+
+  - name: materials
+    description: a list of materials that the object is made of or composed of. Consider the primary materials, secondary materials, and any other substances or components that are used in the construction or fabrication of the object.
+    type: list[str]
+
+  - name: grayscale
+    description: a boolean value indicating whether the object is grayscale or monochromatic in appearance. If the object is primarily black, white, or shades of gray, set this value to true; otherwise, set it to false.
+    type: bool
+
+  - name: broken_textures
+    description: a boolean value indicating whether the object has broken or missing textures that affect its appearance or quality. If the object displays unnatural red coloration or other visual artifacts that suggest texture issues, set this value to true; otherwise, set it to false.
+    type: bool
+
+  - name: good_quality
+    description: a boolean value indicating whether the object is of good quality and suitable for use in a variety of applications. If the object is reasonably well-crafted, detailed, and visually appealing, set this value to true; otherwise, set it to false.
+    type: bool
+
+  - name: geometric_shape
+    description: a boolean value indicating whether the object is a simple geometric shape or blob with no distinctive features or characteristics. If the object lacks complexity, detail, or visual interest, set this value to true; otherwise, set it to false.
+    type: bool
+
+  - name: photorealistic
+    description: a boolean value indicating whether the object is photorealistic in appearance, meaning that it closely resembles a real-world object or scene. If the object is highly detailed, textured, and realistic in its depiction, set this value to true; otherwise, set it to false.
+    type: bool
+
+  #
+  # Image prompt provided to the VLM-based auto-captioning system
+  #
+  image_prompt: |
+    Write a detailed analysis of the provided image of a 3D object or a scene.
+    Your analysis should focus on identifying key features, textures, colors, and any other notable characteristics visible from the images. 
+
+    Based on your analysis, generate a JSON object that encapsulates the metadata about the 3D object.
+    This metadata should include searchable terms and keywords that accurately describe the object's visual aspects, such as shape, color, texture, and any unique features.
+    Additionally, craft a concise caption that summarizes the object's appearance and distinctive attributes.
+
+    Ensure that the JSON object is structured in a way that facilitates its inclusion in a searchable index, making the 3D object easily discoverable based on its visual characteristics.
+    The metadata should be comprehensive yet succinct, enabling efficient search and retrieval in a database or search engine context.
+
+    The JSON output should follow this structure:
+    {metadata_types}
+
+    with these field definitions:
+    {metadata_definitions}
+
+    Your analysis must strive to be as precise and comprehensive as possible, using only the visual information available in the provided thumbnails.
+    Assume the role of an intelligent vision system tasked with generating actionable metadata for cataloging or identification purposes.
+
+thumbnail_settings:
+  relative_location: ".thumbs"
+  suffixes:
+    - ""
+    - ".auto"
+  filepath_patterns: 
+
+microservices:
+  # set-up monitor service that scans omniverse in the background
+  monitor:
+    # By default the monitor / info-endpoint / plugin-worker pods all run the
+    # unified `usdsearch` image (see `global.image.usdsearch`). Override
+    # `name`/`tag` here to pin a different image for these pods only.
+    image:
+      name: ""
+      tag: ""
+
+    resources:
+      requests:
+        cpu: 1
+        memory: 2Gi
+      limits:
+        # NOTE: here 2 CPUs are: 1 for the main python loop and the other one for prometheus metrics exporter
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed
+        memory: 2Gi
+
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    enableLivenessChecks: true
+
+    # Additional pod annotations for the monitor service
+    extraPodAnnotations: {}
+
+  monitor_cron:
+    replicas: 1
+
+  monitor_crawler_cron:
+    resources:
+      requests:
+        cpu: 1
+        memory: 2Gi
+      limits:
+        # NOTE: here 2 CPUs are: 1 for the main python loop and the other one for prometheus metrics exporter
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed
+        memory: 2Gi
+
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    #  * NGSearch storage service
+    enableLivenessChecks: true
+
+  # configuration for the rendering service
+  rendering_service:
+    enabled: false
+    authentication:
+      enabled: false
+      api_key: 
+      api_key_secret_name: rendering-service-api-key-secret
+      api_key_secret_field: api-key
+    settings:
+      rendering_service_url: 
+      endpoint: /usdsearch/render
+      health_check_endpoint: /health
+      force_render: True
+      enable_caching: False
+      extra_headers: 
+        NVCF-POLL-SECONDS: "600"
+      maximum_parallel_requests: 10
+
+  # configuration for the k8s renderer Job
+  k8s_renderer:
+    enabled: true
+    # By default the renderer Job runs the unified `rendering-job` (Kit) image
+    # (see `global.image.rendering_job`). Override here to pin a different
+    # image for the renderer only.
+    image:
+      name: ""
+      tag: ""
+
+    # verify k8s ssl certificates
+    verify_k8s_ssl_cert: true
+        
+    # additional environment variables
+    env:
+
+    # It is possible to increase the number of parallel Kit workers that would process 
+    # assets on a single GPU
+    n_parallel_kit_workers: 1
+    
+    # It is possible to specify the number of assets that are processed by a Kit worker,
+    # before it is being re-created.
+    #
+    # Setting this parameter to a negative value will make all items to be processed by
+    # a single Kit worker
+    n_assets_per_worker: 1
+
+    # -- (bool)
+    # @raw
+    #
+    # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
+    load_asset_as_reference: true
+
+    # amount of time pod is kept after completion
+    ttlSecondsAfterFinished: 3600
+    # deadline for execution (default 2 hours)
+    activeDeadlineSeconds: 7200
+
+    render_job_pod_annotations: {}
+
+    tolerations:
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+
+    resources: {}
+
+    persistence:
+      initVolumePermissions: false
+
+    # verify that storage backend is accessible by the rendering job
+    # This should prevent Kit instances from being created in case storage 
+    # backend is inaccessible
+    checkStorageBackendAccess: true
+
+    # Maximum number of parallel rendering jobs that are created. If this 
+    # parameter is unset - then no limit on the number of parallel Kit jobs is 
+    # applied and all available resources will be used.
+    maxRenderingJobsCount: 
+
+    securityContext:
+      fsGroup: 1000
+      runAsUser: 1000
+      runAsNonRoot: true
+
+  plugin_worker:
+    sentry_dsn: ""
+    settings:
+      # Number of concurrent workers that are getting new plugin jobs from cache 
+      # and sending them for processing
+      n_concurrent_queue_workers: 1
+      
+    rendering_settings:
+      # rendering type can be either k8s or rendering_service
+      renderer_type: k8s
+      # Number of samples packages in a batch before the rendering request 
+      # is sent for rendering:
+      #   > setting this parameter too small may result in time being lost on 
+      #     job initialization
+      #   > setting this parameter too big may result in too many rendering 
+      #     requests sent to a single job, while other jobs remain idle
+      client_batch_size: 16
+
+      # Maximum number of seconds to wait before sending a batch of rendering 
+      # requests to a single job.
+      client_batch_timeout: 30
+
+      # Maximum number of pending rendering jobs that are allowed before a new 
+      # one is created. If the value of this parameter is set below 0 - this 
+      # setting is ignored. 
+      # 
+      # By default the number of pending jobs is set to 0, so that cluster 
+      #is not flooded with too many pending rendering jobs. 
+      pending_job_limit: 0
+
+      # Number of seconds to wait when to retry when rendering service is busy
+      #
+      # **NOTE**: only applicable when ``rendering_type`` is ``rendering_service``
+      retry_timeout_on_busy: 10
+
+    # -- (map)
+    # @raw
+    #
+    # Dictionary of worker configurations, keyed by worker name. Each entry defines a dedicated worker deployment that processes plugin jobs. At least one entry is required for plugin workers to be scheduled.
+    #
+    # Each worker supports the following optional fields:
+    #
+    # - ``group`` *(string)* — group name assigned to this worker. Jobs submitted with a matching group name will only be routed to workers in that group.
+    # - ``job_type`` *(list of strings)* — list of job item types this worker will process. If omitted, the worker processes all job types.
+    # - ``pending_job_limit`` *(int)* — maximum number of pending rendering jobs allowed before a new rendering job is created for this worker. Overrides ``rendering_settings.pending_job_limit`` for this worker.
+    # - ``retry_timeout_on_busy`` *(int)* — seconds to wait before retrying when the rendering service is busy. Overrides ``rendering_settings.retry_timeout_on_busy`` for this worker.
+    #
+    # @notationType -- yaml
+    worker_config:
+      bg: {}
+      priority:
+        group: priority-group
+        pending_job_limit: 5
+        retry_timeout_on_busy: 2
+        job_type:
+        - priority
+
+    service:
+      port: 8765
+      schema: ws
+      type: ClusterIP
+      # ------------------------------------------
+      #  NodePort configuration example
+      # ------------------------------------------
+      # type: nodeport
+      # nodeport: 30507
+      # ------------------------------------------
+      #  Ingress service configuration example
+      # ------------------------------------------
+      # type: ingress
+      # host: <my ingress host name>
+      # path: "/"
+      # ------------------------------------------
+      #  Load Balancer service configuration example
+      #  IMPORTANT: Selected Load Balancer type must support WebSockets.
+      #    For example in the case of an AWS deployment "NLB" loadbalancer 
+      #    type would be a suitable option, while "ELB" loadbalancer type 
+      #    will not work. 
+      # ------------------------------------------
+      #     type: loadbalancer
+      # ------------------------------------------
+      #  Additional service annotations
+      #    * could be useful when setting type loadbalancer
+      #    * when non provided - default service annotations defined in ``service.annotations`` will be used 
+      # ------------------------------------------
+      #       annotations:
+      #         service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      # ------------------------------------------
+      # It is possible to provide an external endpoint URL with the provided values.
+      # This could be useful if there is an alias pointing to the internal WS URL. 
+      # ------------------------------------------
+      endpoint_override:
+        enabled: false
+        # host: ""
+        # port: ""
+        # schema: "ws"
+        
+
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+
+    # Configuration of the temporary directory for the service. By default it is
+    # set to use Memory medium
+    tmpDir:
+      emptyDir: {}
+    
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    #  * embedding inference service
+    enableLivenessChecks: true
+
+    # default resources for liveness check containers
+    liveness_checks:
+      resources:
+        requests:
+          cpu: 200m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+
+    # metrics
+    metrics:
+      port: 8011
+
+  # Service that writes processed data to the Search backend
+  omni_writer:
+    # number of replicas
+    replicas: 1
+    # resources for a single replica
+    resources:
+      requests:
+        cpu: 1
+        memory: 2Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+    settings:
+      n_concurrent_queue_workers: 2
+    hpa:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 5
+
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    #  * NGSearch storage service
+    enableLivenessChecks: true
+
+  info_endpoint:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 2Gi
+      limits:
+        # NOTE: here 2 CPUs are: 1 for the main python loop and the other one for prometheus metrics exporter
+        cpu: 1
+        # NOTE: this limit is set quite large by default, adjust it based on the 
+        #  Nucleus Server size the memory usage of the service starts to grow, 
+        #  when updates from the Nucleus server arrive faster than they are 
+        #  being processed
+        memory: 4Gi
+    
+    service:
+      type: ClusterIP
+# ------------------------------------------
+#  NodePort configuration example
+# ------------------------------------------
+      # type: nodeport
+      # nodeport: 30550
+# ------------------------------------------
+#  Ingress service configuration example
+# ------------------------------------------
+      # type: ingress
+      # host: <my ingress host name>
+      # path: "/"
+
+    # Enable liveness check before container start-up. This liveness checks verifies that
+    # all resources that microservice depends on a ready before initialization. These 
+    # resources include:
+    #  * Redis
+    enableLivenessChecks: true
+
+  # service for inference functionality
+  embedding:
+    replicas: 1
+    deployment_strategy: RollingUpdate
+    # By default the embedding pod runs the unified `siglip2-triton` image
+    # (see `global.image.siglip2_triton`). Override here to pin a different
+    # image for the embedding service only.
+    image:
+      name: ""
+      tag: ""
+    service:
+      inference:
+        type: ClusterIP
+
+    triton_server: 
+      livenessProbe:
+        httpGet:
+          path: /v2/health/live
+      readinessProbe:
+        httpGet:
+          path: /v2/health/ready
+      presistence:
+        enabled: False
+    
+    # affinity and tolerations specifically for the embedding service
+    affinity: {}
+    tolerations: []
+
+    # ------------------------------------------
+    #  Additional service annotations
+    #    * could be useful when setting type loadbalancer
+    #    * when non provided - default service annotations defined in ``service.annotations`` will be used 
+    # ------------------------------------------
+    #         annotations:
+    #           service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+
+    # Note: The embedding service requires ~3.5GB of RAM per worker. Set this parameter
+    # according to available resources and expected load.
+
+    default_workers_per_model: 2
+    resources:
+      requests:
+        cpu: 2
+        memory: 7Gi
+        nvidia.com/gpu: 1
+      limits:
+        cpu: 4
+        memory: 15Gi
+        nvidia.com/gpu: 1
+
+    # Configuration of the temporary directory for the service. By default it is
+    # set to use Memory medium
+    tmpDir:
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi
+
+
+    # if you have a GPU available on the Kubernetes cluster and you would like
+    # embedding service to use it uncomment the following
+    #
+    #   requests: {nvidia.com/gpu: 1},
+    #   limits: {nvidia.com/gpu: 1}
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 10
+      averageCPUUtilization: 50
+
+    # Pod security context configuration for the embedding service
+    securityContext:
+      # fsGroup: 1001
+      runAsUser: 1001
+      runAsNonRoot: true
+      readOnlyRootFilesystem: true
+
+  # metrics ports for the DeepSearch deployment
+  metrics:
+    omni_writer: 8013
+    monitor_crawler: 8014
+
+
+#
+# Configuration of Redis the following Redis streams:
+#   * Farm Job stream - stores plugin processing requests that require rendering
+#   * Non Farm Job stream - stores plugin processing requests that do not require rendering
+#   * Results stream - stores plugin processing results
+#
+# The parameters below regulate the number of retries for a given asset and 
+# timeouts of when the processing for the asset is considered to be failed and 
+# it needs to be re-claimed from the stream by a different worker.
+#
+cache_settings:
+  farm_job_autoclaim_min_idle_time: "10800000"  # 3 hours (in milliseconds)
+  non_farm_job_autoclaim_min_idle_time: "10800000" # 3 hours (in milliseconds)
+  results_autoclaim_min_idle_time: "300000" # 5 minutes (in milliseconds)
+  job_autoclaim_n_retries: "5"
+
+imagePullPolicy: IfNotPresent
+nameOverride: ""
+fullnameOverride: ""
+
+# override omni config
+OVERRIDE_CONFIG: false
+
+# create omniverse service user
+CREATE_SERVICE_USER: false
+
+# environment variables
+env: 
+  # You can provide additional environment variables as follows
+  #  - name: 'VARIABLE NAME'
+  #    value: 'VARIABLE VALUE'
+
+################################################################################
+## Plugin configuration
+################################################################################
+
+# USD Search API service is built as a collection of plugins, each of which does a
+# specific job. These plugins can be optionally activated and deactivated by
+# modifying the following configuration and setting the ``active`` parameter of 
+# specific plugins to ``false``:
+
+
+plugins:
+
+    # -- (map)
+    # @raw
+    #
+    # Construction of a scene graph for a given USD asset 
+    #
+    # @notationType -- yaml
+    asset_graph_generation:
+      preview_name: ags
+      type: asset_graph_generation
+      active: True
+      requires_embedding_service: False
+      requires_ags_service: True
+      requires_rendering: False
+      vision_endpoint: {}
+
+      # resource overrides
+      resources:
+        requests:
+          cpu: 1
+          memory: 3Gi
+        limits:
+          cpu: 1
+          memory: 3Gi
+
+
+      sidecar_containers:
+      - name: kit-worker
+        # By default the graph-builder sidecar runs the unified `rendering-job`
+        # (Kit) image (see `global.image.rendering_job`) with `MODE=graph-builder`,
+        # which selects the graph-builder code path inside the Kit image.
+        # Override `name`/`tag` here to pin a different image.
+        image:
+          name: ""
+          tag: ""
+        command:
+          - sh
+          - -c
+          - "python -m uvicorn graph_builder.service:app --host=0.0.0.0"
+        env:
+          - name: MODE
+            value: graph-builder
+        resources:
+          requests:
+            cpu: 4
+            memory: 10Gi
+          limits:
+            cpu: 8
+            memory: 10Gi
+        securityContext:
+          # fsGroup: 1000
+          runAsUser: 1000
+          runAsNonRoot: true
+          # readOnlyRootFilesystem: true
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of thumbnails for USD assets on Nucleus server based on the
+    # rendered views received from the Omniverse Farm
+    #
+    # @notationType -- yaml
+    thumbnail_generation:
+      preview_name: thumb-gen
+      type: thumbnail_generation
+      active: True
+      requires_embedding_service: False
+      n_concurrent_queue_workers: 256
+      requires_rendering: True
+      useRenderingServiceAccount: True
+      requires_vision_metadata: False
+      extra_env:
+        REMOVE_EXISTING_THUMBNAILS: "true"
+        SKIP_OMNI_WRITES: "false"
+      vision_endpoint: {}
+
+    # -- (map)
+    # @raw
+    #
+    # Rendering USD assets from multiple views and
+    # extraction of CLIP embeddings from each view to better characterize
+    # the asset
+    #
+    # @notationType -- yaml
+    rendering_to_embedding:
+      preview_name: render-emb
+      type: rendering_to_embedding
+      active: True
+      requires_embedding_service: True
+      n_concurrent_queue_workers: 256
+      requires_rendering: True
+      useRenderingServiceAccount: True
+      requires_vision_metadata: False
+      vision_endpoint: {}
+
+    # -- (map)
+    # @raw
+    #
+    # Extraction of CLIP embeddings from thumbnails of assets that are found on the Storage backend. GIF thumbnails are also supported — GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms), configurable via the optional ``gif_offset_ms`` parameter. Please refer to the [Thumbnail indexing settings](#thumbnail-indexing-settings) section for more information on how to configure the service to read GIF thumbnails.
+    #
+    # @notationType -- yaml
+    thumbnail_to_embedding:
+      preview_name: thumb-emb
+      type: thumbnail_to_embedding
+      active: True
+      requires_thumbnail_settings: True
+      requires_embedding_service: True
+      requires_rendering: False
+      requires_vision_metadata: False
+      n_concurrent_queue_workers: 5
+      vision_endpoint: {}
+      # gif_offset_ms: 1000
+
+    # -- (map)
+    # @raw
+    #
+    # Extraction of CLIP embeddings from images. The following image types are
+    # supported:
+    #  * all the formats supported by PIL library
+    #  * EXR
+    #  * GIF
+    #
+    # __NOTE__: GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms). The offset can be customized via the optional ``gif_offset_ms`` parameter.
+    #
+    # @notationType -- yaml
+    image_to_embedding:
+      preview_name: img-emb
+      type: image_to_embedding
+      active: True
+      requires_embedding_service: True
+      requires_rendering: False
+      requires_vision_metadata: False
+      vision_endpoint: {}
+      # gif_offset_ms: 1000
+      # resource overrides
+      resources:
+        requests:
+          cpu: 1
+          memory: 2Gi
+        limits:
+          cpu: 1
+          memory: 4Gi
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of Vision metadata from Images. The following image types are
+    # supported:
+    #  * all the formats supported by PIL library
+    #  * EXR
+    #  * GIF
+    #
+    # __NOTE__: GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms). The offset can be customized via the optional ``gif_offset_ms`` parameter.
+    #
+    # @notationType -- yaml
+    image_to_vision_metadata:
+      preview_name: img-vis-meta
+      type: image_to_vision_metadata
+      active: False
+      requires_embedding_service: False
+      requires_rendering: False
+      requires_vision_metadata: True
+      vision_endpoint: {}
+      # gif_offset_ms: 1000
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of Vision metadata from Renderings.
+    #
+    # @notationType -- yaml
+    rendering_to_vision_metadata:
+      preview_name: render-vis-meta
+      type: rendering_to_vision_metadata
+      active: False
+      requires_embedding_service: False
+      n_concurrent_queue_workers: 256
+      requires_rendering: True
+      useRenderingServiceAccount: True
+      requires_vision_metadata: True
+      vision_endpoint: {}
+
+    # -- (map)
+    # @raw
+    #
+    # Generation of Vision metadata from thumbnails of assets stored on the Storage backend. GIF thumbnails are also supported — GIF files are split into multiple frames using a fixed time offset in ms (default: ``1000`` ms), configurable via the optional ``gif_offset_ms`` parameter. Please refer to the [Thumbnail indexing settings](#thumbnail-indexing-settings) section for more information on how to configure the service to read GIF thumbnails.
+    #
+    # @notationType -- yaml
+    thumbnail_to_vision_metadata:
+      preview_name: thumb-vis-meta
+      type: thumbnail_to_vision_metadata
+      active: False
+      requires_thumbnail_settings: True
+      requires_embedding_service: False
+      requires_rendering: False
+      requires_vision_metadata: True
+      vision_endpoint: {}
+      # gif_offset_ms: 1000
+
+##############################################
+## Cache settings
+##############################################
+persistence:
+  pvc:
+    createPvc: false
+    size: 50Gi
+    storageClassName: ""
+  type: emptyDir
+  # persistentVolumeClaim:
+  #   claimName: ""
+  emptyDir:
+    sizeLimit: 10Gi
+  hostPath:
+    path: /var/lib/omni/cache
+    type: Directory
+
+##############################################
+## Ingress set-up
+##############################################
+#
+# If any of the service endpoint had ingress type you need to additionally 
+# set ingress.enabled parameter from below to "true".
+
+ingress:
+  enabled: false
+  annotations:
+    ingress.kubernetes.io/service-upstream: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1024m"
+
+# set-up metrics backend
+metrics:
+  enabled: true
+
+# resources for the deployment
+resources: {}
+
+# # ------- END ----------------------------------------
+# # ----------------------------------------------------
+
+## Account to use
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name:
+
+## Account to use for the rendering jobs
+renderingJobServiceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name:
+
+## Account to use for the rendering jobs
+listerJobServiceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name:
+
+rbac:
+  create: true
+
+# service port that is used for testing
+test_service:
+  port: 8080
+
+loggingConfig:
+  version: 1
+  disable_existing_loggers: False
+  filters: {}
+  formatters:
+    default:
+      format: '%(levelname)s %(asctime)s %(name)s - %(message)s'
+  handlers:
+    default:
+      formatter: default
+      class: logging.StreamHandler
+      stream: ext://sys.stderr
+  loggers:
+    opensearch:
+      level: ERROR
+    search_utils.cache_utils:
+      level: WARNING
+    httpx:
+      level: WARNING
+    root:
+      level: INFO
+#      level: DEBUG
+      handlers:
+        - default
+
+################################################################################
+## Security Context configuration
+################################################################################
+
+podSecurityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+  runAsNonRoot: true
+
+securityContext:
+  readOnlyRootFilesystem: true
+  
+################################################################################
+## END
+################################################################################

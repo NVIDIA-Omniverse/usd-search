@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+deepsearch_explorer_deployment:
+  enabled: true
+
+deepsearch-explorer:
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/nginx
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # Clone and build configuration
+  initContainers:
+    - name: git-clone-and-build
+      image: node:18-alpine
+      command:
+        - /bin/sh
+        - -c
+      args:
+        - |
+          # Install git and build essentials
+          apk add --no-cache git
+
+          # Clone the repository
+          git clone ${GIT_REPO_URL} /source
+          cd /source
+          cd ${SUB_PATH}
+          
+          # Checkout specific branch/tag if provided
+          if [ ! -z "${GIT_REF}" ]; then
+            git checkout ${GIT_REF}
+          fi
+          
+          # Install dependencies and build
+          npm install
+          npm ci --production=false
+          npm run build
+          
+          # Copy build output to nginx serve directory
+          cp -r build/* /app/
+      env:
+        - name: GIT_REPO_URL
+          value: "https://github.com/NVIDIA-Omniverse/usdsearch-client.git"  # Replace with your repo URL
+        - name: GIT_REF
+          value: "main"  # Replace with your branch/tag
+        - name: SUB_PATH
+          value: "./web"
+      volumeMounts:
+        - name: app-volume
+          mountPath: /app
+
+  # Additional volume mounts
+  extraVolumeMounts:
+    - name: app-volume
+      mountPath: /app
+      readOnly: true
+
+  # Additional volumes
+  extraVolumes:
+    - name: app-volume
+      emptyDir:
+        medium: Memory

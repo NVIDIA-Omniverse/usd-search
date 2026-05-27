@@ -1,0 +1,3 @@
+[submodule "docker/tools"]
+	path = docker/tools
+	url = ../../docker.git

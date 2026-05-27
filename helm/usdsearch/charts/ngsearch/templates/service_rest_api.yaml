@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $fullName := include "ngsearch.fullname" . -}}
+{{- $metrics := include "ngsearch.metrics" . -}}
+{{- $mainLabels := include "ngsearch.MainDeploymentlabels" . }}
+{{- $mainSelectorLabels := include "ngsearch.MainDeploymentSelectorlabels" . }}
+{{- $serviceName := "search-rest-api" -}}
+{{- $searchRestAPIService := .Values.microservices.search_rest_api.service -}}
+{{- $metricsEnabled := .Values.metrics.enabled -}}
+{{- $values := .Values -}}
+{{- $releaseName := include "ngsearch.releaseName" . }}
+
+{{- if ne .Values.global.storage_backend_type "multi" }}
+    
+  {{- if or ( .Values.microservices.search_rest_api.enabled ) (eq ( .Values.microservices.search_rest_api.enabled | toString) "<nil>") }}
+
+    {{- if $metricsEnabled }}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $metrics }}-{{ $serviceName }}-rest-api
+  labels:
+    {{- $mainLabels | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}
+    release_name: {{ $releaseName }}
+    component: "ngsearch"
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ $searchRestAPIService.port | default 8000 }}
+      targetPort: http
+      protocol: TCP
+      name: "metrics"
+  selector:
+    {{- $mainSelectorLabels | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}
+
+---
+
+    {{- end }}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-ngsearch-rest-api
+  labels:
+    {{- $mainLabels | nindent 4 }}
+  {{- template "ngsearch.template.service.annotations" ( $searchRestAPIService.annotations ) }}
+spec:
+  type: {{ template "ngsearch.template.service.type" $searchRestAPIService.type }}
+  {{- if eq (lower $searchRestAPIService.type) "loadbalancer" }}
+    {{- template "ngsearch.template.service.loadBalancerSourceRanges" ( $searchRestAPIService.loadBalancerSourceRanges | default $values.global.service.loadBalancerSourceRanges) }}
+  {{- end }}
+  ports:
+    - port: {{ $searchRestAPIService.port | default 8000 }}
+      targetPort: http
+      protocol: TCP
+      name: "ngsearch-rest-api"
+      {{- if eq (lower $searchRestAPIService.type) "nodeport" }}
+      nodePort: {{ $searchRestAPIService.nodeport }}
+      {{- end}}
+  selector:
+    {{- $mainSelectorLabels | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}
+
+  {{- end }}
+---
+
+{{- else if eq .Values.global.storage_backend_type "multi" }}
+
+  {{- range $name, $backend := .Values.global.multi }}
+
+    {{- if or ( $backend.search_rest_api.enabled ) (eq ( $backend.search_rest_api.enabled | toString) "<nil>") }}
+
+      {{- with $backend.search_rest_api.service }}
+        {{- if $metricsEnabled }}
+      
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $metrics }}-{{ $serviceName }}-metadata-{{ $name | replace "_" "-"}}
+  labels:
+    {{- $mainLabels | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}
+    release_name: {{ $releaseName }}
+    component: "ngsearch"
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .port | default 8000 }}
+      targetPort: http
+      protocol: TCP
+      name: "metrics"
+  selector:
+    {{- $mainSelectorLabels | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}-{{ $name | replace "_" "-"}}
+
+---
+        {{- end }}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}-ngsearch-rest-api-{{ $name | replace "_" "-"}}
+  labels:
+    {{- $mainLabels | nindent 4 }}
+  {{- template "ngsearch.template.service.annotations" ( .annotations ) }}
+spec:
+  type: {{ template "ngsearch.template.service.type" .type }}
+  {{- if eq (lower .type) "loadbalancer" }}
+  {{- template "ngsearch.template.service.loadBalancerSourceRanges" ( .loadBalancerSourceRanges | default $values.global.service.loadBalancerSourceRanges ) }}
+  {{- end }}
+  ports:
+    - port: {{ .port | default 8000 }}
+      targetPort: http
+      protocol: TCP
+      name: {{ $fullName }}-ngsearch-rest-api-{{ $name | replace "_" "-"}}
+      {{- if eq (lower .type) "nodeport" }}
+      nodePort: {{ .nodeport }}
+      {{- end}}
+  selector:
+    {{- $mainSelectorLabels | nindent 4 }}
+    ngsearch.service.name: {{ $serviceName }}-{{ $name | replace "_" "-"}}
+---
+
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}

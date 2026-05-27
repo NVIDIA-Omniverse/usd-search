@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  # Kit-worker — built from docker/Dockerfile.kit (unified Kit image shared with rendering-job).
+  # Run with MODE=graph-builder to start the graph-builder FastAPI service.
+  # Layer asset-graph-service.yml and minio.yml alongside this file,
+  # then add asset-graph-builder.deps.yml to wire up the service dependencies.
+  kit-worker:
+    build:
+      context: ../../services/rendering-job
+      dockerfile: ../../docker/Dockerfile.kit
+      additional_contexts:
+        graph-builder: ../../services/asset-graph-builder
+    container_name: kit-worker
+    ports:
+      - "8100:8000"
+    environment:
+      MODE: graph-builder
+      ACCEPT_EULA: "Y"
+      TEST_GRAPH_BUILDER: "True"
+      AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+      AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+      OV_SERVER: ${OV_SERVER:-localhost}
+      OV_USERNAME: ${OV_USERNAME:-}
+      OV_PASSWORD: ${OV_PASSWORD:-}
+      NUCLEUS_ACCESS_TOKEN_VDC_SAMPLE: ${NUCLEUS_ACCESS_TOKEN_VDC_SAMPLE:-undefined}
+      MINIO_ENDPOINT: http://minio:9000
+      GITLAB_CI: ${GITLAB_CI:-false}
+      USE_SEMANTICS_API: ${USE_SEMANTICS_API:-True}
+      INDEXED_PROPERTY_PREFIXES: "semantic:,isaac:,physics:"
+      SEVAN_TOKEN_URL: ${SEVAN_TOKEN_URL:-}
+      SEVAN_DEV_SCOPE: ${SEVAN_DEV_SCOPE:-}
+      SEVAN_DEV_CLIENT_SECRET: ${SEVAN_DEV_CLIENT_SECRET:-}
+      SEVAN_DEV_CLIENT_ID: ${SEVAN_DEV_CLIENT_ID:-}
