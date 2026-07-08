@@ -51,9 +51,16 @@ import psutil
 import yaml
 from numpy.typing import NDArray
 
-from .log_utils import prepare_message, print_wrapper, set_simple_logger
+from . import secure_pickle
+from .log_utils import prepare_message, print_wrapper
+from .secure_pickle import CACHE_APPROVED_CLASSES
 
 misc_utils_logger = logging.getLogger(__name__)
+
+# Upper bound (bytes) on a single decompressed cache / farm payload. Caps the
+# memory a zlib/bz2 decompression bomb can allocate (USDS-004). Generous enough
+# for legitimate embedding / point-cloud / render payloads; override via env.
+MAX_DECOMPRESSED_BYTES: int = int(os.environ.get("SEARCH_UTILS_MAX_DECOMPRESSED_BYTES", 2 * 1024**3))
 
 
 T = TypeVar("T")
@@ -558,16 +565,23 @@ def any_to_string(input: Any) -> str:
     return pickle.dumps(input).decode("latin1")
 
 
-def any_from_string(input: str) -> Any:
-    """Deserialize data from string using pickle.
+def any_from_string(input: str, approved_imports: Optional[dict] = None) -> Any:
+    """Deserialize data from string using an allowlist-restricted unpickler.
 
     Args:
         input (str): input string
+        approved_imports (Optional[dict]): per-module import allowlist passed to
+            the restricted unpickler. Defaults to ``CACHE_APPROVED_CLASSES``
+            (data containers + numpy); widen deliberately if a cache stores
+            additional non-callable types.
 
     Returns:
         Any: data decoded from string
     """
-    return pickle.loads(input.encode("latin1"))
+    return secure_pickle.loads(
+        input.encode("latin1"),
+        approved_imports=CACHE_APPROVED_CLASSES if approved_imports is None else approved_imports,
+    )
 
 
 def get_compression_method(compression_type: str) -> ModuleType:
@@ -599,14 +613,60 @@ def compress_data(input, compress: bool = True, compression_type: str = "zlib") 
         return serialized.decode("latin1")
 
 
-def decompress_data(input: str, compress: bool = True, compression_type: str = "zlib") -> Any:
-    """Deserialize numpy data using :func:`pickle.dumps` functionality"""
+def _decompress_bounded(data: bytes, compression_type: str, max_output_bytes: int) -> bytes:
+    """Decompress ``data`` while capping the output size.
+
+    Uses incremental decompressors so a decompression bomb cannot allocate
+    unbounded memory before the limit is noticed — the read stops as soon as
+    more than ``max_output_bytes`` would be produced and raises ``ValueError``.
+    """
+    if compression_type == "zlib":
+        decompressor = zlib.decompressobj()
+    elif compression_type == "bz2":
+        decompressor = bz2.BZ2Decompressor()
+    else:
+        raise NotImplementedError(f"compression method: {compression_type} is not supported")
+
+    # Request one byte past the cap so an over-limit payload is detectable.
+    out = decompressor.decompress(data, max_output_bytes + 1)
+    if len(out) > max_output_bytes:
+        raise ValueError(
+            f"decompressed payload exceeds the {max_output_bytes}-byte cap " "(possible decompression bomb)"
+        )
+    # A well-formed payload is fully consumed in a single bounded read; leftover
+    # input means the stream did not terminate within the cap.
+    if getattr(decompressor, "unconsumed_tail", b"") or not getattr(decompressor, "eof", True):
+        raise ValueError(
+            f"decompressed payload exceeds the {max_output_bytes}-byte cap " "(possible decompression bomb)"
+        )
+    return out
+
+
+def decompress_data(
+    input: str,
+    compress: bool = True,
+    compression_type: str = "zlib",
+    approved_imports: Optional[dict] = None,
+    max_output_bytes: int = MAX_DECOMPRESSED_BYTES,
+) -> Any:
+    """Deserialize numpy data using an allowlist-restricted unpickler.
+
+    Args:
+        input: latin1-encoded (optionally compressed) pickled payload.
+        compress / compression_type: as written by :func:`compress_data`.
+        approved_imports: per-module import allowlist for the restricted
+            unpickler; defaults to ``CACHE_APPROVED_CLASSES``.
+        max_output_bytes: upper bound on the decompressed size, guarding
+            against decompression-bomb OOM (USDS-004).
+    """
     input = input.encode("latin1")
     if compress and compression_type != "none":
         with print_wrapper("decompressing", logger=misc_utils_logger.debug):
-            compression_method = get_compression_method(compression_type)
-            input = compression_method.decompress(input)
-    return pickle.loads(input)
+            input = _decompress_bounded(input, compression_type, max_output_bytes)
+    return secure_pickle.loads(
+        input,
+        approved_imports=CACHE_APPROVED_CLASSES if approved_imports is None else approved_imports,
+    )
 
 
 def clean_queue(queue: Queue):

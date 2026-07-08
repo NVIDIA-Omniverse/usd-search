@@ -49,7 +49,8 @@ from .models import ContentType, RenderResponse, SupportedMediaTypes, URLType
 class AccessLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # Exclude healthchecks from access logs
-        return record.getMessage().find("/health") == -1 and record.getMessage().find("/metrics") == -1
+        message = record.getMessage()
+        return message.find("/health") == -1 and message.find("/readyz") == -1 and message.find("/metrics") == -1
 
 
 class TooManyRequestsLogFilter(logging.Filter):
@@ -334,11 +335,23 @@ def _parse_basic_auth_header(header_value: str) -> HTTPBasicCredentials:
 
 
 def prepare_authentication(
-    basic_auth: Optional[HTTPBasicCredentials], x_basic_auth: Optional[str], url: str
+    basic_auth: Optional[HTTPBasicCredentials],
+    x_basic_auth: Optional[str],
+    url: str,
+    x_token_auth: Optional[str] = None,
+    storage_api_url: Optional[str] = None,
 ) -> Authentication:
     """
     Prepare the authentication for the request based on the input URL.
     """
+    # Storage API assets are authenticated with credentials forwarded
+    # explicitly by the client (gRPC endpoint in the request body, optional
+    # bearer token in the X-Token-Auth header), not via X-Basic-Auth and not
+    # from this service's own environment. Short-circuit before parse_url,
+    # whose URL scheme set does not cover Storage API URIs.
+    if storage_api_url:
+        return Authentication(storage_api_url=storage_api_url, storage_api_token=x_token_auth)
+
     url_type: URLType = parse_url(url)
 
     if basic_auth is None and x_basic_auth is not None:

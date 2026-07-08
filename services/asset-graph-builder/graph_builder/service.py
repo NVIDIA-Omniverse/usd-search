@@ -23,16 +23,27 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+import orjson
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from fastapi import APIRouter, FastAPI, Request, status
 from pydantic import BaseModel, Field
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 # Default timeout for Kit subprocess execution (30 minutes = 1800 seconds)
 DEFAULT_KIT_TIMEOUT_SECONDS = int(os.getenv("KIT_TIMEOUT_SECONDS", "1800"))
+# Upper bound for a caller-supplied timeout_seconds. Caps how long a single
+# request can hold a Kit-processing slot (the semaphore defaults to 1), so a
+# stray/oversized value cannot wedge the worker. Never below the configured
+# default, so raising KIT_TIMEOUT_SECONDS keeps working.
+MAX_KIT_TIMEOUT_SECONDS = max(86400, DEFAULT_KIT_TIMEOUT_SECONDS)
 # Interval for checking client disconnection (in seconds)
 DISCONNECT_CHECK_INTERVAL = float(os.getenv("DISCONNECT_CHECK_INTERVAL", "1.0"))
+
+# On-disk Kit asset cache location (downloaded USD / textures are reused across
+# requests). Mirrors the rendering-job RenderingServiceSettings.cache_location;
+# /cache is created in docker/Dockerfile.kit.
+CACHE_LOCATION = os.getenv("CACHE_LOCATION", "/cache")
 
 n_parallel_processes = int(os.getenv("N_PARALLEL_PROCESSES", "1"))
 
@@ -50,11 +61,21 @@ if SENTRY_DSN:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.kit_process = None
+    _init_kit_process_registry(app)
     yield
 
 
+def _init_kit_process_registry(app: FastAPI) -> None:
+    # Registry of currently-executing Kit subprocesses, keyed by PID. Each
+    # in-flight request registers its process here and removes it on completion,
+    # so concurrent requests (N_PARALLEL_PROCESSES > 1) never clobber each
+    # other's process handle. Initialized at app creation (not only in lifespan)
+    # so it also exists under ASGI transports that skip lifespan events (tests).
+    app.state.kit_processes = {}
+
+
 app = FastAPI(lifespan=lifespan)
+_init_kit_process_registry(app)
 router = APIRouter()
 
 
@@ -97,7 +118,13 @@ class ConstructGraphRequest(BaseModel):
     )
     timeout_seconds: int = Field(
         default=DEFAULT_KIT_TIMEOUT_SECONDS,
-        description="Timeout for Kit subprocess execution in seconds. Defaults to KIT_TIMEOUT_SECONDS env var or 1800 (30 minutes).",
+        le=MAX_KIT_TIMEOUT_SECONDS,
+        description=(
+            "Timeout for Kit subprocess execution in seconds. Defaults to KIT_TIMEOUT_SECONDS "
+            f"env var or 1800 (30 minutes). Capped at {MAX_KIT_TIMEOUT_SECONDS} so a single "
+            "request cannot hold a Kit-processing slot indefinitely. Values <= 0 simply time "
+            "out immediately and release the slot."
+        ),
     )
 
 
@@ -129,10 +156,19 @@ async def get_openid_token(auth: ConstructGraphRequest, token: Optional[str] = N
 
 
 def prepare_omniverse_toml(request: ConstructGraphRequest, home_directory: str) -> None:
+    # As the client library stores its cache independently from the main Kit
+    # cache, the cache_root path needs to be set explicitly here.
+    content = f"""
+[paths]
+
+cache_root = "{home_directory}/cache"
+logs_root = "{home_directory}/logs"
+"""
+
     if request.aws_bucket != "":
         if request.aws_endpoint_url:
             # Note: Auth support is currently broken in the client library. Urls not matching the Amazon AWS pattern are using the base HTTP provider. https://gitlab-master.nvidia.com/omniverse/client-library/-/blob/main/source/library/provider_http/HttpProviderFactory.cpp#L96
-            content = f"""
+            content += f"""
 [s3]
 
 [s3."{request.aws_endpoint_url.replace('http://', '').replace('https://', '')}"]
@@ -141,7 +177,7 @@ secretAccessKey = "{request.aws_access_key}"
 """
 
         else:
-            content = f"""
+            content += f"""
 [s3]
 
 [s3."{request.aws_bucket}.s3.{request.aws_region}.amazonaws.com"]
@@ -150,9 +186,10 @@ bucket = "{request.aws_bucket}"
 region = "{request.aws_region}"
 secretAccessKey = "{request.aws_access_key}"
 """
-        with open(f"{home_directory}/omniverse.toml", "w", encoding="utf-8") as f:
-            f.write(content)
-            # print(content)
+
+    os.makedirs(home_directory, exist_ok=True)
+    with open(f"{home_directory}/omniverse.toml", "w", encoding="utf-8") as f:
+        f.write(content)
 
 
 def drop_none_inplace(source_dict: Dict[str, Any]) -> None:
@@ -246,11 +283,13 @@ async def construct_graph(request: ConstructGraphRequest, http_request: Request)
             }
 
             # Run Kit subprocess asynchronously with timeout
-            app.state.kit_process = await asyncio.create_subprocess_exec(
+            kit_process = await asyncio.create_subprocess_exec(
                 "/opt/nvidia/omniverse/kit-kernel/kit",
                 "--/log/level=Verbose",
                 "--/log/fileLogLevel=Verbose",
                 "--/exts/omni.client/logLevel=0",
+                f"--/app/tokens/omni_global_cache={CACHE_LOCATION}",
+                f"--/app/tokens/omni_cache={CACHE_LOCATION}",
                 # "-vv",  # enable verbose logging
                 "--enable",
                 "omni.usd",
@@ -274,80 +313,93 @@ async def construct_graph(request: ConstructGraphRequest, http_request: Request)
                 env=kit_env,
             )
 
+            # Track this request's process so concurrent requests don't share
+            # state; always de-register it once the request is done.
+            process_id = kit_process.pid
+            app.state.kit_processes[process_id] = kit_process
+
             try:
-                # Wait for process with timeout, checking for client disconnection
-                elapsed_time = 0.0
-                while app.state.kit_process.returncode is None:
-                    # Check if client disconnected
-                    if await http_request.is_disconnected():
-                        logger.warning("Client disconnected, cancelling Kit process")
-                        app.state.kit_process.kill()
-                        await app.state.kit_process.wait()
-                        raise GenericException("Client disconnected, Kit process cancelled")
+                try:
+                    # Wait for process with timeout, checking for client disconnection
+                    elapsed_time = 0.0
+                    while kit_process.returncode is None:
+                        # Check if client disconnected
+                        if await http_request.is_disconnected():
+                            logger.warning("Client disconnected, cancelling Kit process")
+                            kit_process.kill()
+                            await kit_process.wait()
+                            raise GenericException("Client disconnected, Kit process cancelled")
 
-                    # Check if timeout exceeded
-                    if elapsed_time >= request.timeout_seconds:
-                        logger.warning("Kit process timed out")
-                        app.state.kit_process.kill()
-                        await app.state.kit_process.wait()
-                        raise asyncio.TimeoutError(
-                            f"Kit process timed out after {request.timeout_seconds} seconds ({request.timeout_seconds / 60:.1f} minutes)"
-                        )
+                        # Check if timeout exceeded
+                        if elapsed_time >= request.timeout_seconds:
+                            logger.warning("Kit process timed out")
+                            kit_process.kill()
+                            await kit_process.wait()
+                            raise asyncio.TimeoutError(
+                                f"Kit process timed out after {request.timeout_seconds} seconds ({request.timeout_seconds / 60:.1f} minutes)"
+                            )
 
-                    # Wait for process to complete or check interval
-                    try:
-                        await asyncio.wait_for(
-                            app.state.kit_process.wait(),
-                            timeout=DISCONNECT_CHECK_INTERVAL,
-                        )
-                    except asyncio.TimeoutError:
-                        # Process still running, continue polling
-                        elapsed_time += DISCONNECT_CHECK_INTERVAL
-                        continue
+                        # Wait for process to complete or check interval
+                        try:
+                            await asyncio.wait_for(
+                                kit_process.wait(),
+                                timeout=DISCONNECT_CHECK_INTERVAL,
+                            )
+                        except asyncio.TimeoutError:
+                            # Process still running, continue polling
+                            elapsed_time += DISCONNECT_CHECK_INTERVAL
+                            continue
 
-            except asyncio.CancelledError as e:
-                app.state.kit_process.kill()
-                await app.state.kit_process.wait()  # Clean up the process
-                raise GenericException("Kit process was cancelled") from e
-            except GenericException:
-                # Re-raise our own exceptions (disconnection, timeout converted to GenericException)
-                raise
-            except asyncio.TimeoutError:
-                # Re-raise timeout errors
-                raise
-            except Exception as e:
-                app.state.kit_process.kill()
-                await app.state.kit_process.wait()  # Clean up the process
-                raise GenericException("Kit process failed") from e
+                except asyncio.CancelledError as e:
+                    kit_process.kill()
+                    await kit_process.wait()  # Clean up the process
+                    raise GenericException("Kit process was cancelled") from e
+                except GenericException:
+                    # Re-raise our own exceptions (disconnection, timeout converted to GenericException)
+                    raise
+                except asyncio.TimeoutError:
+                    # Re-raise timeout errors
+                    raise
+                except Exception as e:
+                    kit_process.kill()
+                    await kit_process.wait()  # Clean up the process
+                    raise GenericException("Kit process failed") from e
 
-            if app.state.kit_process.returncode == 0:
-                # make sure the URLs are correctly set (according to service input)
-                if request.aws_bucket is not None and request.url.startswith(f"s3://{request.aws_bucket}"):
-                    with open(output_file, "r", encoding="utf-8") as f:
-                        graph_result = f.read()
+                if kit_process.returncode == 0:
+                    # make sure the URLs are correctly set (according to service input)
+                    if request.aws_bucket is not None and request.url.startswith(f"s3://{request.aws_bucket}"):
+                        with open(output_file, "r", encoding="utf-8") as f:
+                            graph_result = f.read()
 
-                    new_graph_result = graph_result.replace(
-                        f"https://{request.aws_bucket}.s3.{request.aws_region}.amazonaws.com",
-                        f"s3://{request.aws_bucket}",
-                    )
-                    if request.aws_endpoint_url:
-                        new_graph_result = new_graph_result.replace(
-                            f"{request.aws_endpoint_url}/{request.aws_bucket}",
+                        new_graph_result = graph_result.replace(
+                            f"https://{request.aws_bucket}.s3.{request.aws_region}.amazonaws.com",
                             f"s3://{request.aws_bucket}",
                         )
+                        if request.aws_endpoint_url:
+                            new_graph_result = new_graph_result.replace(
+                                f"{request.aws_endpoint_url}/{request.aws_bucket}",
+                                f"s3://{request.aws_bucket}",
+                            )
 
-                    with open(output_file, "w", encoding="utf-8") as f:
-                        f.write(new_graph_result)
+                        with open(output_file, "w", encoding="utf-8") as f:
+                            f.write(new_graph_result)
 
-                with open(output_file, "r", encoding="utf-8") as f:
-                    graph_result_dict = json.load(f)
+                    with open(output_file, "r", encoding="utf-8") as f:
+                        graph_result_dict = json.load(f)
 
-                # Make sure there are no Nones in the graph result
-                drop_none_inplace(graph_result_dict)
+                    # Make sure there are no Nones in the graph result
+                    drop_none_inplace(graph_result_dict)
 
-                return graph_result_dict
-            else:
-                raise GenericException(f"Kit process failed with exit code {app.state.kit_process.returncode}")
+                    # Return a Response directly: skips FastAPI's pure-Python
+                    # jsonable_encoder pass and serializes the (potentially large)
+                    # graph with orjson instead of the stdlib json encoder.
+                    # (orjson over fastapi's ORJSONResponse, which is deprecated
+                    # in recent FastAPI and warns per-request.)
+                    return Response(content=orjson.dumps(graph_result_dict), media_type="application/json")
+                else:
+                    raise GenericException(f"Kit process failed with exit code {kit_process.returncode}")
+            finally:
+                app.state.kit_processes.pop(process_id, None)
 
 
 app.include_router(router)

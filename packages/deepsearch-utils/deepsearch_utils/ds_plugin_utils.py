@@ -25,13 +25,13 @@ from opentelemetry import trace
 from PIL import Image
 from pydantic import Field
 from pydantic_settings import BaseSettings
+from siglip2_triton_client import BaseCLIP, SigLIP2
 from storage.src.client import (
     NGSearchStorageHelper,
     Result,
     StorageClientInput,
     assert_status_ok,
 )
-from vision_endpoint import BaseCLIP, SigLIP2
 
 from search_utils.datetime_utils import date_from_timestamp
 from search_utils.log_utils import prepare_message, set_simple_logger

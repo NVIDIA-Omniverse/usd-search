@@ -37,3 +37,6 @@ resources:
 
 ## Extra Java Options
 extraJavaOpts: ""
+
+## Node affinity rules for scheduling the s3proxy pod
+affinity: {}

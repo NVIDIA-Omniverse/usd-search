@@ -8,7 +8,7 @@ authors = [
     {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "search-utils[search-backend]",
     "siglip2-triton-client>=0.3.0",
@@ -16,7 +16,7 @@ dependencies = [
     "opentelemetry-api>=1.25.0",
     "opentelemetry-instrumentation-aiohttp-client>=0.46b0",
     "pillow>=10.2.0",
-    "numpy>=1.26.4,<2",
+    "numpy>=1.26.4",
     "urllib3>=2.7.0",
     "typing-extensions>=4.9.0",
 ]

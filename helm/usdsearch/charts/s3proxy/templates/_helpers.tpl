@@ -47,8 +47,8 @@ Common labels
 {{- define "s3proxy.labels" -}}
 helm.sh/chart: {{ include "s3proxy.chart" . }}
 {{ include "s3proxy.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/component: "s3proxy"
 app.kubernetes.io/name: s3proxy

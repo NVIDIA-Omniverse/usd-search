@@ -32,6 +32,10 @@ spec:
       labels:
         {{- include "s3proxy.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: s3proxy
         image: {{ .Values.image.url }}

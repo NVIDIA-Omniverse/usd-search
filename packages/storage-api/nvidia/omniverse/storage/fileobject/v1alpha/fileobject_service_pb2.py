@@ -27,12 +27,7 @@ from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
 
 _runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    6,
-    31,
-    1,
-    "",
-    "nvidia/omniverse/storage/fileobject/v1alpha/fileobject_service.proto",
+    _runtime_version.Domain.PUBLIC, 6, 31, 1, "", "nvidia/omniverse/storage/fileobject/v1alpha/fileobject_service.proto"
 )
 # @@protoc_insertion_point(imports)
 
@@ -50,9 +45,7 @@ DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(
-    DESCRIPTOR,
-    "nvidia.omniverse.storage.fileobject.v1alpha.fileobject_service_pb2",
-    _globals,
+    DESCRIPTOR, "nvidia.omniverse.storage.fileobject.v1alpha.fileobject_service_pb2", _globals
 )
 if not _descriptor._USE_C_DESCRIPTORS:
     _globals["DESCRIPTOR"]._loaded_options = None

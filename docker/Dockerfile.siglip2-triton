@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Dockerfile for pre-built ONNX models (faster build, requires models to be exported first)
-FROM nvcr.io/nvidia/tritonserver:26.04-py3
+FROM nvcr.io/nvidia/tritonserver:26.05-py3
 
 WORKDIR /workspace
 
@@ -29,9 +29,15 @@ COPY model_repo/siglip2_vision_encoder_onnx /models/siglip2_vision_encoder_onnx
 COPY model_repo/siglip2_text_encoder_onnx /models/siglip2_text_encoder_onnx
 COPY model_repo/tokenizer /models/tokenizer
 
-# Install Python dependencies for the tokenizer and preprocessing models
-ADD docker/requirements.txt /workspace/requirements.txt
-RUN pip install --no-cache-dir -r /workspace/requirements.txt
+# Install Python dependencies for the tokenizer and preprocessing models from
+# pyproject.toml + uv.lock (the source of truth). Resolving from the lock at
+# build time avoids a separately-maintained requirements.txt that can drift out
+# of sync, and lets `docker build` work without a pre-build export step.
+COPY docker/pyproject.toml docker/uv.lock /workspace/
+RUN pip install --no-cache-dir uv \
+    && uv export --frozen --no-hashes --directory /workspace -o /workspace/requirements.txt \
+    && pip install --no-cache-dir -r /workspace/requirements.txt \
+    && rm /workspace/requirements.txt
 
 COPY docker/PACKAGE-LICENSES /PACKAGE-LICENSES
 COPY _licenses /PACKAGE-LICENSES
@@ -41,6 +47,10 @@ EXPOSE 8000 8001 8002
 
 RUN rm -rf /usr/local/cuda-13.2/NsightSystems-cli-2026.2.1
 
+# vulnerability bugfixes
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl  \
+    && rm -rf /var/lib/apt/lists/*
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

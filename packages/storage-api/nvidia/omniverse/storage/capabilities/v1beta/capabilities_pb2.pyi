@@ -42,9 +42,7 @@ class ServiceEntry(_message.Message):
     service_name: str
     service_versions: _containers.RepeatedScalarFieldContainer[str]
     def __init__(
-        self,
-        service_name: _Optional[str] = ...,
-        service_versions: _Optional[_Iterable[str]] = ...,
+        self, service_name: _Optional[str] = ..., service_versions: _Optional[_Iterable[str]] = ...
     ) -> None: ...
 
 class ListTopLevelAddressesRequest(_message.Message):

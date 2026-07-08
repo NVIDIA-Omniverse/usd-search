@@ -42,7 +42,7 @@ spec:
         - name: connection-check
           {{- $apiImg := .Values.ngsearch.microservices.search_rest_api.image }}
           {{- if $apiImg.name }}
-          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default .Chart.AppVersion }}
+          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default (include "deepsearch-global.unifiedImageTag" .) }}
           {{- else }}
           image: {{ include "deepsearch-global.usdsearchImage" . }}
           {{- end }}
@@ -68,7 +68,7 @@ spec:
               cpu: 200m
               memory: 128Mi
           env:
-            - name: STORAGE_BACKEND_TYPE 
+            - name: STORAGE_BACKEND_TYPE
               value: "{{ .Values.global.storage_backend_type }}"
           {{- if eq .Values.global.storage_backend_type "nucleus" }}
             {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}

@@ -32,11 +32,7 @@ class GetMetadataRequest(_message.Message):
     USER_METADATA_KEYS_FIELD_NUMBER: _ClassVar[int]
     uri: str
     user_metadata_keys: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(
-        self,
-        uri: _Optional[str] = ...,
-        user_metadata_keys: _Optional[_Iterable[str]] = ...,
-    ) -> None: ...
+    def __init__(self, uri: _Optional[str] = ..., user_metadata_keys: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class GetMetadataResponse(_message.Message):
     __slots__ = ("user_metadata",)
@@ -48,9 +44,7 @@ class GetMetadataResponse(_message.Message):
         key: str
         value: UserMetadataValue
         def __init__(
-            self,
-            key: _Optional[str] = ...,
-            value: _Optional[_Union[UserMetadataValue, _Mapping]] = ...,
+            self, key: _Optional[str] = ..., value: _Optional[_Union[UserMetadataValue, _Mapping]] = ...
         ) -> None: ...
 
     USER_METADATA_FIELD_NUMBER: _ClassVar[int]
@@ -90,10 +84,7 @@ class DeleteMetadataRequest(_message.Message):
     user_metadata_key: str
     expected_etag: str
     def __init__(
-        self,
-        uri: _Optional[str] = ...,
-        user_metadata_key: _Optional[str] = ...,
-        expected_etag: _Optional[str] = ...,
+        self, uri: _Optional[str] = ..., user_metadata_key: _Optional[str] = ..., expected_etag: _Optional[str] = ...
     ) -> None: ...
 
 class DeleteMetadataResponse(_message.Message):
@@ -107,7 +98,5 @@ class UserMetadataValue(_message.Message):
     value: _struct_pb2.Value
     etag: str
     def __init__(
-        self,
-        value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ...,
-        etag: _Optional[str] = ...,
+        self, value: _Optional[_Union[_struct_pb2.Value, _Mapping]] = ..., etag: _Optional[str] = ...
     ) -> None: ...

@@ -34,18 +34,19 @@ from urllib.parse import unquote
 
 import omni.client
 import omni.usd
-from pxr import Ar, Gf, Sdf, Usd, UsdGeom, UsdUtils, Vt
+from graph_builder import setup_logging
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdUtils
 
 logger = logging.getLogger(__name__)
 
 
 def timing_decorator(func):
     def wrapper(*args, **kwargs):
-        print(f"Running {func.__name__}...")
+        logger.info("Running %s...", func.__name__)
         start_time = time.time()
         result = func(*args, **kwargs)
         duration_ms = (time.time() - start_time) * 1000
-        print(f"{func.__name__} executed in {duration_ms:.2f}ms")
+        logger.info("%s executed in %.2fms", func.__name__, duration_ms)
         return result
 
     return wrapper
@@ -87,7 +88,7 @@ def compute_bbox(prim: Usd.Prim) -> Gf.Range3d:
         Returns an empty range if the prim is invalid or bbox computation fails.
     """
     if not prim or not prim.IsValid():
-        logger.warning(f"compute_bbox: Invalid prim provided")
+        logger.warning("compute_bbox: Invalid prim provided")
         return Gf.Range3d()
 
     time_code = Usd.TimeCode.Default()
@@ -102,7 +103,7 @@ def compute_bbox(prim: Usd.Prim) -> Gf.Range3d:
         bound_range = bound.ComputeAlignedBox()
         return bound_range
     except Exception as e:
-        logger.warning(f"compute_bbox: Failed to compute bbox for {prim.GetPath()}: {e}")
+        logger.warning("compute_bbox: Failed to compute bbox for %s: %s", prim.GetPath(), e)
         return Gf.Range3d()
 
 
@@ -134,7 +135,7 @@ def get_material_references(prim):
             attr = attribute.Get()
             material_ref = attr.path  # Or .path
             refs.add(material_ref)
-        except AttributeError as e:
+        except AttributeError:
             pass
     return refs
 
@@ -157,7 +158,7 @@ def get_mdl_refs(path):
             with open(path, "r") as f:
                 text = f.read()
         except FileNotFoundError:
-            print(f"{path} not found")
+            logger.warning("%s not found", path)
             return []
     strings = re.findall(r'(?:")((?:[\w:/]+/)?[\w.-]+\.(?:jpg|png|tiff|hdr|mdl|hlsl|exe))(?:")', text)
     return strings
@@ -187,7 +188,7 @@ def get_semantic_label_through_api(prim) -> Dict[str, str]:
             if type_attr.IsAuthored() and data_attr.IsAuthored():
                 semantic_data[type_attr.Get()] = semantic_data.get(type_attr.Get(), []) + [data_attr.Get()]
         except Exception as e:
-            print(f"Error processing semantic label {sem_name}: {e}")
+            logger.warning("Error processing semantic label %s: %s", sem_name, e)
 
     return {key: ",".join(list(set(value))) for key, value in semantic_data.items()}
 
@@ -297,7 +298,9 @@ def get_prim_properties(prim: Usd.Prim, stage: Usd.Stage) -> Dict[str, str]:
                 if len(relationship_targets) > 0:
                     properties[property_name] = ",".join([str(target) for target in relationship_targets])
             else:
-                logger.warning(f"property type: '{type(prop)}' for property name: '{property_name}' is not supported")
+                logger.warning(
+                    "property type: '%s' for property name: '%s' is not supported", type(prop), property_name
+                )
 
     if prim.GetTypeName() == "Camera":
         properties.update(get_camera_properties(prim))
@@ -310,7 +313,7 @@ def get_prim_properties(prim: Usd.Prim, stage: Usd.Stage) -> Dict[str, str]:
                 else:
                     properties[key] = value
         except Exception as e:
-            print(f"Error processing semantic labels: {e}")
+            logger.warning("Error processing semantic labels: %s", e)
 
     if USE_PHYSICS_API:
         try:
@@ -320,7 +323,7 @@ def get_prim_properties(prim: Usd.Prim, stage: Usd.Stage) -> Dict[str, str]:
                 else:
                     properties[key] = value
         except Exception as e:
-            print(f"Error processing physics properties: {e}")
+            logger.warning("Error processing physics properties: %s", e)
     return properties
 
 
@@ -441,7 +444,7 @@ def traverse_recursive(fname, path_to_prim):
     def _traverse_recursive(fname):
         if fname in files_visited:
             # Circular dependency
-            print(f"Circular dependency: {fname}")
+            logger.warning("Circular dependency: %s", fname)
             return {}
         files_visited.add(fname)
         deps = {}
@@ -452,7 +455,7 @@ def traverse_recursive(fname, path_to_prim):
             if layer is None:
                 return deps
         except Exception as e:
-            print(f"Error opening layer: {e}")
+            logger.warning("Error opening layer: %s", e)
             return deps
 
         for dep_list in UsdUtils.ExtractExternalReferences(fname):
@@ -557,9 +560,9 @@ def storage_api_registration() -> Optional[Any]:
 
     def on_registered(result, addresses):
         if result == omni.client.Result.OK:
-            print(f"Storage API registered successfully with addresses: {addresses}")
+            logger.info("Storage API registered successfully with addresses: %s", addresses)
         else:
-            print(f"Storage API registration failed: {result}")
+            logger.error("Storage API registration failed: %s", result)
 
     url = os.getenv("STORAGE_API_URL")
 
@@ -570,16 +573,20 @@ def storage_api_registration() -> Optional[Any]:
 
 
 if __name__ == "__main__":
+    # Apply the shared logging.yml config (honors LOGGING_CONFIG) so this Kit
+    # --exec script logs consistently with the rest of the service.
+    setup_logging()
+
     # Must be assigned (not discarded) — dropping the object closes the connection.
     _storage_api_request = storage_api_registration()
 
     fname = os.getenv("USD_URL")
     start_time = time.time()
 
-    print(f"Loading stage {fname}...")
+    logger.info("Loading stage %s...", fname)
     stage = Usd.Stage.Open(fname)
     duration_ms = (time.time() - start_time) * 1000
-    print(f"Stage opened in {duration_ms:.2f}ms")
+    logger.info("Stage opened in %.2fms", duration_ms)
 
     _, path_to_prim, prims = traverse(stage, fname)
     refs, files, relationships = traverse_recursive(fname, path_to_prim)
@@ -628,17 +635,20 @@ if __name__ == "__main__":
         "prims": prims,
     }
 
-    logger.debug("Graph output:\n%s", json.dumps(output, indent=4))
+    # Guard the dump: json.dumps(indent=4) over the whole graph is expensive and
+    # would otherwise run on every build regardless of the configured log level.
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("Graph output:\n%s", json.dumps(output, indent=4))
 
     unique_refs = get_unique_refs(refs)
-    print(f"Unique references count: {len(unique_refs)}")
-    print(f"Prims count: {len(prims)}")
-    print(f"Total polygon count: {total_polygon_count}")
-    print(f"Total point count: {total_point_count}")
-    print(f"Total curve segment count: {total_curve_segment_count}")
+    logger.info("Unique references count: %d", len(unique_refs))
+    logger.info("Prims count: %d", len(prims))
+    logger.info("Total polygon count: %d", total_polygon_count)
+    logger.info("Total point count: %d", total_point_count)
+    logger.info("Total curve segment count: %d", total_curve_segment_count)
 
     output_path = os.getenv("OUTPUT_PATH", "./output.json")
-    print(f"Output saved to {output_path}")
+    logger.info("Output saved to %s", output_path)
 
     with open(output_path, "w+") as file:
         json.dump(

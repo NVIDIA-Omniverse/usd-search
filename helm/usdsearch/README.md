@@ -1,8 +1,8 @@
 # USD Search API
 
-![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.3.1](https://img.shields.io/badge/AppVersion-1.3.1-informational?style=flat-square)
+![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.4.0](https://img.shields.io/badge/AppVersion-1.4.0-informational?style=flat-square)
 
-**Homepage:** <https://docs.omniverse.nvidia.com/services/latest/services/usd-search/overview.html>
+**Homepage:** <https://github.com/NVIDIA-omniverse/usd-search>
 
 # Requirements
 | Repository | Name | Version |
@@ -81,28 +81,12 @@ The document describes how USD Search API helm chart could be configured and ins
 	- [Persistence (experimental)](#persistence-experimental)
 	- [USD properties search](#usd-properties-search)
 	- [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging)
-		- [VLM services](#vlm-services)
-			- [Anthropic](#anthropic)
-			- [Azure OpenAI](#azure-openai)
-			- [Google](#google)
-			- [NVIDIA Inference Hub](#nvidia-inference-hub)
-			- [Mistral AI](#mistral-ai)
-			- [NVIDIA NIM](#nvidia-nim)
-			- [OpenAI](#openai)
-			- [Qwen](#qwen)
+		- [LLM/VLM provider](#llmvlm-provider)
 		- [Customization](#customization)
 			- [Image prompt configuration](#image-prompt-configuration)
 			- [Metadata fields configuration](#metadata-fields-configuration)
 	- [VLM-based verification of results with respect to input query](#vlm-based-verification-of-results-with-respect-to-input-query)
-		- [VLM services](#vlm-services-1)
-			- [Anthropic](#anthropic-1)
-			- [Azure OpenAI](#azure-openai-1)
-			- [Google](#google-1)
-			- [NVIDIA Inference Hub](#nvidia-inference-hub-1)
-			- [Mistral AI](#mistral-ai-1)
-			- [NVIDIA NIM](#nvidia-nim-1)
-			- [OpenAI](#openai-1)
-			- [Qwen](#qwen-1)
+		- [LLM/VLM provider](#llmvlm-provider-1)
 	- [Search Backend configuration](#search-backend-configuration)
 		- [External OpenSearch instance](#external-opensearch-instance)
 		- [OpenSearch authentication](#opensearch-authentication)
@@ -114,12 +98,15 @@ The document describes how USD Search API helm chart could be configured and ins
 	- [Embedding service settings](#embedding-service-settings)
 	- [Asset Graph Service additional settings](#asset-graph-service-additional-settings)
 	- [Other settings](#other-settings)
+	- [Redis instance settings](#redis-instance-settings)
+	- [OpenSearch instance settings](#opensearch-instance-settings)
 	- [Neo4j instance settings](#neo4j-instance-settings)
 	- [Maintainers](#maintainers)
 - [License](#license)
 - [FAQ](#faq)
 	- [USD assets organization best practices](#usd-assets-organization-best-practices)
 	- [Image-based search best practices](#image-based-search-best-practices)
+	- [Embedding service falls back to CPU with the GPU Operator installed](#embedding-service-falls-back-to-cpu-with-the-gpu-operator-installed)
 	- [Redis Persistent Volume Claim](#redis-persistent-volume-claim)
 	- [Microk8s CA certificate issues](#microk8s-ca-certificate-issues)
 	- [Redis CrashLoopBackOff](#redis-crashloopbackoff)
@@ -160,7 +147,7 @@ Generate your NGC helm and container registry API Key prior to fetch helm chart.
 Fetch the latest helm chart from the registry
 
 ```bash
-helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.3.1.tgz \
+helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.4.0.tgz \
 	--username='$oauthtoken' \
 	--password=<YOUR API KEY>
 ```
@@ -175,7 +162,7 @@ To deploy the USD Search Helm chart and connect it to an AWS S3 bucket for
 indexing, run the following command:
 
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=s3 \
   --set global.s3.bucket_name=<S3 bucket name> \
@@ -219,7 +206,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=s3 \
   --set global.s3.bucket_name=<S3 bucket name> \
@@ -253,7 +240,7 @@ For more details on configuring different storage backends, refer to the officia
 Using S3proxy functionality is it possible to seamlessly connect to any S3 compatible storage backends (e.g. Dell ObjectScale, DreamObjects, etc.)
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
+helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -274,7 +261,7 @@ helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
 Using S3proxy functionality is it possible to seamlessly connect to Azure Blob Storage.
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
+helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -295,7 +282,7 @@ helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
 Using S3proxy functionality is it possible to seamlessly connect to Google Cloud Storage.
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.3.1.tgz --install \
+helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -339,7 +326,7 @@ kubectl create secret docker-registry nvcr.io \
 With the above secrets created, the helm chart installation command can be
 simplified to:
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
@@ -383,7 +370,7 @@ is possible to deploy the USD Search Helm chart and connect it to an
 Omniverse Nucleus server for indexing, as follows:
 
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
  --set global.accept_eula=true \
  --set global.storage_backend_type=nucleus \
  --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -434,7 +421,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=nucleus \
   --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -502,7 +489,7 @@ To deploy the USD Search Helm chart and connect it to an Omniverse Storage API f
 indexing, run the following command:
 
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=storage_api \
   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -598,7 +585,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.3.1.tgz \
+helm install <deployment name> usdsearch-1.4.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=storage_api \
   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -982,7 +969,7 @@ There are two modes for specifying which files are considered thumbnails:
       - "{folder_name}/previews/{file_name}\\.png$"
   ```
 
-The following thumbnail file formats are supported: all formats supported by the [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html) and GIF. When a thumbnail is a GIF file, it will be split into multiple frames using a fixed time offset (default: ``1000`` ms), configurable per plugin via the ``gif_offset_ms`` parameter of the ``thumbnail_to_embedding`` and ``thumbnail_to_vision_metadata`` plugins.
+The following thumbnail file formats are supported: all formats supported by the [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html) and GIF. When a thumbnail is a GIF file, it will be split into multiple frames by sampling every Nth frame (default: every frame), capped at a maximum number of frames (default: ``512``), configurable per plugin via the ``gif_sampling_mode`` (``fixed`` = every Nth frame, or ``uniform`` = ``gif_max_frames`` frames spread evenly across the GIF), ``gif_frame_sample_frequency``, and ``gif_max_frames`` parameters of the ``thumbnail_to_embedding`` and ``thumbnail_to_vision_metadata`` plugins.
 
 __NOTE__: These settings apply only to the **Nucleus** and **S3** storage backends. When using the **Storage API** backend, thumbnails are not resolved from the filesystem. Instead, the thumbnail URL is read directly from the asset metadata. The metadata field (or fields) that hold the thumbnail URL are controlled by the ``global.storage_api.thumbnail_metadata_fields`` setting. Please refer to the [Thumbnail retrieval](#thumbnail-retrieval) section for more information.
 
@@ -1292,302 +1279,39 @@ are indexed and searchable.
 
 ## VLM-based automatic captioning and tagging
 
+### LLM/VLM provider
+
 Vision endpoint allows to automatically tag and caption various assets stored on the storage backend using an external Vision Language Model (VLM) service.
-
-The following types of VLM services providers could be configured with the helm chart:
-  * azure_openai
-  * openai
-  * anthropic
-  * mistralai
-  * google
-  * nim
-  * qwen
-  * inference_hub
-
-In order to select one VLM for the whole service globally you can pass the following command line parameter:
-
-```bash
-    --set deepsearch.vision_endpoint.vlm_service=<VLM service provider>
-```
-
-or specify `deepsearch.vision_endpoint.vlm_service` setting in the `my-usdsearch-config.yaml` file as follows:
-
-```yaml
-deepsearch:
-  vision_endpoint:
-    vlm_service: <VLM service provider>
- ```
-
-__NOTE__: This setting can be overwritten for any USD Search API plugin (e.g. ``rendering_to_vision_metadata`` plugin) by passing the following command line arguments:
-```bash
-    --set deepsearch.plugins.rendering_to_vision_metadata.vision_endpoint.vlm_service=<VLM service provider>
-```
-
-Alternatively, for each plugin your can provide respective setting in the `my-usdsearch-config.yaml` file as follows:
-
-```yaml
-deepsearch:
-  plugins:
-    rendering_to_vision_metadata:
-      vision_endpoint:
-        vlm_service: <VLM service provider>
- ```
-
-If no ``vision_endpoint`` setting is provided for the plugin, the global VLM configuration will be used.
 
 For more information about the available USD Search API plugins, please refer to [Plugin Settings section](#plugin-settings).
 
-### VLM services
+All LLM/VLM access goes through ONE OpenAI-compatible provider. Set the
+endpoint once here (`provider.base_url` -> `USDSEARCH_LLM_BASE_URL`) and the
+key via the referenced secret (`provider.api_key` -> `USDSEARCH_LLM_API_KEY`).
+Point `base_url` at any OpenAI-API-compatible server. Examples:
+  NVIDIA Inference Hub (default): base_url: "https://inference-api.nvidia.com"
+  OpenAI:                         base_url: "https://api.openai.com/v1"
+  Azure OpenAI:                   base_url: "https://<resource>.openai.azure.com/openai/deployments/<deployment>"
+  Self-hosted vLLM / LiteLLM:     base_url: "http://my-vllm.internal:8000/v1"
 
-Below you can find a list of VLM service providers with respective parameters that could be configured with USD Search API.
+Example — configure the provider at install time (the api_key lands in the
+`usdsearch-llm-api-key-secret` secret created by the chart):
 
-#### Anthropic
-
-Anthropic VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Anthropic service, which could be done with the following command:
-```bash
-kubectl create secret generic anthropic-vlm-api-key-secret \
-    --from-literal=api-key=<Anthropic API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
+  helm install usdsearch ./helm/usdsearch \
+    ... \
     --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.anthropic.api_key=<Anthropic API Key>
-```
+    --set deepsearch.vision_endpoint.provider.api_key=<API key> \
+    --set deepsearch.vision_endpoint.provider.base_url=<OpenAI-compatible base URL> \
+    --set deepsearch.vision_endpoint.metadata_model=<model id>
 
-If it possible to customize various parameters of the Anthropic VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.anthropic.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
+Default provider settings:
 
 ```yaml
-max_tokens: 2048
-model: claude-3-5-sonnet-latest
-temperature: 0
-```
-#### Azure OpenAI
-
-Azure OpenAI VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Azure OpenAI service, which could be done with the following command:
-```bash
-kubectl create secret generic azure-openai-vlm-api-key-secret \
-    --from-literal=api-key=<Azure OpenAI API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.azure_openai.api_key=<Azure OpenAI API Key>
-```
-
-If it possible to customize various parameters of the Azure OpenAI VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.azure_openai.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-api_version: 2025-03-01-preview
-azure_deployment: gpt-4o-20241120
-azure_endpoint: null
-max_tokens: 2048
-model: gpt-4o-20241120
-temperature: 0
-```
-#### Google
-
-Google Gemini VLM service endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Google Gemini service, which could be done with the following command:
-```bash
-kubectl create secret generic google-vlm-api-key-secret \
-    --from-literal=api-key=<Google Gemini API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.google.api_key=<Google Gemini API Key>
-```
-
-If it possible to customize various parameters of the Google Gemini VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.google.parameters.<parameter name>=<parameter value>
-```
-
-For example, it is possible to customize the base URL for the Google Gemini VLM endpoint to the following:
-```bash
-    --set deepsearch.vision_endpoint.google.parameters.base_url=<target base URL>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-base_url: https://generativelanguage.googleapis.com/v1beta/openai
-max_tokens: 2048
-model: gemini-2.5-pro
-temperature: 0
-```
-#### NVIDIA Inference Hub
-
-Inference Hub VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Inference Hub service, which could be done with the following command:
-```bash
-kubectl create secret generic inference-hub-vlm-api-key-secret \
-    --from-literal=api-key=<Inference Hub API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.inference_hub.api_key=<Inference Hub API Key>
-```
-
-If it possible to customize various parameters of the Inference Hub VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.inference_hub.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-max_tokens: 2048
-model: azure/openai/gpt-5.1
-temperature: 0
-```
-#### Mistral AI
-
-Mistral AI VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Mistral AI service, which could be done with the following command:
-```bash
-kubectl create secret generic mistralai-vlm-api-key-secret \
-    --from-literal=api-key=<Mistral AI API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.mistralai.api_key=<Mistral AI API Key>
-```
-
-If it possible to customize various parameters of the Mistral AI VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.mistralai.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-max_tokens: 1024
-model: pixtral-large-latest
-temperature: 0
-```
-#### NVIDIA NIM
-
-NIM VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing NIM service, which could be done with the following command:
-```bash
-kubectl create secret generic nim-vlm-api-key-secret \
-    --from-literal=api-key=<NIM API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.nim.api_key=<NIM API Key>
-```
-
-If it possible to customize various parameters of the NIM VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.nim.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-max_tokens: 2048
-model: meta/llama-4-maverick-17b-128e-instruct
-temperature: 0
-```
-#### OpenAI
-
-OpenAI VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing OpenAI service, which could be done with the following command:
-```bash
-kubectl create secret generic openai-vlm-api-key-secret \
-    --from-literal=api-key=<OpenAI API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.openai.api_key=<OpenAI API Key>
-```
-
-__NOTE__: Instead of relying on the OpenAI model, it is possible to provide on a custom VLM model endpoint, provided this custom VLM model has OpenAI API compatible interface. This could be achieved by appropriately setting the ``base_url`` parameter:
-
-```bash
-    --set deepsearch.vision_endpoint.openai.parameters.base_url=<your custom LLM model>
-```
-
-If it also possible to customize various other parameters of the OpenAI VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.openai.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-base_url: null
-max_tokens: 2048
-model: gpt-4o
-temperature: 0
-```
-#### Qwen
-
-Qwen VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Qwen service, which could be done with the following command:
-```bash
-kubectl create secret generic qwen-vlm-api-key-secret \
-    --from-literal=api-key=<Qwen API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set deepsearch.vision_endpoint.qwen.api_key=<Qwen API Key>
-```
-
-If it possible to customize various parameters of the Qwen VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set deepsearch.vision_endpoint.qwen.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-
-```yaml
-max_tokens: 2048
-model: qwen3-vl-235b-a22b-instruct
-temperature: 0
+api_key: ""
+api_key_secret_field: api-key
+api_key_secret_name: usdsearch-llm-api-key-secret
+base_url: https://inference-api.nvidia.com
+env_prefix: USDSEARCH_LLM_
 ```
 
 ### Customization
@@ -1613,76 +1337,43 @@ and ``{metadata_definitions}``. Those get populated with the respective values
 defined in ``deepsearch.vision_endpoint.metadata_fields`` parameter.
 
 ```text
-Write a detailed analysis of the provided image of a 3D object or a scene.
-Your analysis should focus on identifying key features, textures, colors, and any other notable characteristics visible from the images.
+You are an expert 3D asset cataloguer for USD Search, an asset library used across
+synthetic data generation, robotics & simulation, industrial / warehouse / logistics,
+autonomous driving, architecture, retail, digital twins, and games & film.
 
-Based on your analysis, generate a JSON object that encapsulates the metadata about the 3D object.
-This metadata should include searchable terms and keywords that accurately describe the object's visual aspects, such as shape, color, texture, and any unique features.
-Additionally, craft a concise caption that summarizes the object's appearance and distinctive attributes.
+Analyze the provided rendered images of a single 3D asset and produce rich, accurate,
+searchable metadata. Optimize for retrieval: imagine the many different users —
+a robotics engineer, an SDG pipeline, a warehouse digital-twin team, a game artist —
+and capture the terms each of them would search for.
 
-Ensure that the JSON object is structured in a way that facilitates its inclusion in a searchable index, making the 3D object easily discoverable based on its visual characteristics.
-The metadata should be comprehensive yet succinct, enabling efficient search and retrieval in a database or search engine context.
+## How to analyze
+1. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
+2. Note its function and which domains/pipelines it suits.
+3. Read any visible text, branding, labels, or signage.
+4. Note materials, dominant colors, real-world scale, condition, and any mechanical traits.
+5. Brainstorm the keywords and synonyms a real user would type to find it.
 
-The JSON output should follow this structure:
+## Output format (JSON object with exactly these fields)
 {metadata_types}
 
-with these field definitions:
+## Field definitions
 {metadata_definitions}
 
-Your analysis must strive to be as precise and comprehensive as possible, using only the visual information available in the provided thumbnails.
-Assume the role of an intelligent vision system tasked with generating actionable metadata for cataloging or identification purposes.
+## Rules
+- Output ONLY a valid JSON object with every field above — no prose, no markdown.
+- Describe only what is actually visible. Never invent brands, text, or function.
+- When a field doesn't apply or can't be determined, use "unknown" for single-value
+  string fields and an empty list `[]` for list fields. Do not guess.
+- Be specific over generic; prefer precise nouns and industry terms.
+- Use lowercase for tags, object_type, use_cases, environment, colors, materials,
+  physical_attributes (captions and verbatim visible_text keep natural casing).
+- Pick exactly ONE value for category, style, scale, and state from their allowed lists.
+- Tags are the most important field: be thorough, include synonyms and domain terms.
+- Quality flags must be honest — they let users filter out broken assets.
 
 ```
 
 #### Metadata fields configuration
-
-Metadata fields extracted by the VLM-based auto-captioning system could be
-adjusted to the target use-case by appropriately setting the
-``deepsearch.vision_endpoint.metadata_fields`` parameter in the
-``values.yaml`` file. This parameter is a list ``fields`` each of which
-is required to to have the following settings:
-
-  - **name**: name of the metadata field
-  - **description**: description of the metadata field and some guidance for the VLM model on how this metadata field should be extracted.
-  - **type**: type of the metadata field
-
-The following represents the default configuration for the metadata fields:
-
-```yaml
-- description: a brief, descriptive title or caption for the object. The caption should be concise and informative, providing a general overview of the object's appearance, function, or significance. It should be written in clear, accessible language that is easy for users to understand and should accurately reflect the content and context of the object.
-  name: caption
-  type: str
-- description: a list of potential search terms or phrases that someone could use to find this object using a text-based search engine. The terms should describe the object accurately, considering aspects such as its shape, material, style, color, and any distinctive features that might help in identifying it. All values should be returned comma-separated.
-  name: queries
-  type: list[str]
-- description: a list of tags, keywords, and relevant phrases that accurately describe the object and would make it searchable using text. Consider aspects such as the object's form, material, color, function, style, and any notable or unique features that could help in identifying or categorizing the object for search purposes.
-  name: tags
-  type: list[str]
-- description: a list of scene types that the object could be found in. Consider the context in which the object is typically used or displayed, such as a living room, kitchen, office, or outdoor setting.
-  name: scene_type
-  type: list[str]
-- description: a list of colors that are present in the object. Consider the primary colors, secondary colors, and any other hues or shades that are visible in the object.
-  name: colors
-  type: list[str]
-- description: a list of materials that the object is made of or composed of. Consider the primary materials, secondary materials, and any other substances or components that are used in the construction or fabrication of the object.
-  name: materials
-  type: list[str]
-- description: a boolean value indicating whether the object is grayscale or monochromatic in appearance. If the object is primarily black, white, or shades of gray, set this value to true; otherwise, set it to false.
-  name: grayscale
-  type: bool
-- description: a boolean value indicating whether the object has broken or missing textures that affect its appearance or quality. If the object displays unnatural red coloration or other visual artifacts that suggest texture issues, set this value to true; otherwise, set it to false.
-  name: broken_textures
-  type: bool
-- description: a boolean value indicating whether the object is of good quality and suitable for use in a variety of applications. If the object is reasonably well-crafted, detailed, and visually appealing, set this value to true; otherwise, set it to false.
-  name: good_quality
-  type: bool
-- description: a boolean value indicating whether the object is a simple geometric shape or blob with no distinctive features or characteristics. If the object lacks complexity, detail, or visual interest, set this value to true; otherwise, set it to false.
-  name: geometric_shape
-  type: bool
-- description: a boolean value indicating whether the object is photorealistic in appearance, meaning that it closely resembles a real-world object or scene. If the object is highly detailed, textured, and realistic in its depiction, set this value to true; otherwise, set it to false.
-  name: photorealistic
-  type: bool
-```
 
 ## VLM-based verification of results with respect to input query
 
@@ -1690,17 +1381,6 @@ VLM validation uses a Vision Language Model to verify that each search
 result visually matches the input query. It compares the query against
 the result's thumbnail and returns a match decision with confidence
 score and reasoning.
-
-The following types of VLM services providers could be configured with
-the helm chart:
-  * azure_openai
-  * openai
-  * anthropic
-  * mistralai
-  * google
-  * nim
-  * qwen
-  * inference_hub
 
 To enable validation of search results, set the following parameter to true:
 ```bash
@@ -1730,309 +1410,32 @@ ngsearch:
         max_concurrent_requests: <number of concurrent requests>
 ```
 
-To set the VLM service provider, set the following parameter:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service=<VLM service provider>
-```
+### LLM/VLM provider
 
-or specify `ngsearch.microservices.search_rest_api.validation.vlm_service` setting in the `my-usdsearch-config.yaml` file as follows:
+Per-result VLM validation runs on the same shared OpenAI-compatible
+provider (`provider.api_key` -> `USDSEARCH_LLM_API_KEY`, `provider.base_url`
+-> `USDSEARCH_LLM_BASE_URL`). The stack ships pointed at a default endpoint
+(NVIDIA Inference Hub); point `base_url` at any OpenAI-API-compatible server
+to use a different one.
+
+Example — enable validation and configure the provider at install time:
+
+  helm install usdsearch ./helm/usdsearch \
+    ... \
+    --set global.secrets.create.vlm=true \
+    --set ngsearch.microservices.search_rest_api.validation.enabled=true \
+    --set ngsearch.microservices.search_rest_api.validation.provider.api_key=<API key> \
+    --set ngsearch.microservices.search_rest_api.validation.provider.base_url=<Base URL> \
+    --set ngsearch.microservices.search_rest_api.validation.model=<model id>
+
+Default provider settings:
+
 ```yaml
-ngsearch:
-  microservices:
-    search_rest_api:
-      validation:
-        vlm_service: <VLM service provider>
-```
-
-To set the API key for the VLM service, set the following parameter:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.<VLM service provider>.api_key=<API key>
-```
-
-or specify `ngsearch.microservices.search_rest_api.validation.vlm_service.<VLM service provider>.api_key` setting in the `my-usdsearch-config.yaml` file as follows:
-```yaml
-ngsearch:
-  microservices:
-    search_rest_api:
-      validation:
-        vlm_service: <VLM service provider>
-        api_key: <API key>
-```
-
-### VLM services
-
-Below you can find a list of VLM service providers with respective parameters that could be configured with USD Search API.
-
-#### Anthropic
-
-Anthropic VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Anthropic service, which could be done with the following command:
-```bash
-kubectl create secret generic anthropic-vlm-api-key-secret \
-    --from-literal=api-key=<Anthropic API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.api_key=<Anthropic API Key>
-```
-
-If it possible to customize various parameters of the Anthropic VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.anthropic.parameters.model=claude-3-5-sonnet-latest
-```
-
-#### Azure OpenAI
-
-Azure OpenAI VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Azure OpenAI service, which could be done with the following command:
-```bash
-kubectl create secret generic azure-openai-vlm-api-key-secret \
-    --from-literal=api-key=<Azure OpenAI API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.api_key=<Azure OpenAI API Key>
-```
-
-If it possible to customize various parameters of the Azure OpenAI VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * api_version
-  * azure_endpoint
-  * max_tokens
-  * temperature
-  * azure_deployment
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.azure_openai.parameters.model=gpt-4o-20241120
-```
-
-#### Google
-
-Google Gemini VLM service endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Google Gemini service, which could be done with the following command:
-```bash
-kubectl create secret generic google-vlm-api-key-secret \
-    --from-literal=api-key=<Google Gemini API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.api_key=<Google Gemini API Key>
-```
-
-If it possible to customize various parameters of the Google Gemini VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.<parameter name>=<parameter value>
-```
-
-For example, it is possible to customize the base URL for the Google Gemini VLM endpoint to the following:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.base_url=<target base URL>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-  * base_url
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.google.parameters.model=gemini-2.5-pro
-```
-
-#### NVIDIA Inference Hub
-
-Inference Hub VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Inference Hub service, which could be done with the following command:
-```bash
-kubectl create secret generic inference-hub-vlm-api-key-secret \
-    --from-literal=api-key=<Inference Hub API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.api_key=<Inference Hub API Key>
-```
-
-If it possible to customize various parameters of the Inference Hub VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.inference_hub.parameters.model=gcp/google/gemini-3-flash-preview
-```
-
-#### Mistral AI
-
-Mistral AI VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Mistral AI service, which could be done with the following command:
-```bash
-kubectl create secret generic mistralai-vlm-api-key-secret \
-    --from-literal=api-key=<Mistral AI API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.api_key=<Mistral AI API Key>
-```
-
-If it possible to customize various parameters of the Mistral AI VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.mistralai.parameters.model=pixtral-large-latest
-```
-
-#### NVIDIA NIM
-
-NIM VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing NIM service, which could be done with the following command:
-```bash
-kubectl create secret generic nim-vlm-api-key-secret \
-    --from-literal=api-key=<NIM API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.api_key=<NIM API Key>
-```
-
-If it possible to customize various parameters of the NIM VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.nim.parameters.model=meta/llama-4-maverick-17b-128e-instruct
-```
-
-#### OpenAI
-
-OpenAI VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing OpenAI service, which could be done with the following command:
-```bash
-kubectl create secret generic openai-vlm-api-key-secret \
-    --from-literal=api-key=<OpenAI API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.api_key=<OpenAI API Key>
-```
-
-__NOTE__: Instead of relying on the OpenAI model, it is possible to provide on a custom VLM model endpoint, provided this custom VLM model has OpenAI API compatible interface. This could be achieved by appropriately setting the ``base_url`` parameter:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.base_url=<your custom LLM model>
-```
-
-If it also possible to customize various other parameters of the OpenAI VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-  * base_url
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.openai.parameters.model=gpt-4o
-```
-
-#### Qwen
-
-Qwen VLM endpoint configuration.
-
-It is required to provide a secret with the API key for accessing Qwen service, which could be done with the following command:
-```bash
-kubectl create secret generic qwen-vlm-api-key-secret \
-    --from-literal=api-key=<Qwen API Key>
-```
-
-Alternatively, if such secret is not created in advance it is possible to automatically by providing the following command line arguments during the first helm installation:
-```bash
-    --set global.secrets.create.vlm=true \
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.api_key=<Qwen API Key>
-```
-
-If it possible to customize various parameters of the Qwen VLM endpoint. This can be done using the following command line arguments:
-
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.parameters.<parameter name>=<parameter value>
-```
-
-The full list of parameters with pre-set default values can be found below:
-  * model
-  * max_tokens
-  * temperature
-
-For example, it is possible to customize the model parameter as follows:
-```bash
-    --set ngsearch.microservices.search_rest_api.validation.vlm_service.qwen.parameters.model=qwen3-vl-235b-a22b-instruct
+api_key: ""
+api_key_secret_field: api-key
+api_key_secret_name: usdsearch-llm-api-key-secret
+base_url: https://inference-api.nvidia.com
+env_prefix: USDSEARCH_LLM_
 ```
 
 ## Search Backend configuration
@@ -2151,7 +1554,7 @@ string
 			<td>
 				<div style="width: 300px;">
 <pre lang="json">
-"1.3.1"
+"1.4.0"
 </pre>
 </div>
 			</td>
@@ -2379,6 +1782,8 @@ object
 <pre lang="json">
 {
   "annotations": {
+    "helm.sh/hook": "pre-install,pre-upgrade",
+    "helm.sh/hook-weight": "-5",
     "helm.sh/resource-policy": "keep"
   },
   "create": {
@@ -2488,6 +1893,20 @@ limits:
 Resources that are allocated for embedding deployment
 
 __NOTE__: Embedding service could rely on either CPU or GPU. Using GPU, however, significantly speeds up inference.</td>
+		</tr>
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">deepsearch.microservices.embedding.runtimeClassName</div></td>
+			<td><div style="white-space: nowrap;">
+string
+</div></td>
+			<td>
+				<div style="width: 300px;">
+<pre lang="json">
+""
+</pre>
+</div>
+			</td>
+			<td>  Optional RuntimeClass for the embedding pod. Empty (default) leaves the field unset, so the cluster's default RuntimeClass applies. Set it (e.g. `nvidia`) to force a specific GPU RuntimeClass when multiple are defined on the cluster (`kubectl get runtimeclass`).</td>
 		</tr>
 		<tr>
 			<td><div style="width: 150px; overflow-wrap: break-word;">deepsearch.microservices.embedding.tmpDir</div></td>
@@ -2748,7 +2167,7 @@ There are two modes for specifying which files are considered thumbnails:
       - "{folder_name}/previews/{file_name}\\.png$"
   ```
 
-The following thumbnail file formats are supported: all formats supported by the [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html) and GIF. When a thumbnail is a GIF file, it will be split into multiple frames using a fixed time offset (default: ``1000`` ms), configurable per plugin via the ``gif_offset_ms`` parameter of the ``thumbnail_to_embedding`` and ``thumbnail_to_vision_metadata`` plugins.
+The following thumbnail file formats are supported: all formats supported by the [PIL library](https://pillow.readthedocs.io/en/stable/handbook/image-file-formats.html) and GIF. When a thumbnail is a GIF file, it will be split into multiple frames by sampling every Nth frame (default: every frame), capped at a maximum number of frames (default: ``512``), configurable per plugin via the ``gif_sampling_mode`` (``fixed`` = every Nth frame, or ``uniform`` = ``gif_max_frames`` frames spread evenly across the GIF), ``gif_frame_sample_frequency``, and ``gif_max_frames`` parameters of the ``thumbnail_to_embedding`` and ``thumbnail_to_vision_metadata`` plugins.
 
 __NOTE__: These settings apply only to the **Nucleus** and **S3** storage backends. When using the **Storage API** backend, thumbnails are not resolved from the filesystem. Instead, the thumbnail URL is read directly from the asset metadata. The metadata field (or fields) that hold the thumbnail URL are controlled by the ``global.storage_api.thumbnail_metadata_fields`` setting. Please refer to the [Thumbnail retrieval](#thumbnail-retrieval) section for more information.
 </td>
@@ -2870,6 +2289,94 @@ To set the minimum number of replicas for the search-rest-api deployment, set th
 ```bash
     --set ngsearch.microservices.search_rest_api.hpa.minReplicas=<number of replicas>
 ```
+</td>
+		</tr>
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">ngsearch.microservices.search_rest_api.llm_parsing</div></td>
+			<td><div style="white-space: nowrap;">
+yaml
+</div></td>
+			<td>
+				<div style="width: 300px;">
+<pre lang="yaml">
+system prompt + filter catalog shipped in the app image, reproduced inline below
+</pre>
+</div>
+			</td>
+			<td>
+
+LLM query parsing: parses free-text queries into
+structured filters via `POST /llm_parse/query` (+ `GET /llm_parse/fields`
+for filter discovery). Runs on the same shared LLM provider as
+validation; when disabled or unreachable the endpoints return 503 and
+clients fall back to plain hybrid search.
+
+`prompt` (string) and `fields` (list) are the live system-prompt template
+and filter catalog the chart mounts and the API loads — helm values take
+priority, so what you see here is exactly what deploys (`$catalog` /
+`$today` are substituted at runtime). They reproduce the copies shipped in
+the application image verbatim; set `prompt: ""` / `fields: null` to fall
+back to those in-image copies. `fields` is where deployment-specific
+filters (e.g. SimReady physics properties) are configured. The inline
+defaults are kept in sync with the in-image copies by
+ci/helm/tests/unit/test_llm_parsing_defaults_sync.sh.
+
+LLM query parsing is disabled by default because it requires an external
+LLM connection. To enable it, set the following parameter to true:
+```bash
+    --set ngsearch.microservices.search_rest_api.llm_parsing.enabled=true
+```
+
+or specify `ngsearch.microservices.search_rest_api.llm_parsing.enabled` setting in the `my-usdsearch-config.yaml` file as follows:
+```yaml
+ngsearch:
+  microservices:
+    search_rest_api:
+      llm_parsing:
+        enabled: true
+```
+
+To choose the model used for parsing (empty keeps the application
+default), set the following parameter:
+```bash
+    --set ngsearch.microservices.search_rest_api.llm_parsing.model=<model id>
+```
+
+or specify `ngsearch.microservices.search_rest_api.llm_parsing.model` setting in the `my-usdsearch-config.yaml` file as follows:
+```yaml
+ngsearch:
+  microservices:
+    search_rest_api:
+      llm_parsing:
+        model: <model id>
+```
+
+`max_tokens` caps the parser's output tokens (default 1536; empty keeps
+the application default). Raise it if structured output gets truncated on
+large field catalogs:
+```bash
+    --set ngsearch.microservices.search_rest_api.llm_parsing.max_tokens=2048
+```
+
+By default llm_parsing shares the one OpenAI-compatible provider used by
+`validation` and `deepsearch.vision_endpoint` (`USDSEARCH_LLM_API_KEY` /
+`USDSEARCH_LLM_BASE_URL`) — leave `provider.base_url`/`provider.api_key`
+empty to keep that. To point LLM query parsing at its OWN endpoint
+(e.g. a cheaper/faster model on a different server) set the `provider`
+block below: a non-empty `base_url` and/or `api_key` overrides just that
+field for the parsing role (-> `USDSEARCH_LLM_PARSING_BASE_URL` /
+`USDSEARCH_LLM_PARSING_API_KEY`), and the chart provisions a dedicated
+secret for the key.
+
+Example — enable LLM query parsing on its own endpoint at install time:
+
+  helm install usdsearch ./helm/usdsearch \
+    ... \
+    --set global.secrets.create.vlm=true \
+    --set ngsearch.microservices.search_rest_api.llm_parsing.enabled=true \
+    --set ngsearch.microservices.search_rest_api.llm_parsing.model=<model id> \
+    --set ngsearch.microservices.search_rest_api.llm_parsing.provider.api_key=<API key> \
+    --set ngsearch.microservices.search_rest_api.llm_parsing.provider.base_url=<Base URL>
 </td>
 		</tr>
 		<tr>
@@ -3375,7 +2882,7 @@ string
 			<td>
 				<div style="width: 300px;">
 <pre lang="json">
-"-Xmx8192M -Xms8192M"
+"-Xmx4096M -Xms4096M"
 </pre>
 </div>
 			</td>
@@ -3431,10 +2938,10 @@ map
 <pre lang="yaml">
 requests:
     cpu: "2"
-    memory: "16Gi"
+    memory: "8Gi"
 limits:
     cpu: "3"
-    memory: "16Gi"
+    memory: "8Gi"
 
 </pre>
 </div>
@@ -3778,6 +3285,24 @@ When it comes to USD assets, USD Search API service operates on the file level, 
 USD Search API relies on the [SigLIP2 model](https://huggingface.co/google/siglip2-giant-opt-patch16-384) to extract embedding from images. SigLIP2 model operates on RGB images of shape ``384x384``, therefore to achieve the best accuracy the input images should be squared and have at least ``384x384`` size.
 
 If images have different dimensions - they will be rescaled such that the minimum of height and width is equal to ``384`` and then center-cropping will be applied to make sure aspect ratio is preserved and the SigLIP2 model receives a squared input.
+
+## Embedding service falls back to CPU with the GPU Operator installed
+
+If the embedding service container starts on CPU even though the NVIDIA GPU Operator is installed on the cluster, the two most common causes are:
+
+1. **NVIDIA GPU driver version mismatch.** The driver must be version ``595.58.03`` or higher. Verify the installed driver and upgrade it if it is older.
+
+2. **Multiple RuntimeClasses defined on the cluster.** When the driver is correct, the GPU may not be exposed because more than one RuntimeClass is defined and the wrong one is selected by default. List the available RuntimeClasses with:
+
+   ```bash
+   kubectl get runtimeclass
+   ```
+
+   If several are present, override the default one for the embedding pod by setting the ``deepsearch.microservices.embedding.runtimeClassName`` parameter to the GPU RuntimeClass (e.g. ``nvidia``):
+
+   ```bash
+     --set deepsearch.microservices.embedding.runtimeClassName=nvidia
+   ```
 
 ## Redis Persistent Volume Claim
 

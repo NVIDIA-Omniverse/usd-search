@@ -25,7 +25,7 @@ from typing import Any, List, Optional
 
 from PIL import Image
 from prometheus_client import Counter, Summary
-from vision_endpoint.clip_triton_client import SigLIP2, SigLIP2Config
+from siglip2_triton_client import SigLIP2, SigLIP2Config
 
 from ..models import Prediction
 

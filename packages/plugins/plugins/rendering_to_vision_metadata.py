@@ -32,6 +32,7 @@ from deepsearch_utils.rendering_utils import (
     get_omni_file_renderings,
     render_usd_file_async,
 )
+from llm_client import MetadataGeneration
 
 # third-party modules
 from opentelemetry import trace
@@ -39,7 +40,6 @@ from PIL import Image
 
 # local/proprietary modules
 from storage.src.client import NGSearchStorageHelper, Result, StorageClientInput
-from vision_endpoint import MetadataGeneration
 
 from search_utils.misc_utils import image_to_base64
 

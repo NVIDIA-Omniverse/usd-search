@@ -30,6 +30,7 @@ from search_utils.hashing_utils import get_hash
 from search_utils.storage_client import AvailableStorageClients, StorageClient
 from search_utils.storage_client.nucleus.client import NucleusStorageClient
 from search_utils.storage_client.s3.client import S3StorageClient
+from search_utils.storage_client.storage_api.client import StorageAPIStorageClient
 
 from .models import PluginInfo, PluginStatusType
 
@@ -119,6 +120,8 @@ def get_storage_backend_type(storage_client: StorageClient) -> AvailableStorageC
         return AvailableStorageClients.nucleus
     if isinstance(storage_client, S3StorageClient):
         return AvailableStorageClients.s3
+    if isinstance(storage_client, StorageAPIStorageClient):
+        return AvailableStorageClients.storage_api
 
     raise NotImplementedError(f"Unsupported client type: {type(storage_client)}")
 

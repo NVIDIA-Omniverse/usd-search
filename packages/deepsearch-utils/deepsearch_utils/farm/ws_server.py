@@ -20,6 +20,7 @@ import os
 
 # third party modules
 import websockets
+from websockets.asyncio.server import serve
 
 # local / proprietary modules
 from search_utils.cache_utils.redis_async import AsyncCacheRedis
@@ -37,6 +38,7 @@ class FarmWebsocketServer:
         internal_ws_host,
         internal_ws_port,
         max_queue=int(os.getenv("FARM_CLIENT_WS_MAX_QUEUE", "10000")),
+        max_size=int(os.getenv("FARM_CLIENT_WS_MAX_SIZE", str(1024 * 1024 * 1024))),
     ) -> None:
         # output dictionary to hold results from FARM
         self.cache = AsyncCacheRedis(redis_url=redis_url, database=redis_db, ttl_seconds=redis_ttl_seconds)
@@ -46,10 +48,14 @@ class FarmWebsocketServer:
         self.internal_ws_host = internal_ws_host
         self.internal_ws_port = internal_ws_port
         self.max_queue = max_queue
-        # init websocket server
+        # Finite frame-size cap (was unbounded) so a single oversized/zlib-bomb
+        # frame cannot exhaust memory before decompress_data's own size guard.
+        self.max_size = max_size
+        self._server_task = None
+        # init websocket server (no-op until an event loop is running — see websocket_server)
         self.websocket_server()
 
-    async def ws_task(self, ws, path):
+    async def ws_task(self, ws):
         # recived data from client
         try:
             resp = await ws.recv()
@@ -62,22 +68,33 @@ class FarmWebsocketServer:
         except Exception as e:
             farm_utils_logger.exception(f"Data writing error: {e}")
 
+    async def _serve_forever(self):
+        # websockets v14+ serve() calls asyncio.get_running_loop() in its
+        # constructor, so it must be instantiated from within a running loop.
+        async with serve(
+            self.ws_task,
+            self.internal_ws_host,
+            self.internal_ws_port,
+            max_size=self.max_size,
+            ping_timeout=None,
+            ping_interval=None,
+            max_queue=self.max_queue,
+        ):
+            await asyncio.get_running_loop().create_future()  # run until cancelled
+
     def websocket_server(self):
-        asyncio.ensure_future(
-            websockets.serve(
-                self.ws_task,
-                self.internal_ws_host,
-                self.internal_ws_port,
-                max_size=None,
-                ping_timeout=None,
-                ping_interval=None,
-                max_queue=self.max_queue,
-            )
-        )
+        # Schedule the server only when a loop is already running (the in-process
+        # FarmClient case). Constructed from a sync context (tests) or before
+        # run() starts the loop, there is no running loop yet — run() owns it then.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        self._server_task = loop.create_task(self._serve_forever())
+        return self._server_task
 
     def run(self):
-        loop = asyncio.get_event_loop()
-        loop.run_forever()
+        asyncio.run(self._serve_forever())
 
 
 def run_farm_websocket(

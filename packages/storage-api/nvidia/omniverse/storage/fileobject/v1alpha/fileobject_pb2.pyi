@@ -75,9 +75,7 @@ class AddressInfo(_message.Message):
     resource_address: str
     metadata: Metadata
     def __init__(
-        self,
-        resource_address: _Optional[str] = ...,
-        metadata: _Optional[_Union[Metadata, _Mapping]] = ...,
+        self, resource_address: _Optional[str] = ..., metadata: _Optional[_Union[Metadata, _Mapping]] = ...
     ) -> None: ...
 
 class ResourceInfo(_message.Message):

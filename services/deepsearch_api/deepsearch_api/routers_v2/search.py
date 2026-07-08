@@ -410,19 +410,22 @@ async def search(
     cutoff_threshold: Annotated[
         Optional[float],
         Query(
-            description="Set the cutoff threshold for embedding-based searches",
+            description="Minimum raw engine score for vector search legs only, applied per leg "
+            "before rank fusion. Scale is the engine's transformed score (innerproduct kNN over "
+            "normalized SigLIP2 maps ip >= 0 to 1 + ip), so the useful range is roughly 1.0-2.0; "
+            "values below 1.0 are effectively no-ops.",
             openapi_examples={
                 "None": {
-                    "summary": "No cutoff threshold",
+                    "summary": "No cutoff threshold (keep every vector hit)",
                     "value": None,
                 },
-                "Threshold of 0": {
-                    "summary": "Example cutoff threshold set to 0",
-                    "value": 0,
+                "Mild cutoff at 1.05": {
+                    "summary": "Drop vector hits with near-zero cosine similarity",
+                    "value": 1.05,
                 },
-                "Similarity above 0.7": {
-                    "summary": "Example cutoff threshold set to 0.7",
-                    "value": 0.7,
+                "Strict cutoff at 1.3": {
+                    "summary": "Keep only strongly similar vector hits (cosine >= 0.3)",
+                    "value": 1.3,
                 },
             },
             ge=0,
@@ -886,6 +889,9 @@ async def stats_usd_properties(
     aggregations_enabled: Annotated[SearchBackendClientV2, Depends(dependencies.aggregations_access_check)],
 ) -> response_models.StatsResponse:
     """
-    Get statistics for USD properties: count of unique properties, count of unique values, and count of unique kv pairs.
+    Inventory of USD properties across the indexed corpus: every unique property key, every unique
+    value, and every unique key=value pair — each with the number of assets that carry it
+    (``asset_count``), sorted by coverage. The full lists (not just counts) power property discovery;
+    see the ``/usd-property-catalog`` skill, which turns this into a local catalog + filter config.
     """
     return await search_backend_v2.get_usd_properties_stats()

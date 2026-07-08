@@ -7,16 +7,16 @@ authors = [
     {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
     {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
 ]
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "ngsearch-cache",
     "ngsearch-storage",
     "deepsearch-utils",
     "search-utils[storage-api]",
-    "vision-endpoint>=0.12.0",
+    "llm-client",
     "orjson>=3.9.0",
     "pillow>=10.2.0",
-    "numpy>=1.26.4,<2",
+    "numpy>=1.26.4",
     "aiohttp>=3.13",
     "opentelemetry-api>=1.25.0",
     "pydantic>=2.0",
@@ -32,7 +32,6 @@ test = [
     "pytest-xdist>=3.2.1",
     "pytest-forked>=1.6.0",
     "pytest-rerunfailures>=11.1.2",
-    "aioresponses>=0.7.6",
     "authlib>=1.7.2",
 ]
 

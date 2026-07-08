@@ -24,6 +24,15 @@ services:
       dockerfile: ../../docker/Dockerfile.kit
       additional_contexts:
         graph-builder: ../../services/asset-graph-builder
+      # Runtime user baked into the image. Defaults match docker/Dockerfile.kit
+      # (the base image's `ubuntu`); override to exercise the graph-builder with
+      # a different container user, e.g. the NVPark settings:
+      #   KIT_USER_ID=27489 KIT_GROUP_ID=27489 KIT_USER_NAME=appuser \
+      #     ci/asset-graph-builder/run_tests_asset_graph_builder.sh
+      args:
+        USER_ID: ${KIT_USER_ID:-1000}
+        GROUP_ID: ${KIT_GROUP_ID:-1000}
+        USER_NAME: ${KIT_USER_NAME:-ubuntu}
     container_name: kit-worker
     ports:
       - "8100:8000"

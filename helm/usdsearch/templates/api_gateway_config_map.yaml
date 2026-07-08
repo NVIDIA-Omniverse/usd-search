@@ -27,7 +27,7 @@ data:
     server {
       listen 0.0.0.0:8080;
       http2 on;
-      
+
       proxy_http_version 1.1;
       proxy_set_header Connection "";
       proxy_connect_timeout 5s;
@@ -36,7 +36,7 @@ data:
       proxy_buffering on;
       proxy_buffer_size 8k;
       proxy_buffers 16 8k;
-      
+
       gzip on;
       gzip_vary on;
       gzip_min_length 1024;
@@ -68,7 +68,7 @@ data:
             add_header Access-Control-Allow-Origin {{ $cors }} always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
-            
+
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
@@ -83,7 +83,7 @@ data:
           # Redirect /asset_graph/usd/scene_summary (with trailing slash) to /asset_graph/usd/scene_summary/ (with trailing slash)
           rewrite ^/asset_graph/usd/scene_summary/(.*)$ /asset_graph/usd/scene_summary/$1 break;
           proxy_pass http://{{ .Release.Name }}-asset-graph-service.{{ .Release.Namespace }}.svc.cluster.local:8000;
-          
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -110,7 +110,7 @@ data:
           # Redirect /asset_graph/usd/scene_summary (without trailing slash) to /asset_graph/usd/scene_summary/ (with trailing slash)
           rewrite ^/asset_graph/usd/scene_summary(.*)$ /asset_graph/usd/scene_summary/$1 break;
           proxy_pass http://{{ .Release.Name }}-asset-graph-service.{{ .Release.Namespace }}.svc.cluster.local:8000;
-          
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -135,13 +135,13 @@ data:
 
           rewrite ^/asset_graph/usd/prims(.*)$ /asset_graph/usd/prims$1 break;
           proxy_pass http://{{ .Release.Name }}-asset-graph-service.{{ .Release.Namespace }}.svc.cluster.local:8000;
-          
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
         }
-      
+
         location /dependency_graph {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
@@ -161,7 +161,7 @@ data:
 
           rewrite ^/dependency_graph(.*)$ /dependency_graph$1 break;
           proxy_pass http://{{ .Release.Name }}-asset-graph-service.{{ .Release.Namespace }}.svc.cluster.local:8000;
-      
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -188,7 +188,7 @@ data:
 
           rewrite ^/search(.*)$ /v2/deepsearch/search$1 break;
           proxy_pass http://{{ .Release.Name }}-ngsearch-ngsearch-rest-api.{{ .Release.Namespace }}.svc.cluster.local:8000;
-          
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -197,12 +197,12 @@ data:
 
       location /search_hybrid {
         {{ if $apiGateway.extraSettings.cors.enabled }}
-          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Origin {{ $cors }} always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -223,12 +223,12 @@ data:
 
       location /vlm_validate/search_result {
         {{ if $apiGateway.extraSettings.cors.enabled }}
-          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Origin {{ $cors }} always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -247,14 +247,68 @@ data:
           proxy_set_header X-Forwarded-Proto $scheme;
         }
 
-      location /images {
+      location /llm_parse/ {
         {{ if $apiGateway.extraSettings.cors.enabled }}
-          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Origin {{ $cors }} always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+              add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+              add_header Access-Control-Max-Age 3600 always;
+              add_header Content-Length 0;
+              add_header Content-Type "text/plain";
+              return 204;
+            }
+        {{ end }}
+
+        rewrite ^/llm_parse/(.*)$ /v3/deepsearch/llm_parse/$1 break;
+        proxy_pass http://{{ .Release.Name }}-ngsearch-ngsearch-rest-api.{{ .Release.Namespace }}.svc.cluster.local:8000;
+
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+      location /download {
+        {{ if $apiGateway.extraSettings.cors.enabled }}
+          add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+          add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+
+          if ($request_method = OPTIONS) {
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+              add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+              add_header Access-Control-Max-Age 3600 always;
+              add_header Content-Length 0;
+              add_header Content-Type "text/plain";
+              return 204;
+            }
+        {{ end }}
+
+        rewrite ^/download(.*)$ /v3/download$1 break;
+        proxy_pass http://{{ .Release.Name }}-ngsearch-ngsearch-rest-api.{{ .Release.Namespace }}.svc.cluster.local:8000;
+
+          proxy_set_header Host $host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          # Bundling an asset + all its dependencies can take longer than a single thumbnail.
+          proxy_read_timeout 300s;
+        }
+
+      location /images {
+        {{ if $apiGateway.extraSettings.cors.enabled }}
+          add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+          add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
+
+          if ($request_method = OPTIONS) {
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -274,12 +328,12 @@ data:
 
       location /metrics {
         {{ if $apiGateway.extraSettings.cors.enabled }}
-          add_header Access-Control-Allow-Origin "*" always;
+          add_header Access-Control-Allow-Origin {{ $cors }} always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -298,12 +352,12 @@ data:
 
         location /info {
           {{ if $apiGateway.extraSettings.cors.enabled }}
-            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Origin {{ $cors }} always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -313,7 +367,7 @@ data:
             }
           {{ end }}
           proxy_pass http://{{ .Release.Name }}-deepsearch-info-endpoint.{{ .Release.Namespace }}.svc.cluster.local:8000;
-      
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -322,12 +376,12 @@ data:
 
         location /process {
           {{ if $apiGateway.extraSettings.cors.enabled }}
-            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Origin {{ $cors }} always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -337,7 +391,7 @@ data:
             }
           {{ end }}
           proxy_pass http://{{ .Release.Name }}-deepsearch-info-endpoint.{{ .Release.Namespace }}.svc.cluster.local:8000;
-      
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -346,12 +400,12 @@ data:
 
         location /docs {
           {{ if $apiGateway.extraSettings.cors.enabled }}
-            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Origin {{ $cors }} always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -365,17 +419,17 @@ data:
           expires 1h;
           add_header Cache-Control "public, immutable";
         }
-      
+
       {{ if .Values.deepsearch_explorer_deployment.enabled }}
-      
+
         location /ui {
           {{ if $apiGateway.extraSettings.cors.enabled }}
-            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Origin {{ $cors }} always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -386,21 +440,21 @@ data:
           {{ end }}
           rewrite ^/ui(.*)$ /$1 break;
           proxy_pass http://{{ .Release.Name }}-deepsearch-explorer.{{ .Release.Namespace }}.svc.cluster.local;
-      
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
-        }      
-      
+        }
+
         location /static/ {
           {{ if $apiGateway.extraSettings.cors.enabled }}
-            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Origin {{ $cors }} always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
-              add_header Access-Control-Allow-Origin "*" always;
+              add_header Access-Control-Allow-Origin {{ $cors }} always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -412,13 +466,13 @@ data:
           proxy_pass http://{{ .Release.Name }}-deepsearch-explorer.{{ .Release.Namespace }}.svc.cluster.local;
           expires 24h;
           add_header Cache-Control "public, immutable";
-      
+
           proxy_set_header Host $host;
           proxy_set_header X-Real-IP $remote_addr;
           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
           proxy_set_header X-Forwarded-Proto $scheme;
         }
-      
+
       {{ if $apiGateway.extraSettings.redirectToUIWhenAvailable }}
       location = / {
           return 301 /ui;

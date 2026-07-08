@@ -20,6 +20,7 @@
 {{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
 {{- $releaseName := include "deepsearch-global.releaseName" . -}}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 
 {{- if not .Values.global.maintenance_mode }}
 
@@ -31,7 +32,8 @@ metadata:
     {{- include "ngsearch.MainDeploymentlabels" . | nindent 4 }}
     release_name: {{ $releaseName }}
     component: "ngsearch"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
     ngsearch.service.name: {{ $serviceName }}
 spec:
   replicas: {{ .Values.microservices.indexing.replicas }}
@@ -53,7 +55,8 @@ spec:
       labels:
         release_name: {{ $releaseName }}
         component: "ngsearch"
-        version: {{ $chartVersion }}
+        version: {{ $appVersion }}
+        chart.version: {{ $chartVersion }}
         {{- include "ngsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
         ngsearch.service.name: {{ $serviceName }}
     spec:
@@ -83,7 +86,7 @@ spec:
           command:
           - python
           - -O
-          - -m 
+          - -m
           - crawlers.src.indexing
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           ports:
@@ -108,6 +111,8 @@ spec:
             {{- end }}
             - name: PROM_METRICS_PORT
               value: "8001"
+            - name: PROCESSING_BATCH_SIZE
+              value: {{ .Values.microservices.indexing.processing_batch_size | default 1 | quote }}
           {{- if eq .Values.global.storage_backend_type "nucleus" }}
             {{- include "deepsearch-global.nucleusComplete" . | nindent 12 }}
           {{- else if eq .Values.global.storage_backend_type "s3" }}

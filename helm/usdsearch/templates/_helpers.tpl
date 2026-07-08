@@ -63,9 +63,9 @@ Common labels
 {{- define "deepsearch-global.labels" -}}
 helm.sh/chart: {{ include "deepsearch-global.chart" . }}
 {{ include "deepsearch-global.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app-version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
+app-version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}

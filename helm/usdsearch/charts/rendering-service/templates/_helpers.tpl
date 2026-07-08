@@ -5,7 +5,7 @@ Defaults to the unified `rendering-job` (Kit) image; honors per-sub-chart
 */}}
 {{- define "rendering-service.dockerImage" -}}
 {{- if .Values.image.name -}}
-{{ default .Values.global.registry .Values.image.registry }}/{{ .Values.image.name }}:{{ default .Chart.AppVersion .Values.image.tag }}
+{{ default .Values.global.registry .Values.image.registry }}/{{ .Values.image.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) .Values.image.tag }}
 {{- else -}}
 {{ include "deepsearch-global.renderingJobImage" . }}
 {{- end -}}
@@ -50,8 +50,8 @@ Common labels
 usdsearch.service.name: rendering-service
 helm.sh/chart: {{ include "rendering-service.chart" . }}
 {{ include "rendering-service.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}

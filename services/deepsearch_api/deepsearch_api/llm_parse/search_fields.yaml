@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+fields:
+  - name: file_type
+    type: array
+    operators: [eq, in]
+    description: File extension(s) of the asset. Maps to file_extension_include.
+    examples:
+      - '"usda files" -> file_type eq "usda"'
+      - '"usd or usdc" -> file_type in ["usd","usdc"]'
+    map: {kind: file_extension}
+
+  - name: name
+    type: string
+    operators: [eq, contains]
+    description: Asset file name or a substring of it.
+    examples: ['"files named chair" -> name contains "chair"']
+    map: {kind: name}
+
+  - name: path_prefix
+    type: string
+    operators: [eq, contains]
+    description: Directory path the asset lives under (no storage URL prefix).
+    examples: ['"under /Projects/Vehicles" -> path_prefix eq "/Projects/Vehicles"']
+    map: {kind: path}
+
+  - name: created_at
+    type: date
+    operators: [gt, gte, lt, lte]
+    description: Asset creation date (ISO YYYY-MM-DD). gt/gte -> created after; lt/lte -> created before.
+    examples: ['"created since 2024" -> created_at gte "2024-01-01"']
+    map: {kind: date_range, after_param: created_after, before_param: created_before}
+
+  - name: modified_at
+    type: date
+    operators: [gt, gte, lt, lte]
+    description: Asset last-modified date (ISO YYYY-MM-DD). gt/gte -> after; lt/lte -> before.
+    examples: ['"changed before March 2024" -> modified_at lt "2024-03-01"']
+    map: {kind: date_range, after_param: modified_after, before_param: modified_before}
+
+  - name: size
+    type: string
+    operators: [gt, gte, lt, lte]
+    description: "File size as an integer + unit (KB/MB/GB/TB), e.g. '5MB'. gt/gte -> larger; lt/lte -> smaller."
+    examples: ['"bigger than 10 MB" -> size gt "10MB"']
+    map: {kind: size_range}
+
+  - name: created_by
+    type: string
+    operators: [eq]
+    description: User/owner ID (or email) that created the asset.
+    examples: ['"created by alice@example.com" -> created_by eq "alice@example.com"']
+    map: {kind: passthrough, param: created_by}
+
+  - name: tag
+    type: string
+    operators: [eq, contains]
+    description: Asset tag value (or a `key=value` tag pair).
+    examples: ['"tagged outdoor" -> tag eq "outdoor"']
+    map: {kind: tag}
+
+  - name: usd_property
+    type: string
+    operators: [eq]
+    description: Generic exact USD property filter in `key=value` form; a value is required (e.g. `class=vehicle`). Do not emit a value-less `key=`; for property existence use a dedicated field.
+    examples: ['"class is vehicle" -> usd_property eq "class=vehicle"']
+    map: {kind: property_keyvalue}
+
+  - name: polygon_count
+    type: number
+    operators: [gt, gte, lt, lte, eq]
+    description: Mesh polygon count (geometry complexity). lt -> low-poly/simple; gt -> high-detail.
+    examples: ['"low-poly assets under 10k polygons" -> polygon_count lt 10000']
+    map:
+      kind: property_numeric
+      property: "__polygon_count"
+      property_env: USDSEARCH_LLM_PARSING_POLYGON_COUNT_PROPERTY
+
+  # --- Deployment-specific fields (not enabled by default) -------------------
+  # Filters tied to SimReady-style USD properties — rigid-body physics
+  # (physics_rigid_body), colliders (has_collider), object class
+  # (object_class), mass (physics_mass), density (physics_density) — are NOT
+  # part of the default catalog: they only return results on corpora indexed
+  # with those property conventions. A complete ready-to-use catalog that
+  # includes them ships next to this file as `search_fields.simready.yaml`;
+  # point USDSEARCH_LLM_PARSING_FIELDS_FILEPATH at it (helm:
+  # ngsearch.microservices.search_rest_api.llm_parsing.fields) or copy the
+  # entries you need. See docs/search-filters.md.
+
+  - name: dimension
+    type: number
+    operators: [gt, gte, lt, lte]
+    description: Overall size in meters across all axes. lt -> small/fits in that cube; gt -> large.
+    examples:
+      - '"small objects under 1 meter" -> dimension lt 1'
+      - '"large props over 3m" -> dimension gt 3'
+    map: {kind: bbox}

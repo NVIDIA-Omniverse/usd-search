@@ -16,15 +16,18 @@
 services:
   explorer:
     build:
+      # Public, self-contained image: serves the pre-built generic bundle
+      # tracked at services/explorer/dist/ (bitnami nginx on :8080). The bundle
+      # is generic — empty REACT_APP_API_URL (same-origin /api/, which the
+      # gateway proxies to deepsearch-api) and a usd* include filter — so no
+      # build args are needed here. To bake different defaults (API URL, server
+      # mapping, cutoff, extensions), use the internal build path
+      # (scripts/build-explorer.sh + docker/Dockerfile.explorer-internal) and
+      # set `image:` to the result.
       context: ../../
       dockerfile: docker/Dockerfile.explorer
-      args:
-        # Same-origin: the SPA hits /api/* and nginx proxies to deepsearch-api:8000.
-        REACT_APP_API_URL: /api
-        REACT_APP_DEFAULT_EMBEDDING_FIELD_NAME: ${REACT_APP_DEFAULT_EMBEDDING_FIELD_NAME:-siglip2-embedding.embedding}
-        REACT_APP_DEFAULT_EMBEDDING_DIMENSION: ${REACT_APP_DEFAULT_EMBEDDING_DIMENSION:-1536}
     container_name: deepsearch-explorer
     ports:
-      - "${EXPLORER_PORT:-3000}:80"
+      - "${EXPLORER_PORT:-3000}:8080"
     depends_on:
       - deepsearch-api

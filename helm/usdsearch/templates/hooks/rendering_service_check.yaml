@@ -37,7 +37,7 @@ spec:
         - name: connection-check
           {{- $apiImg := .Values.ngsearch.microservices.search_rest_api.image }}
           {{- if $apiImg.name }}
-          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default .Chart.AppVersion }}
+          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default (include "deepsearch-global.unifiedImageTag" .) }}
           {{- else }}
           image: {{ include "deepsearch-global.usdsearchImage" . }}
           {{- end }}

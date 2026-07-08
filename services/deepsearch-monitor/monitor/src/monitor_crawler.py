@@ -258,7 +258,8 @@ class DeepSearchMonitorService(DeepSearchConsumer, DeepSearchMonitorBase):  # ty
 
     async def process_queue(self) -> None:
         # run main loop
-        bg = time.time()
+        last_prom_update = time.time()
+        last_stats_log = time.time()
         await self.await_readiness()
         # wait for queues to be cleaned
         if self.monitor_config.clean_queues:
@@ -282,20 +283,34 @@ class DeepSearchMonitorService(DeepSearchConsumer, DeepSearchMonitorBase):  # ty
                             # propagate exception further
                             raise response from response
 
-                # update prometheus metrics
-                stats = await self.statistics()
-                progress = get_percentage(stats["processed"], stats["read"])
-                if self._monitor_config.use_prom_metrics:
-                    if self._prom_metrics_dict is None:
-                        raise ValueError("Metrics dict is not initialized")
-                    self._prom_metrics_dict["queued_length_metric"].set(stats["read"] - stats["processed"])
-                    self._prom_metrics_dict["progress_metric"].set(progress)
-                    self._prom_metrics_dict["processed_metric"].set(stats["processed"])
+                # Computing statistics costs extra Redis round trips, so only do
+                # it when a consumer is actually due: when the Prometheus gauges
+                # need refreshing, or when stats logging is enabled (INFO) and its
+                # log interval has elapsed. This keeps the per-asset hot path free
+                # of bookkeeping round trips.
+                now = time.time()
+                prom_update_due = self._monitor_config.use_prom_metrics and (
+                    now - last_prom_update >= self._monitor_config.prom_metrics_update_interval_seconds
+                )
+                stats_log_due = logger.isEnabledFor(logging.INFO) and (
+                    now - last_stats_log >= self._monitor_config.stats_log_interval_seconds
+                )
 
-                # dump cache to local system
-                if time.time() - bg > 60:
-                    logger.info("read: %s", stats["read"])
-                    bg = time.time()
+                if prom_update_due or stats_log_due:
+                    stats = await self.statistics()
+
+                    if prom_update_due:
+                        if self._prom_metrics_dict is None:
+                            raise ValueError("Metrics dict is not initialized")
+                        progress = get_percentage(stats["processed"], stats["read"])
+                        self._prom_metrics_dict["queued_length_metric"].set(stats["read"] - stats["processed"])
+                        self._prom_metrics_dict["progress_metric"].set(progress)
+                        self._prom_metrics_dict["processed_metric"].set(stats["processed"])
+                        last_prom_update = now
+
+                    if stats_log_due:
+                        logger.info("read: %s", stats["read"])
+                        last_stats_log = now
 
     async def process_single_asset(self, client: StorageClient) -> None:
         try:

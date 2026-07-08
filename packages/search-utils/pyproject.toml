@@ -8,10 +8,10 @@ authors = [
     {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "base-logging",
-    "numpy>=1.22.3,<2",
+    "numpy>=1.22.3",
     "aiohttp>=3.8.1",
     "websockets>=10",
     "redis[hiredis]>=5.0.4",
@@ -85,7 +85,7 @@ test = [
     "pytest-rerunfailures>=11.1.2",
     "anybadge>=1.14.0",
     "coverage-badge>=1.1.0",
-    "vision-endpoint>=0.4.4",
+    "llm-client",
     "pytest-forked>=1.6.0",
 ]
 dev = [
@@ -99,7 +99,7 @@ package = true
 storage-api = { workspace = true }
 
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning"]
+requires = ["hatchling<1.28", "uv-dynamic-versioning"]
 build-backend = "hatchling.build"
 
 [tool.uv-dynamic-versioning]
@@ -113,13 +113,12 @@ source = "uv-dynamic-versioning"
 
 [tool.hatch.build.targets.wheel]
 ignore-vcs = true
+# NOTE: the `_build/*` trees are brought in exclusively via
+# `[tool.hatch.build.targets.wheel.force-include]` below (then re-rooted by
+# `[...wheel.sources]`). Do NOT also list them here — newer hatchling rejects
+# the resulting duplicate archive paths ("A second file is being added ...").
 only-include = [
     "search_utils",
-    "_build/discovery.client.py/omni",
-    "_build/idl.py/idl",
-    "_build/omniverse_connection/omni",
-    "_build/omniverse.auth.client.py/omni",
-    "_build/tag_idl_client/omni"
 ]
 
 [tool.hatch.build.targets.wheel.force-include]

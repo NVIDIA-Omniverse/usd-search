@@ -1,0 +1,15 @@
+{
+  "hybrid_text_query": "__QUERY__",
+  "vector_queries": [{
+    "field_name": "siglip2-embedding.embedding",
+    "query_type": "text",
+    "query": "__QUERY__"
+  }],
+  "file_extension_include": "usd*",
+  "return_metadata": true,
+  "return_usd_dimensions": true,
+  "return_usd_properties": true,
+  "return_vision_generated_metadata": true,
+  "return_images": true,
+  "limit": 20
+}

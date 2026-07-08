@@ -21,7 +21,6 @@
 {{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
 {{- $values := .Values -}}
 {{- $releaseName := .Release.Name -}}
-{{- $vlm_service := .Values.microservices.search_rest_api.validation.vlm_service -}}
 
 
 {{- if or ( .Values.microservices.search_rest_api.enabled ) (eq ( .Values.microservices.search_rest_api.enabled | toString) "<nil>") }}
@@ -70,6 +69,18 @@ spec:
               path: logging.yaml
             - key: validation_domain_context.txt
               path: validation_domain_context.txt
+            {{- if .Values.microservices.search_rest_api.llm_parsing.prompt }}
+            - key: llm_parsing_system_prompt.txt
+              path: llm_parsing_system_prompt.txt
+            {{- end }}
+            {{- if .Values.microservices.search_rest_api.llm_parsing.fields }}
+            - key: search_fields.yaml
+              path: search_fields.yaml
+            {{- end }}
+            {{- if .Values.microservices.search_rest_api.llm_parsing.property_catalog }}
+            - key: usd_property_catalog.yaml
+              path: usd_property_catalog.yaml
+            {{- end }}
       - name: query-config
         configMap:
           name: {{ $fullName }}-query-config
@@ -124,6 +135,21 @@ spec:
             name: rest-api-config
             subPath: validation_domain_context.txt
           {{- end }}
+          {{- if .Values.microservices.search_rest_api.llm_parsing.prompt }}
+          - mountPath: /llm_parsing_system_prompt.txt
+            name: rest-api-config
+            subPath: llm_parsing_system_prompt.txt
+          {{- end }}
+          {{- if .Values.microservices.search_rest_api.llm_parsing.fields }}
+          - mountPath: /search_fields.yaml
+            name: rest-api-config
+            subPath: search_fields.yaml
+          {{- end }}
+          {{- if .Values.microservices.search_rest_api.llm_parsing.property_catalog }}
+          - mountPath: /usd_property_catalog.yaml
+            name: rest-api-config
+            subPath: usd_property_catalog.yaml
+          {{- end }}
           - name: backend
             mountPath: /ngsearch/src/configuration
           - name: query-config
@@ -150,34 +176,60 @@ spec:
                   name: {{ .Values.global.embedding_deployment.authentication.secret_name }}
                   key: {{ .Values.global.embedding_deployment.authentication.secret_key }}
             {{- end }}
-            - name: VLM_VALIDATION_ENABLED
+            - name: USDSEARCH_VISION_VALIDATION_ENABLED
               value: {{ .Values.microservices.search_rest_api.validation.enabled | quote }}
             {{- if .Values.microservices.search_rest_api.validation.enabled }}
-            - name: VLM_VALIDATION_MAX_CONCURRENT
+            - name: USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT
               value: {{ .Values.microservices.search_rest_api.validation.max_concurrent_requests | quote }}
-            - name: VLM_VALIDATION_VLM_SERVICE
-              value: {{ required "Please provide the VLM service type: --set ngsearch.microservices.search_rest_api.validation.vlm_service=<VLM Service type>" $vlm_service }} 
-            - name: VLM_VALIDATION_DOMAIN_CONTEXT_FILEPATH
+            - name: USDSEARCH_VISION_VALIDATION_MODEL
+              value: {{ .Values.microservices.search_rest_api.validation.model | quote }}
+            - name: USDSEARCH_VISION_VALIDATION_DOMAIN_CONTEXT_FILEPATH
               value: /validation_domain_context.txt
-            {{- with .Values.microservices.search_rest_api.validation }}  
-              {{- if eq $vlm_service "azure_openai" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .azure_openai) | nindent 12 }}
-              {{- else if eq $vlm_service "openai" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .openai) | nindent 12 }}
-              {{- else if eq $vlm_service "anthropic" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .anthropic) | nindent 12 }}
-              {{- else if eq $vlm_service "mistralai" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .mistralai) | nindent 12 }}
-              {{- else if eq $vlm_service "google" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .google) | nindent 12 }}
-              {{- else if eq $vlm_service "nim" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .nim) | nindent 12 }}
-              {{- else if eq $vlm_service "qwen" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .qwen) | nindent 12 }}
-              {{- else if eq $vlm_service "inference_hub" -}}
-            {{- include "ngsearch.template.vlm.config" (dict "source" .inference_hub) | nindent 12 }}
-              {{- end }}
+            {{- with .Values.microservices.search_rest_api.validation }}
+            {{- include "ngsearch.template.vlm.config" (dict "source" .provider) | nindent 12 }}
             {{- end }}
+            {{- end }}
+            - name: USDSEARCH_LLM_PARSING_ENABLED
+              value: {{ .Values.microservices.search_rest_api.llm_parsing.enabled | quote }}
+            {{- with .Values.microservices.search_rest_api.llm_parsing.model }}
+            {{- /* empty string keeps the application default model */}}
+            - name: USDSEARCH_LLM_PARSING_MODEL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.microservices.search_rest_api.llm_parsing.max_tokens }}
+            - name: USDSEARCH_LLM_PARSING_MAX_TOKENS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.microservices.search_rest_api.llm_parsing.enabled }}
+            {{- with .Values.microservices.search_rest_api.llm_parsing.provider }}
+            {{- /* Optional SEARCH-LLM-specific endpoint; empty base_url/api_key
+                   keeps the shared USDSEARCH_LLM_* connection. Emitted inline (not
+                   via the vlm.config helper) so a keyless endpoint can set
+                   base_url without a secret reference. */}}
+            {{- if .base_url }}
+            - name: {{ printf "%sBASE_URL" .env_prefix }}
+              value: {{ .base_url | quote }}
+            {{- end }}
+            {{- if .api_key }}
+            - name: {{ printf "%sAPI_KEY" .env_prefix }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .api_key_secret_name }}
+                  key: {{ .api_key_secret_field }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.microservices.search_rest_api.llm_parsing.prompt }}
+            - name: USDSEARCH_LLM_PARSING_PROMPT_FILEPATH
+              value: /llm_parsing_system_prompt.txt
+            {{- end }}
+            {{- if .Values.microservices.search_rest_api.llm_parsing.fields }}
+            - name: USDSEARCH_LLM_PARSING_FIELDS_FILEPATH
+              value: /search_fields.yaml
+            {{- end }}
+            {{- if .Values.microservices.search_rest_api.llm_parsing.property_catalog }}
+            - name: USDSEARCH_LLM_PARSING_PROPERTY_CATALOG_FILEPATH
+              value: /usd_property_catalog.yaml
             {{- end }}
             - name: LOGGING_CONFIG
               value: /logging.yaml
@@ -266,6 +318,33 @@ spec:
               value: {{ .Values.microservices.search_rest_api.default_cutoff_threshold | quote}}
             - name: SERVICE_VERSION
               value: "{{ .Values.microservices.search_rest_api.image.tag | default .Chart.AppVersion }}"
+            {{- with .Values.microservices.search_rest_api.download }}
+{{/*            Asset-download bundler tunables (DOWNLOAD_* env vars)*/}}
+            {{- if not (kindIs "invalid" .max_dependencies) }}
+            - name: DOWNLOAD_MAX_DEPENDENCIES
+              value: {{ .max_dependencies | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .max_dependency_depth) }}
+            - name: DOWNLOAD_MAX_DEPENDENCY_DEPTH
+              value: {{ .max_dependency_depth | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .concurrency) }}
+            - name: DOWNLOAD_CONCURRENCY
+              value: {{ .concurrency | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .size_check_concurrency) }}
+            - name: DOWNLOAD_SIZE_CHECK_CONCURRENCY
+              value: {{ .size_check_concurrency | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .max_bundle_bytes) }}
+            - name: DOWNLOAD_MAX_BUNDLE_BYTES
+              value: {{ .max_bundle_bytes | quote }}
+            {{- end }}
+            {{- if .temp_dir }}
+            - name: DOWNLOAD_TEMP_DIR
+              value: {{ .temp_dir | quote }}
+            {{- end }}
+            {{- end }}
             - name: ENABLE_ACCESS_VERIFICATION
               value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
             - name: STORAGE_REQUIRE_AUTH
@@ -316,7 +395,7 @@ spec:
         - name: init-embedding
           image: {{ $ngsearchRestAPIDockerImage }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
-          command: 
+          command:
           - python
           - -c
           - |

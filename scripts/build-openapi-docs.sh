@@ -29,7 +29,7 @@
 #   OPENAPI_OUTPUT_DIR=/tmp/spec scripts/build-openapi-docs.sh
 #   API_VERSION=1.4.0 scripts/build-openapi-docs.sh
 #
-# The merged-spec version comes from tools/openapi-merge/version.md unless
+# The merged-spec version comes from the repo-root VERSION.md unless
 # $API_VERSION is already set in the environment.
 set -euo pipefail
 
@@ -37,7 +37,7 @@ DIR="$( cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P )"
 REPO_ROOT="$( cd "$DIR/.." && pwd -P )"
 COMPOSE_DIR="$REPO_ROOT/infra/compose"
 
-VERSION_FILE="$REPO_ROOT/tools/openapi-merge/version.md"
+VERSION_FILE="$REPO_ROOT/VERSION.md"
 if [[ -z "${API_VERSION:-}" && -f "$VERSION_FILE" ]]; then
     API_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 fi

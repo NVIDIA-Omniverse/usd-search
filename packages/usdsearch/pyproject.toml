@@ -5,7 +5,7 @@ description = "Admin and operational utilities for the usdsearch mono repo"
 authors = [
     {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
 ]
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "redis>=4.5.0",
     "fire>=0.6.0",

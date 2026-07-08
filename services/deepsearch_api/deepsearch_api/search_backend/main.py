@@ -20,7 +20,7 @@ import re
 import shlex
 import time
 from copy import deepcopy
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from deepsearch_api.search_backend.embeddings import (
@@ -69,6 +69,17 @@ tracer = trace.get_tracer(__name__)
 VISION_METADATA_FIELDS_PLACEHOLDER = "__VISION_METADATA_FIELDS__"
 
 
+def _normalize_extension_groups(or_groups: List[List[str]]) -> List[List[str]]:
+    """Strip a single leading dot from extension tokens (".png" -> "png").
+
+    The indexed ``ext`` field stores extensions without a leading dot, so a
+    user-supplied ".png" would otherwise be a wildcard that matches nothing and
+    silently returns no results. A real wildcard like "*.png" starts with "*",
+    not ".", so it is left untouched.
+    """
+    return [[tok[1:] if tok.startswith(".") else tok for tok in group] for group in or_groups]
+
+
 class SearchBackendMappingCache:
     """Cache for search backend mapping."""
 
@@ -105,6 +116,12 @@ class SearchSettings(BaseSettings):
     opensearch_timeout: int = 60  # seconds
 
     enable_aggregations: bool = True
+
+    # Floor for the auto-computed RRF fusion window used when a request omits
+    # scoring_config.rrf_config.window_size, so small limits still give each leg
+    # a meaningful fusion pool. Capped by OPENSEARCH_MAX_RESULT_WINDOW.
+    # Env var: RRF_MIN_WINDOW_SIZE (no env_prefix on SearchSettings).
+    rrf_min_window_size: int = 100
 
 
 class SearchFilterConfig(BaseSettings):
@@ -164,6 +181,7 @@ class SearchBackendClientV2:
             )
         self._vector_query_score_type = settings.vector_query_score_type
         self.index_name = settings.opensearch_index_name
+        self._rrf_min_window_size = settings.rrf_min_window_size
         self.text_to_vector_model = None  # Initialize text-to-vector model when needed
         self.explain = False
         self.embedding_clients: dict[EmbeddingType, BaseEmbeddingInterface] = embedding_clients
@@ -242,8 +260,13 @@ class SearchBackendClientV2:
                 logger.error(f"Failed to get image embeddings: {e}")
                 raise ImageProcessingError(f"Failed to get image embeddings: {e}") from e
 
-    async def _build_hybrid_text_query(self, query: str, config: ScoringConfig) -> Dict[str, Any]:
-        """Build a query that searches across multiple fields with separate match queries."""
+    async def _build_hybrid_text_query(self, query: str, config: ScoringConfig) -> Optional[Dict[str, Any]]:
+        """Build a query that searches across multiple fields with separate match queries.
+
+        Returns None when no enabled field produces a clause — an empty bool/should
+        would be a match-all query and inject arbitrary documents as a full-strength
+        RRF leg.
+        """
 
         # Expand vision metadata fields if placeholder is found
         expanded_fields = []
@@ -257,8 +280,13 @@ class SearchBackendClientV2:
                     )
                     continue
                 for vision_field in vision_fields:
-                    # Add nested queries for vision metadata fields
-                    for subfield in ["name", "name_sayt", "value_text", "value_sayt"]:
+                    # Score free text against metadata VALUES only. The `name`/`name_sayt`
+                    # subfields hold schema labels ("colors", "materials", ...) that would
+                    # match query words like "color" on every VLM-tagged asset, and
+                    # `value_sayt` duplicates `value_text` content — both inflate the
+                    # text leg with noise. The sayt/name subfields remain available to
+                    # the explicit `vision_metadata` k=v filter.
+                    for subfield in ["value_text"]:
                         expanded_field_config = FieldScoreConfig(
                             field=f"{vision_field}.{subfield}",
                             enabled=field_config.enabled,
@@ -355,16 +383,23 @@ class SearchBackendClientV2:
                     if field_config.fuzzy_max_expansions:
                         match_query["match"][field_config.field]["max_expansions"] = field_config.fuzzy_max_expansions
 
-                # Wrap the match query in a nested query
+                # Wrap the match query in a nested query. score_mode=sum so an asset
+                # matching several nested docs (e.g. colors=red AND materials=plastic)
+                # accumulates score instead of averaging down to a single-term match.
                 nested_query = {
                     "nested": {
                         "path": path,
                         "query": match_query,
+                        "score_mode": "sum",
                         "_name": f"{field_config.field}_field",  # Move _name to root level
                     }
                 }
                 queries.append(nested_query)
                 # TODO: Add wildcard support for nested fields
+
+        # No enabled fields produced clauses — signal the caller to skip the text leg
+        if not queries:
+            return None
 
         # If there's only one query, return it directly
         if len(queries) == 1:
@@ -543,7 +578,7 @@ class SearchBackendClientV2:
             explanations.append(
                 self._create_score_explanation(
                     hit,
-                    SearchType.HYBRID,
+                    search_type,
                     query_name,
                     scoring_config,
                     rrf_score,
@@ -645,8 +680,13 @@ class SearchBackendClientV2:
 
         scoring_config = search_request.scoring_config
         rrf_config = scoring_config.rrf_config
-        # cap the window size to 10000 to avoid OpenSearch max_result_window limit
-        window_size = min(rrf_config.window_size or (from_ + size) * 2, OPENSEARCH_MAX_RESULT_WINDOW)
+        # cap the window size to OPENSEARCH_MAX_RESULT_WINDOW; floor (default 100,
+        # configurable via rrf_min_window_size) so small limits still give each
+        # leg a meaningful fusion pool
+        window_size = min(
+            rrf_config.window_size or max(self._rrf_min_window_size, (from_ + size) * 2),
+            OPENSEARCH_MAX_RESULT_WINDOW,
+        )
 
         # Store individual search results
         all_results = []
@@ -703,68 +743,77 @@ class SearchBackendClientV2:
                     "query.total_hits",
                     response.get("hits", {}).get("total", {}).get("value", 0),
                 )
-            all_results.append((SearchType.FILTER_ONLY, response))
+            all_results.append((SearchType.FILTER_ONLY, 1.0, response))
 
         else:
             # Parallelize all search queries
             search_tasks = []
 
-            # Prepare hybrid text search if enabled
-            if search_request.hybrid_text_query and scoring_config.hybrid_text.enabled:
-                with tracer.start_as_current_span("search_backend.build_hybrid_text_query") as span:
-                    hybrid_query = {
-                        "query": await self._build_hybrid_text_query(search_request.hybrid_text_query, scoring_config)
-                    }
-
+            def _prepare_leg_query(inner_query: Dict[str, Any]) -> Dict[str, Any]:
+                leg_query = {"query": inner_query}
                 if bool_filters:
-                    hybrid_query["query"] = {
+                    leg_query["query"] = {
                         "bool": {
-                            "must": [hybrid_query["query"]],
+                            "must": [leg_query["query"]],
                             "filter": bool_filters,
                         }
                     }
-
                 # Add collapse for deduplication if requested
-                hybrid_query = self._add_collapse_for_deduplication(hybrid_query, search_request)
-                hybrid_query["_source"] = source_includes
+                leg_query = self._add_collapse_for_deduplication(leg_query, search_request)
+                leg_query["_source"] = source_includes
+                return leg_query
 
-                logger.debug(
-                    "Preparing hybrid text search with query:\n%s",
-                    json.dumps(hybrid_query, indent=2),
-                )
+            async def _execute_text_leg(leg_name, leg_query, leg_weight, query_type_attr):
+                with tracer.start_as_current_span("search_backend.opensearch_query") as span:
+                    span.set_attribute("query.type", query_type_attr)
+                    span.set_attribute("query.window_size", window_size)
+                    response = await self.client.search(
+                        index=self.index_name,
+                        body=leg_query,
+                        size=window_size,
+                        explain=self.explain,
+                        track_total_hits=True,
+                    )
+                    span.set_attribute("query.took_ms", response.get("took", 0))
+                    span.set_attribute(
+                        "query.total_hits",
+                        response.get("hits", {}).get("total", {}).get("value", 0),
+                    )
+                return (leg_name, leg_weight, response)
 
-                async def execute_hybrid_search():
-                    with tracer.start_as_current_span("search_backend.opensearch_query") as span:
-                        span.set_attribute("query.type", "hybrid_text")
-                        span.set_attribute("query.window_size", window_size)
-                        response = await self.client.search(
-                            index=self.index_name,
-                            body=hybrid_query,
-                            size=window_size,
-                            explain=self.explain,
-                            track_total_hits=True,
+            # Prepare hybrid text search if enabled
+            if search_request.hybrid_text_query and scoring_config.hybrid_text.enabled:
+                with tracer.start_as_current_span("search_backend.build_hybrid_text_query"):
+                    hybrid_text_inner = await self._build_hybrid_text_query(
+                        search_request.hybrid_text_query, scoring_config
+                    )
+
+                if hybrid_text_inner is None:
+                    logger.warning(
+                        "Hybrid text query given but no enabled fields produced clauses; skipping the text leg"
+                    )
+                else:
+                    hybrid_query = _prepare_leg_query(hybrid_text_inner)
+                    logger.debug(
+                        "Preparing hybrid text search with query:\n%s",
+                        json.dumps(hybrid_query, indent=2),
+                    )
+                    search_tasks.append(
+                        asyncio.create_task(
+                            _execute_text_leg(
+                                SearchType.HYBRID,
+                                hybrid_query,
+                                scoring_config.hybrid_text.weight,
+                                "hybrid_text",
+                            )
                         )
-                        span.set_attribute("query.took_ms", response.get("took", 0))
-                        span.set_attribute(
-                            "query.total_hits",
-                            response.get("hits", {}).get("total", {}).get("value", 0),
-                        )
-                    return (SearchType.HYBRID, response)
-
-                search_tasks.append(asyncio.create_task(execute_hybrid_search()))
+                    )
 
             # Prepare all vector searches
-            with tracer.start_as_current_span("search_backend.build_vector_queries") as span:
+            with tracer.start_as_current_span("search_backend.build_vector_queries"):
                 vector_queries = await self._build_vector_queries(search_request, window_size)
-            for idx, vector_query in enumerate(vector_queries):
-                query = {"query": vector_query}
-
-                if bool_filters:
-                    query["query"] = {"bool": {"must": [query["query"]], "filter": bool_filters}}
-
-                # Add collapse for deduplication if requested
-                query = self._add_collapse_for_deduplication(query, search_request)
-                query["_source"] = source_includes
+            for idx, (vector_query, vector_field_name) in enumerate(vector_queries):
+                query = _prepare_leg_query(vector_query)
 
                 logger.debug(
                     "Preparing vector search %d with query:\n%s",
@@ -778,7 +827,16 @@ class SearchBackendClientV2:
                 elif "image" in vector_query.get("nested", {}).get("_name", ""):
                     query_name = SearchType.IMAGE_SIMILARITY
 
-                async def execute_vector_search(query_body=query, vector_idx=idx, search_name=query_name):
+                # Resolve this leg's RRF weight from the embedding field it searches.
+                # Resolution happens here, at leg-construction time, because the leg
+                # name alone ("vector_0", "text_to_vector", ...) does not identify
+                # the configured vector field.
+                vector_field_config = scoring_config.vector_fields.get(vector_field_name)
+                leg_weight = vector_field_config.weight if vector_field_config else 1.0
+
+                async def execute_vector_search(
+                    query_body=query, vector_idx=idx, search_name=query_name, weight=leg_weight
+                ):
                     with tracer.start_as_current_span("search_backend.opensearch_query") as span:
                         span.set_attribute("query.type", "vector")
                         span.set_attribute("query.vector_index", vector_idx)
@@ -794,7 +852,7 @@ class SearchBackendClientV2:
                             "query.total_hits",
                             response.get("hits", {}).get("total", {}).get("value", 0),
                         )
-                    return (search_name, response)
+                    return (search_name, weight, response)
 
                 search_tasks.append(asyncio.create_task(execute_vector_search()))
 
@@ -808,28 +866,15 @@ class SearchBackendClientV2:
         document_scores = {}
 
         # Calculate RRF scores for each document
-        with tracer.start_as_current_span("search_backend.calculate_rrf_scores") as span:
-            for query_name, response in all_results:
+        with tracer.start_as_current_span("search_backend.calculate_rrf_scores"):
+            # Each leg carries its own weight, resolved at leg-construction time
+            # (hybrid_text.weight or the matching vector_fields[...].weight).
+            # Weights MUST NOT be re-derived from leg names here: names like
+            # "vector_0" or "text_to_vector" do not map back to a vector_fields
+            # key, which previously caused all configured vector weights to be
+            # silently ignored.
+            for query_name, query_weight, response in all_results:
                 rank_constant = rrf_config.query_rank_constants.get(query_name, rrf_config.rank_constant)
-
-                # Get the weight for this query type
-                query_weight = 1.0  # default weight
-                if query_name == SearchType.HYBRID:
-                    query_weight = scoring_config.hybrid_text.weight
-                elif query_name == SearchType.VECTOR or (
-                    isinstance(query_name, str) and query_name.startswith("vector")
-                ):
-                    # For vector queries, get the weight from the specific vector field config
-                    if isinstance(query_name, str) and query_name.startswith("vector_"):
-                        field_name = query_name.replace("vector_", "")
-                        vector_config = scoring_config.vector_fields.get(field_name)
-                        if vector_config:
-                            query_weight = vector_config.weight
-                    else:
-                        # Use default vector weight from first configured vector field if available
-                        if scoring_config.vector_fields:
-                            first_vector_config = next(iter(scoring_config.vector_fields.values()))
-                            query_weight = first_vector_config.weight
 
                 for rank, hit in enumerate(response["hits"]["hits"], 1):
                     doc_id = hit["_id"]
@@ -882,7 +927,7 @@ class SearchBackendClientV2:
         # Note: OpenSearch defaults to track_total_hits=10000, so this saturates at 10000
         # for large corpora unless track_total_hits is overridden upstream.
         corpus_total = max(
-            (r.get("hits", {}).get("total", {}).get("value", 0) for _, r in all_results),
+            (r.get("hits", {}).get("total", {}).get("value", 0) for _, _, r in all_results),
             default=0,
         )
         paginated_docs = filtered_docs[from_ : from_ + size]
@@ -928,7 +973,7 @@ class SearchBackendClientV2:
             corpus_total=corpus_total,
             hits=final_hits,
             search_metadata={
-                "took": sum(r["took"] for _, r in all_results),
+                "took": sum(r["took"] for _, _, r in all_results),
                 "max_score": max((h.score for h in final_hits), default=0),
             },
         )
@@ -940,9 +985,14 @@ class SearchBackendClientV2:
 
     async def _build_vector_queries(
         self, search_request: DeepSearchSearchRequestV2, window_size: int
-    ) -> List[Dict[str, Any]]:
-        """Build vector similarity queries for all requested vector fields."""
-        vector_queries = []
+    ) -> List[Tuple[Dict[str, Any], str]]:
+        """Build vector similarity queries for all requested vector fields.
+
+        Returns (query, embedding_field_name) pairs; the field name identifies the
+        VectorFieldConfig whose weight applies to the leg in RRF fusion.
+        """
+        vector_queries: List[Tuple[Dict[str, Any], str]] = []
+        default_embedding_field = "siglip2-embedding.embedding"
 
         # Prepare image list upfront so we can run text + image embeddings concurrently
         processed_images = []
@@ -977,45 +1027,51 @@ class SearchBackendClientV2:
 
         if text_embeddings is not None:
             vector_queries.append(
-                {
-                    "nested": {
-                        "path": "siglip2-embedding",
-                        "score_mode": "max",
-                        "inner_hits": {"_source": self.should_fetch_vector_inner_hits(search_request)},
-                        "_name": "embedding_description",
-                        "query": {
-                            **self._build_knn_query(
-                                vector_query_type=self._vector_query_score_type,
-                                query_vector=text_embeddings,
-                                embedding_field="siglip2-embedding.embedding",
-                                space_type="innerproduct",
-                                k=window_size,
-                            )
-                        },
-                    }
-                }
-            )
-
-        if all_image_embeddings is not None:
-            for i, image_embedding in enumerate(all_image_embeddings):
-                vector_queries.append(
+                (
                     {
                         "nested": {
                             "path": "siglip2-embedding",
                             "score_mode": "max",
-                            "inner_hits": {"_source": self.should_fetch_vector_inner_hits(search_request)},
-                            "_name": f"embedding_image_similarity_search_{i}",
+                            "inner_hits": {"_source": self._vector_inner_hits_source(search_request)},
+                            "_name": "embedding_description",
                             "query": {
                                 **self._build_knn_query(
                                     vector_query_type=self._vector_query_score_type,
-                                    query_vector=image_embedding,
-                                    embedding_field="siglip2-embedding.embedding",
+                                    query_vector=text_embeddings,
+                                    embedding_field=default_embedding_field,
                                     space_type="innerproduct",
                                     k=window_size,
                                 )
                             },
                         }
-                    }
+                    },
+                    default_embedding_field,
+                )
+            )
+
+        if all_image_embeddings is not None:
+            for i, image_embedding in enumerate(all_image_embeddings):
+                vector_queries.append(
+                    (
+                        {
+                            "nested": {
+                                "path": "siglip2-embedding",
+                                "score_mode": "max",
+                                "inner_hits": {"_source": self._vector_inner_hits_source(search_request)},
+                                "_name": f"embedding_image_similarity_search_{i}",
+                                "query": {
+                                    **self._build_knn_query(
+                                        vector_query_type=self._vector_query_score_type,
+                                        query_vector=image_embedding,
+                                        embedding_field=default_embedding_field,
+                                        space_type="innerproduct",
+                                        k=window_size,
+                                    )
+                                },
+                            }
+                        },
+                        default_embedding_field,
+                    )
                 )
 
         # Process explicit vector queries
@@ -1054,23 +1110,26 @@ class SearchBackendClientV2:
                 )
 
             vector_queries.append(
-                {
-                    "nested": {
-                        "path": nested_path,
-                        "score_mode": "max",
-                        "inner_hits": {"_source": self.should_fetch_vector_inner_hits(search_request)},
-                        "_name": f"embedding_{nested_path}",
-                        "query": {
-                            **self._build_knn_query(
-                                vector_query_type=self._vector_query_score_type,
-                                query_vector=query_vector,
-                                embedding_field=embedding_field,
-                                space_type="innerproduct",
-                                k=window_size,
-                            )
-                        },
-                    }
-                }
+                (
+                    {
+                        "nested": {
+                            "path": nested_path,
+                            "score_mode": "max",
+                            "inner_hits": {"_source": self._vector_inner_hits_source(search_request)},
+                            "_name": f"embedding_{nested_path}",
+                            "query": {
+                                **self._build_knn_query(
+                                    vector_query_type=self._vector_query_score_type,
+                                    query_vector=query_vector,
+                                    embedding_field=embedding_field,
+                                    space_type="innerproduct",
+                                    k=window_size,
+                                )
+                            },
+                        }
+                    },
+                    vector_query.field_name,
+                )
             )
 
         return vector_queries
@@ -1112,10 +1171,17 @@ class SearchBackendClientV2:
         """
         includes = list(self._BASE_SOURCE_FIELDS)
 
-        # siglip2-embedding is needed for similarity deduplication, thumbnail existence
-        # check, or when the caller wants predictions/images returned.
-        if search_request.similarity_threshold or search_request.return_images or search_request.return_predictions:
-            includes.append("siglip2-embedding")
+        # The siglip2-embedding nested field holds the heavy embedding vector plus a
+        # lightweight image hash, one entry per thumbnail. Pull only the sub-field each
+        # caller needs: the embedding (heavy) for similarity dedup / predictions, and the
+        # small image hash for return_images. The embedding vector is also kept out of the
+        # vector-leg inner_hits unless explicitly requested (see _vector_inner_hits_source).
+        if (
+            search_request.similarity_threshold is not None and search_request.similarity_threshold != 0
+        ) or search_request.return_predictions:
+            includes.append("siglip2-embedding.embedding")
+        if search_request.return_images:
+            includes.append("siglip2-embedding.image")
 
         if search_request.return_predictions:
             includes.append("predictions")
@@ -1189,6 +1255,33 @@ class SearchBackendClientV2:
             logger.debug("No inner_hits needed for fetching, returning False")
 
         return should_return
+
+    def _vector_inner_hits_source(self, search_request: DeepSearchSearchRequestV2) -> Any:
+        """The `_source` spec for vector-leg inner_hits.
+
+        Returns False when inner_hits aren't needed at all. Otherwise returns only the
+        lightweight fields used for image-hash extraction and score explanations,
+        deliberately OMITTING the heavy 1536-d embedding vector — unless the caller
+        asked for it via return_embeddings, which is the only consumer of the vector
+        from inner_hits. (Similarity-threshold dedup and predictions read the embedding
+        from the top-level _source, not inner_hits.) Without this, return_images alone
+        forces inner_hits to be returned with the full nested _source, leaking every
+        matched view's embedding into the response.
+
+        NOTE: for nested inner_hits OpenSearch resolves _source include paths relative
+        to the ROOT document, so the fields MUST be fully-qualified
+        ("siglip2-embedding.image", not bare "image") — bare names match nothing and
+        the inner _source comes back empty, breaking image-hash extraction.
+        """
+        if not self.should_fetch_vector_inner_hits(search_request):
+            return False
+        if search_request.return_embeddings:
+            return True
+        return [
+            "siglip2-embedding.image",
+            "siglip2-embedding.keyword",
+            "siglip2-embedding.label",
+        ]
 
     async def _get_vision_metadata_fields(self) -> List[str]:
         """
@@ -1356,7 +1449,9 @@ class SearchBackendClientV2:
         if search_request.file_extension_include:
             filters.extend(
                 self._create_bool_wildcard_filters_from_or_groups(
-                    or_groups=parse_arg_input_and_or(search_request.file_extension_include),
+                    or_groups=_normalize_extension_groups(
+                        parse_arg_input_and_or(search_request.file_extension_include)
+                    ),
                     field_name="ext",
                     case_insensitive=self.search_filter_config.fields_config.get("ext", FieldConfig()).case_insensitive,
                 )
@@ -1364,7 +1459,9 @@ class SearchBackendClientV2:
         if search_request.file_extension_exclude:
             filters.extend(
                 self._create_negative_bool_wildcard_filters_from_or_groups(
-                    or_groups=parse_arg_input_and_or(search_request.file_extension_exclude),
+                    or_groups=_normalize_extension_groups(
+                        parse_arg_input_and_or(search_request.file_extension_exclude)
+                    ),
                     field_name="ext",
                     case_insensitive=self.search_filter_config.fields_config.get("ext", FieldConfig()).case_insensitive,
                 )

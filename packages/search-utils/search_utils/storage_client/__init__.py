@@ -91,25 +91,28 @@ class StorageClient(ABC):
         return None
 
     @abstractmethod
-    async def get_connection(self) -> StorageConnection: ...
+    async def get_connection(self) -> StorageConnection:
+        pass
 
     @property
     @abstractmethod
-    def connection_info(self) -> str: ...
+    def connection_info(self) -> str:
+        pass
 
     @property
     @abstractmethod
-    def base_uri(self) -> str: ...
+    def base_uri(self) -> str:
+        pass
 
     @abstractmethod
-    async def authenticate_connection(
-        self, c: Any, token: str, timeout: Optional[float] = None
-    ) -> StorageConnection: ...
+    async def authenticate_connection(self, c: Any, token: str, timeout: Optional[float] = None) -> StorageConnection:
+        pass
 
     @abstractmethod
     async def connect(
         self,
-    ) -> Union[StorageConnection, Dict[str, StorageConnection]]: ...
+    ) -> Union[StorageConnection, Dict[str, StorageConnection]]:
+        pass
 
     @asynccontextmanager
     @abstractmethod
@@ -121,13 +124,16 @@ class StorageClient(ABC):
         yield
 
     @abstractmethod
-    def get_backend_from_uri(self, uri: RemoteFileUri) -> Optional["StorageClient"]: ...
+    def get_backend_from_uri(self, uri: RemoteFileUri) -> Optional["StorageClient"]:
+        pass
 
     @abstractmethod
-    async def close_connection(self, conn: Optional[Union[StorageConnection, Any]] = None): ...
+    async def close_connection(self, conn: Optional[Union[StorageConnection, Any]] = None):
+        pass
 
     @abstractmethod
-    def connection_getter(self) -> StorageConnection: ...
+    def connection_getter(self) -> StorageConnection:
+        pass
 
     @abstractmethod
     async def list_items(
@@ -173,13 +179,26 @@ class StorageClient(ABC):
         delay: float = 5,
         processing_event: Optional[asyncio.Event] = None,
         uris: Optional[List[RemoteFileUri]] = None,
-    ) -> AsyncIterator[PathType]: ...
+    ) -> AsyncIterator[PathType]:
+        pass
 
     @abstractmethod
-    async def check_if_exists(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Tuple[bool, Optional[PathType]]: ...
+    async def check_if_exists(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Tuple[bool, Optional[PathType]]:
+        pass
 
     @abstractmethod
-    async def get_item(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Optional[PathType]: ...
+    async def get_item(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Optional[PathType]:
+        pass
+
+    async def head_item(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Optional[PathType]:
+        """Lightweight existence + minimal metadata check.
+
+        Defaults to ``get_item``; backends override to use a cheaper backend
+        call (e.g. S3 HEAD instead of LIST). The returned ``PathType`` may
+        omit fields that require additional backend calls (e.g. owner) — use
+        ``get_item`` when full metadata is required.
+        """
+        return await self.get_item(uri)
 
     @abstractmethod
     async def upload_items(
@@ -187,7 +206,8 @@ class StorageClient(ABC):
         item_dict: Dict[RemoteFileUri, LocalFilePath],
         overwrite_content: bool = True,
         overwrite_if_fn: Optional[Callable[[PathType], bool]] = None,
-    ) -> None: ...
+    ) -> None:
+        pass
 
     @abstractmethod
     async def upload_items_content(
@@ -195,24 +215,30 @@ class StorageClient(ABC):
         item_dict: Dict[RemoteFileUri, bytes],
         overwrite_content: bool = True,
         # overwrite_if_fn: Optional[Callable] = None,
-    ): ...
+    ):
+        pass
 
     @abstractmethod
-    async def delete_items(self, uri_list: Union[RemoteFileUri, List[RemoteFileUri]]) -> None: ...
+    async def delete_items(self, uri_list: Union[RemoteFileUri, List[RemoteFileUri]]) -> None:
+        pass
 
     @abstractmethod
-    async def download_items(self, item_dict: Dict[LocalFilePath, RemoteFileUri], cap_size: float = -1) -> bool: ...
+    async def download_items(self, item_dict: Dict[LocalFilePath, RemoteFileUri], cap_size: float = -1) -> bool:
+        pass
 
     @abstractmethod
     async def download_file_content(
         self, uri: Union[RemoteFileUri, RemoteFilePath], timeout: Optional[float] = None
-    ) -> bytes: ...
+    ) -> bytes:
+        pass
 
     @abstractmethod
-    async def copy(self, source: str, target: str) -> Tuple[bool, CopyResult]: ...
+    async def copy(self, source: str, target: str) -> Tuple[bool, CopyResult]:
+        pass
 
     @abstractmethod
-    async def check_connection(self, ping_timeout: Optional[float]): ...
+    async def check_connection(self, ping_timeout: Optional[float]):
+        pass
 
     @abstractmethod
     async def batch_verify_access(
@@ -225,7 +251,8 @@ class StorageClient(ABC):
         yield
 
     @abstractmethod
-    async def update_acl(self, path_dict: Dict[str, str]): ...
+    async def update_acl(self, path_dict: Dict[str, str]):
+        pass
 
     @abstractmethod
     async def load_thumbnail(
@@ -238,31 +265,66 @@ class StorageClient(ABC):
         thumbnail_path_templates: Optional[List[str]] = None,
         timeout: Optional[float] = None,
         **kwargs,
-    ) -> Union[List[ThumbnailItem], ThumbnailItem]: ...
+    ) -> Union[List[ThumbnailItem], ThumbnailItem]:
+        pass
+
+    async def list_thumbnail_candidate_uris(
+        self,
+        *,
+        literal_prefix_uri: RemoteFileUri,
+        folder_uri: RemoteFileUri,
+    ) -> AsyncIterator[RemoteFileUri]:
+        """Yield candidate thumbnail URIs to be regex-matched by the caller.
+
+        Used by `get_thumbnails_nucleus_style` for wildcard path templates. The
+        default implementation lists the whole `folder_uri` (the ``.thumbs``
+        directory) recursively — correct for folder-based backends (Nucleus,
+        storage-api) whose listing APIs require a real folder/collection path.
+
+        Backends that support server-side key-prefix listing (S3) override this
+        to narrow the listing to `literal_prefix_uri` — the longest literal
+        prefix of the regex template — so they no longer have to enumerate the
+        entire ``.thumbs`` tree just to keep a handful of matches.
+        """
+        async for result in self.list_items(
+            uri_list=[folder_uri],
+            recursive=True,
+            ignore_patterns=None,
+            show_hidden=True,
+        ):
+            yield result.uri
 
     @abstractmethod
-    def get_path_from_uri(self, uri: RemoteFileUri) -> RemoteFilePath: ...
+    def get_path_from_uri(self, uri: RemoteFileUri) -> RemoteFilePath:
+        pass
 
     @abstractmethod
-    def get_uri_from_path(self, path: RemoteFilePath) -> RemoteFileUri: ...
+    def get_uri_from_path(self, path: RemoteFilePath) -> RemoteFileUri:
+        pass
 
     @abstractmethod
-    def is_supported_uri(self, uri: str) -> bool: ...
+    def is_supported_uri(self, uri: str) -> bool:
+        pass
 
     @abstractmethod
-    def is_valid_uri(self, uri: str) -> bool: ...
+    def is_valid_uri(self, uri: str) -> bool:
+        pass
 
     @abstractmethod
-    def get_file_type(self, item: PathType) -> FileTypeMapping: ...
+    def get_file_type(self, item: PathType) -> FileTypeMapping:
+        pass
 
     @abstractmethod
-    def get_event_type(self, item: PathType) -> Optional[EventMapping]: ...
+    def get_event_type(self, item: PathType) -> Optional[EventMapping]:
+        pass
 
     @abstractmethod
-    def status_ok(self, item: PathType) -> bool: ...
+    def status_ok(self, item: PathType) -> bool:
+        pass
 
     @abstractmethod
-    def assert_on_bad_status(self, item: PathType): ...
+    def assert_on_bad_status(self, item: PathType):
+        pass
 
     @asynccontextmanager
     async def connection_context_with_tagging(
@@ -281,10 +343,12 @@ class StorageClient(ABC):
         tag_type: Optional[TagType] = None,
         target_namespace: Optional[str] = None,
         tag_action: TagAction = TagAction.add,
-    ) -> None: ...
+    ) -> None:
+        pass
 
     @abstractmethod
-    async def get_tags(self, path: Union[RemoteFilePath, RemoteFileUri]) -> TagResultField: ...
+    async def get_tags(self, path: Union[RemoteFilePath, RemoteFileUri]) -> TagResultField:
+        pass
 
     @abstractmethod
     async def read_tags_all_paths(
@@ -292,14 +356,16 @@ class StorageClient(ABC):
         paths: List[Union[RemoteFilePath, RemoteFileUri]],
         batch_size: Optional[int] = None,
         logging_timeout: float = 10,
-    ) -> List[TagResultField]: ...
+    ) -> List[TagResultField]:
+        pass
 
     @abstractmethod
     async def read_tags_from_gen(
         self,
         path_generator: AsyncIterator[str],
         batch_size: Optional[int] = None,
-    ) -> AsyncIterator[List[TagResultField]]: ...
+    ) -> AsyncIterator[List[TagResultField]]:
+        pass
 
     @abstractmethod
     def filter_tags(
@@ -307,7 +373,8 @@ class StorageClient(ABC):
         input_: TagResultField,
         tag_type: Optional[TagType] = None,
         target_namespace: Optional[str] = None,
-    ) -> Tuple[List[TagName], List[TagValue]]: ...
+    ) -> Tuple[List[TagName], List[TagValue]]:
+        pass
 
     @abstractmethod
     async def clear_tags(
@@ -315,7 +382,8 @@ class StorageClient(ABC):
         paths: List[str],
         tag_type: TagType,
         target_namespace: str = "",
-    ) -> None: ...
+    ) -> None:
+        pass
 
     @abstractmethod
     async def query_tagged_paths(
@@ -328,7 +396,8 @@ class StorageClient(ABC):
         return_namespaces: bool = True,
         exclude_hidden: bool = False,
         max_results: Optional[int] = None,
-    ) -> TagQueryResult: ...
+    ) -> TagQueryResult:
+        pass
 
     @abstractmethod
     async def tag_subscription(
@@ -336,10 +405,12 @@ class StorageClient(ABC):
         uri: str,
         subscription_ready: Optional[asyncio.Event] = None,
         connection_getter: Optional[Callable] = None,
-    ) -> AsyncIterator[TagResultField]: ...
+    ) -> AsyncIterator[TagResultField]:
+        pass
 
     @abstractmethod
-    async def tag_update_probe(self, probe_uri: Optional[str] = None) -> None: ...
+    async def tag_update_probe(self, probe_uri: Optional[str] = None) -> None:
+        pass
 
 
 def get_client(

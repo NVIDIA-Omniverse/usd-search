@@ -56,6 +56,19 @@ x-gpu-worker-env: &gpu-worker-env
   OV_SERVER:
   OV_USERNAME:
   OV_PASSWORD:
+  # Storage API backend (STORAGE_BACKEND_TYPE=storage_api). The GPU render
+  # workers build a storage client whose grpc_endpoint/token the rendering
+  # client forwards to the rendering-job service (POST storage_api_url +
+  # X-Token-Auth). Null-pass-through, kept in sync with x-common-env.
+  STORAGE_API_GRPC_ENDPOINT:
+  STORAGE_API_BASE_URI:
+  STORAGE_API_TOKEN:
+  STORAGE_API_SSL:
+  STORAGE_API_OPENID_CLIENT_ID:
+  STORAGE_API_OPENID_CLIENT_SECRET:
+  STORAGE_API_OPENID_TOKEN_URL:
+  STORAGE_API_OPENID_SCOPE:
+  STORAGE_API_OPENID_GRANT_TYPE:
   LOGGING_CONFIG: /logging.yml
   PYTHONUNBUFFERED: "1"
   REDIS_URL: redis://redis:6379

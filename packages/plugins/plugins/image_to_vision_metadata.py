@@ -21,6 +21,8 @@ from typing import Dict, List, Optional
 from cache.src import GenericPluginStatus, PluginItemStatus
 from deepsearch_utils.ds_plugin_utils import get_system_values
 from deepsearch_utils.misc_utils import get_pillow_supported_formats
+from llm_client import MetadataGeneration
+from llm_client.exceptions import LLMException, ParsingException
 
 # third-party modules
 from opentelemetry import trace
@@ -28,8 +30,6 @@ from pydantic import BaseModel
 
 # local/proprietary modules
 from storage.src.client import NGSearchStorageHelper, Result, StorageClientInput
-from vision_endpoint.metadata.metadata_generation import MetadataGeneration
-from vision_endpoint.vlm.exceptions import ParsingException, VLMException
 
 from search_utils.misc_utils import image_to_base64
 from search_utils.opensearch_utils import OpenSearchIndexSettings
@@ -144,7 +144,7 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
         except ParsingException as e:
             self.logger.error(f"A VLM output parsing error occurred while generating metadata: {e}")
             return MetadataException(error=f"A VLM output parsing error occurred while generating metadata {e}")
-        except VLMException as e:
+        except LLMException as e:
             self.logger.error(f"A VLM invocation error occurred while generating metadata: {e}")
             return MetadataException(error=f"A VLM invocation error occurred while generating metadata {e}")
         return res
@@ -156,7 +156,7 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
         )
         os_content = {"vision_generated_metadata": []}
         for vision_generated_metadata in vision_generated_metadata_list:
-            if type(vision_generated_metadata) == MetadataException:
+            if isinstance(vision_generated_metadata, MetadataException):
                 os_content["vision_generated_metadata"].append({"error": vision_generated_metadata.error})
                 continue
             res: list[dict] = self.parse_vision_generated_metadata(vision_generated_metadata)

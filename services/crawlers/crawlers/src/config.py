@@ -39,6 +39,12 @@ class DeepSearchCrawlerConfig(BaseSettings):
     verify_asset_existence: bool = False
     existence_check_before_metadata_extraction: bool = False
     processing_batch_size: int = 1
+    #: How often (in seconds) the Prometheus gauges are refreshed from stream
+    #: statistics. Statistics require extra Redis round trips, so they are not
+    #: recomputed on every processed item.
+    prom_metrics_update_interval_seconds: float = 5.0
+    #: How often (in seconds) stream statistics are logged at INFO level.
+    stats_log_interval_seconds: float = 60.0
 
 
 class DeepSearchIndexingConfig(DeepSearchCrawlerConfig):

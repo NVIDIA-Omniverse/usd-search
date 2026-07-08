@@ -21,7 +21,7 @@ from deepsearch_api.routers_v2.models import (
     QueryRelevanceValidationResult,
 )
 from deepsearch_api.search_backend.models_extra import AGSAssetData
-from pydantic import BaseModel, Field, PrivateAttr, confloat
+from pydantic import BaseModel, Field, PrivateAttr, confloat, field_serializer
 from pydantic.config import ConfigDict
 from pydantic_settings import BaseSettings
 from pydantic_settings.main import SettingsConfigDict
@@ -238,6 +238,17 @@ class SearchResult(BaseModel):
         description="VLM validation result: match confidence and reasoning (only present when validate_results=true)",
     )
 
+    @field_serializer("source")
+    def _serialize_source(self, source: Any, _info: Any) -> Any:
+        """`source` is populated as a raw dict (built via model_construct for speed,
+        and consumed as a dict throughout the pipeline), not a SearchResultSource
+        instance. Serializing it as-is avoids the PydanticSerializationUnexpectedValue
+        warning the default typed serializer would emit, while still handling a real
+        SearchResultSource if one is ever set."""
+        if isinstance(source, SearchResultSource):
+            return source.model_dump()
+        return source
+
 
 class SearchResponse(BaseModel):
     """Top-level response from the hybrid search endpoint.
@@ -313,7 +324,7 @@ class FieldScoreConfig(BaseModel):
         description="Custom OpenSearch analyzer name. Leave None for default analyzer.",
     )
     fuzzy_max_expansions: Optional[int] = Field(
-        default=50,
+        default=1,
         description="Maximum number of fuzzy term expansions. Lower values are faster but less tolerant of typos.",
     )
     nested: bool = Field(
@@ -348,7 +359,7 @@ class RRFConfig(BaseModel):
     )
     query_rank_constants: dict[SearchType | str, int] = Field(
         default_factory=dict,
-        description='Override rank_constant for specific search types (e.g., {"text": 30, "vector": 90}). Allows fine-tuning the relative influence of each search leg.',
+        description='Override rank_constant for specific search legs, keyed by leg name (e.g., {"hybrid": 30, "text_to_vector": 90}). Valid leg names: "hybrid" (text leg), "text_to_vector" (description embedding), "image_similarity", and "vector_<n>" for explicit vector queries.',
     )
 
 
@@ -424,7 +435,7 @@ class ScoringConfig(BaseSettings):
 
     Typical configuration for agentic search:
     - rrf_config: rank_constant=60 (default)
-    - hybrid_text: enabled=true, weight=1.2, fields=[name(2), name.simple(2), path(1), __VISION_METADATA_FIELDS__(1)]
+    - hybrid_text: enabled=true, weight=1.2, fields=[name(2), name exact(5), path(1), __VISION_METADATA_FIELDS__(1)]
     - vector_fields: {"siglip2-embedding.embedding": {enabled: true, weight: 1, dimension: 1536}}
     """
 

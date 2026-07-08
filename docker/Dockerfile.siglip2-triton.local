@@ -22,7 +22,7 @@
 #
 # Build context: services/siglip2-triton/docker (kept small so the daemon
 # does not have to tarball the model_repo/ tree on every rebuild).
-FROM nvcr.io/nvidia/tritonserver:26.04-py3
+FROM nvcr.io/nvidia/tritonserver:26.05-py3
 
 WORKDIR /workspace
 
@@ -30,9 +30,16 @@ RUN mkdir -p /models
 
 # Python dependencies for the tokenizer + image_preprocessing Python-backend
 # models. These still need to be present in the image even though the model
-# files themselves are mounted at runtime.
-ADD requirements.txt /workspace/requirements.txt
-RUN pip install --no-cache-dir -r /workspace/requirements.txt
+# files themselves are mounted at runtime. Resolved from pyproject.toml +
+# uv.lock (the source of truth) via uv export at build time — mirrors
+# docker/Dockerfile.siglip2-triton and avoids a separately-maintained
+# requirements.txt that drifts out of sync. (Build context is
+# services/siglip2-triton/docker, so the lock files sit at the context root.)
+COPY pyproject.toml uv.lock /workspace/
+RUN pip install --no-cache-dir uv \
+    && uv export --frozen --no-hashes --directory /workspace -o /workspace/requirements.txt \
+    && pip install --no-cache-dir -r /workspace/requirements.txt \
+    && rm /workspace/requirements.txt
 
 COPY PACKAGE-LICENSES /PACKAGE-LICENSES
 

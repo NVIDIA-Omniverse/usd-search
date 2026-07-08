@@ -61,8 +61,8 @@ Common labels
 {{- define "deepsearch.labels" -}}
 helm.sh/chart: {{ include "deepsearch.chart" . }}
 {{ include "deepsearch.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/component: "deepsearch"
 app.kubernetes.io/managed-by: {{ .Release.Service }}
@@ -150,7 +150,7 @@ Defaults to the unified `usdsearch` image; honors per-service overrides
 {{- define "deepsearch.monitorDockerImage" -}}
 {{- $img := .Values.microservices.monitor.image -}}
 {{- if $img.name -}}
-{{ default .Values.global.registry .Values.microservices.monitor.registry }}/{{ $img.name }}:{{ default .Chart.AppVersion $img.tag }}
+{{ default .Values.global.registry .Values.microservices.monitor.registry }}/{{ $img.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) $img.tag }}
 {{- else -}}
 {{ include "deepsearch-global.usdsearchImage" . }}
 {{- end -}}
@@ -163,7 +163,7 @@ Defaults to the unified `rendering-job` (Kit) image.
 {{- define "deepsearch.k8sRendererDockerImage" -}}
 {{- $img := .Values.microservices.k8s_renderer.image -}}
 {{- if $img.name -}}
-{{ default .Values.global.registry .Values.microservices.k8s_renderer.registry }}/{{ $img.name }}:{{ default .Chart.AppVersion $img.tag }}
+{{ default .Values.global.registry .Values.microservices.k8s_renderer.registry }}/{{ $img.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) $img.tag }}
 {{- else -}}
 {{ include "deepsearch-global.renderingJobImage" . }}
 {{- end -}}
@@ -177,7 +177,7 @@ Defaults to the unified `siglip2-triton` image.
 {{- define "deepsearch.embeddingDockerImage" -}}
 {{- $img := .Values.microservices.embedding.image -}}
 {{- if $img.name -}}
-{{ default .Values.global.registry .Values.microservices.embedding.registry }}/{{ $img.name }}:{{ default .Chart.AppVersion $img.tag }}
+{{ default .Values.global.registry .Values.microservices.embedding.registry }}/{{ $img.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) $img.tag }}
 {{- else -}}
 {{ include "deepsearch-global.siglip2TritonImage" . }}
 {{- end -}}
@@ -271,19 +271,16 @@ VLM API Key Secret Fields template
 {{- define "deepsearch.template.vlm.config" -}}
 {{- $outer := . -}}
 {{- if .source -}}
-  {{- range $k, $v :=  ( merge .source.parameters .default.parameters ) }}
-    {{- if $v }}
-- name: {{ printf "%s%s" ( $outer.source.env_prefix | default $outer.default.env_prefix ) ( upper $k ) }}
-  value: {{ $v | quote }}
-    {{- end }}
+  {{- $base_url := ( .source.base_url | default .default.base_url ) }}
+  {{- if $base_url }}
+- name: {{ printf "%sBASE_URL" ( $outer.source.env_prefix | default $outer.default.env_prefix ) }}
+  value: {{ $base_url | quote }}
   {{- end }}
 - name: {{ $outer.source.env_prefix | default $outer.default.env_prefix }}API_KEY
 {{- else -}}
-  {{- range $k, $v :=  .default.parameters }}
-    {{- if $v }}
-- name: {{ printf "%s%s" ( $outer.default.env_prefix ) ( upper $k ) }}
-  value: {{ $v | quote }}
-    {{- end }}
+  {{- if .default.base_url }}
+- name: {{ printf "%sBASE_URL" $outer.default.env_prefix }}
+  value: {{ .default.base_url | quote }}
   {{- end }}
 - name: {{ $outer.default.env_prefix }}API_KEY
 {{- end }}
@@ -347,7 +344,7 @@ HTTP service liveness check
   resources:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  command: 
+  command:
   - python
   - -c
   - |

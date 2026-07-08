@@ -18,6 +18,7 @@
 {{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
 {{- $releaseName := include "deepsearch-global.releaseName" . -}}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 {{- $license := include "deepsearch.license" . -}}
 {{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
 {{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
@@ -29,7 +30,8 @@ metadata:
   labels:
     release_name: {{ $releaseName }}
     component: "deepsearch"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
     deepsearch.service.name: {{ $serviceName }}
     {{- include "deepsearch.MainDeploymentlabels" . | nindent 4 }}
 spec:
@@ -50,7 +52,8 @@ spec:
       labels:
         release_name: {{ $releaseName }}
         component: "deepsearch"
-        version: {{ $chartVersion }}
+        version: {{ $appVersion }}
+        chart.version: {{ $chartVersion }}
         deepsearch.service.name: {{ $serviceName }}
         {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
     spec:

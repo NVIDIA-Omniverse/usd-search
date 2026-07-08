@@ -19,7 +19,8 @@ import dataclasses
 import json
 import logging
 import os
-from contextlib import asynccontextmanager
+import sys
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime
 from queue import Empty
 from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
@@ -137,10 +138,16 @@ class MonitorWorker(AssetdbMS):
         self._n_parallel_queue_processors = self._worker_config.n_parallel_queue_processors
         self.use_prom_metrics = self._worker_config.use_metrics
         self.queue_processed = asyncio.Event()
-        self._data_load_lock = asyncio.Lock()
 
         # plugin initialization
         self._plugin = Plugins.get_plugin(plugin_name=self._worker_config.plugin_name)
+
+        # Bound concurrent data loads per the plugin's config. None or <= 0 = unlimited.
+        data_load_concurrency = getattr(self._plugin.config, "data_load_concurrency", None)
+        if data_load_concurrency is None or data_load_concurrency <= 0:
+            self._data_load_guard = nullcontext()
+        else:
+            self._data_load_guard = asyncio.Semaphore(data_load_concurrency)
 
         if storage_config is None:
             self._storage_config = StorageConfig()
@@ -169,6 +176,15 @@ class MonitorWorker(AssetdbMS):
         # init prom metrics
         if self.use_prom_metrics:
             self.init_additional_prom_metrics()
+
+    @property
+    def is_data_load_guard_held(self) -> bool:
+        """True if the data-load guard is currently held by some in-flight load.
+
+        Always False when concurrency is unlimited (nullcontext).
+        """
+        locked = getattr(self._data_load_guard, "locked", None)
+        return bool(locked()) if callable(locked) else False
 
     async def _terminate(self) -> None:
         """In practice this function is ont really used. It is convenient for tests to make sure all resources were deallocated"""
@@ -407,26 +423,57 @@ class MonitorWorker(AssetdbMS):
                 "plugin.paths_count": len(paths),
             },
         ) as span:
-            # NOTE: this lock is needed, as sometimes large assets are loaded in parallel and occupy too much memory
-            async with self._data_load_lock:
-                server_responses: List[Optional[PathType]] = await asyncio.gather(
-                    *[storage_client.get_item(path) for path in paths]
-                )
-                omni_paths: List[PathType] = [p for p in server_responses if p is not None]
+            # Time spent waiting to acquire the data-load guard, separated from
+            # the actual work below. For unlimited-concurrency plugins
+            # (nullcontext, e.g. thumbnail_to_embedding) this is ~0; for guarded
+            # plugins it reveals contention between parallel task processors.
+            with tracer.start_as_current_span("plugin.data_load_guard_acquire"):
+                guard = self._data_load_guard
+                await guard.__aenter__()
+            try:
+                # head_item is a cheap existence/metadata probe (S3 HEAD on
+                # the S3 backend, falls back to get_item elsewhere). It
+                # populates the fields the downstream pipeline reads
+                # (.uri, .hash_value, .modified_date_seconds).
+                with tracer.start_as_current_span("plugin.head_items") as head_span:
+                    head_span.set_attribute("plugin.paths_count", len(paths))
+                    server_responses: List[Optional[PathType]] = await asyncio.gather(
+                        *[storage_client.head_item(path) for path in paths]
+                    )
+                    omni_paths: List[PathType] = [p for p in server_responses if p is not None]
+                    head_span.set_attribute("plugin.resolved_paths_count", len(omni_paths))
                 span.set_attribute("plugin.resolved_paths_count", len(omni_paths))
 
-                content: List[dict] = []
-                for r in omni_paths:
-                    if plugin.should_process(file_type=os.path.splitext(r.uri)[1][1:]):
-                        content.append(
-                            await plugin.get_omni_file(
-                                omni_item=r,
-                                storage_client=storage_client,
-                                timeout=self.config.usd_read_timeout,
-                            )
-                        )
-                    else:
-                        content.append({})
+                # Actual content fetch — for thumbnail-style plugins this is a
+                # batch of S3 GETs per asset and is the usual hot spot.
+                with tracer.start_as_current_span("plugin.get_omni_files") as load_span:
+                    load_span.set_attribute("plugin.resolved_paths_count", len(omni_paths))
+                    content: List[dict] = []
+                    processed_count = 0
+                    skipped_count = 0
+                    for r in omni_paths:
+                        file_type = os.path.splitext(r.uri)[1][1:]
+                        if plugin.should_process(file_type=file_type):
+                            with tracer.start_as_current_span("plugin.get_omni_file") as item_span:
+                                item_span.set_attribute("plugin.uri", str(r.uri))
+                                item_span.set_attribute("plugin.file_type", file_type)
+                                response = await plugin.get_omni_file(
+                                    omni_item=r,
+                                    storage_client=storage_client,
+                                    timeout=self.config.usd_read_timeout,
+                                )
+                                status = getattr(response, "status", None)
+                                if status is not None:
+                                    item_span.set_attribute("plugin.status", str(status))
+                            content.append(response)
+                            processed_count += 1
+                        else:
+                            content.append({})
+                            skipped_count += 1
+                    load_span.set_attribute("plugin.processed_count", processed_count)
+                    load_span.set_attribute("plugin.skipped_count", skipped_count)
+            finally:
+                await guard.__aexit__(*sys.exc_info())
             return omni_paths, content
 
     @staticmethod

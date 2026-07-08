@@ -343,6 +343,89 @@ def match_patterns(path: Union[RemoteFilePath, RemoteFileUri], patterns: Optiona
     return len(patterns) > 0 and match_regex(path, tuple(patterns))
 
 
+# Regex metacharacters that terminate a literal run. ``.`` is included because
+# an unescaped dot is a wildcard; for the literal-*prefix* extraction we stop at
+# it, while the exact-path detection below interprets it as a literal dot.
+_REGEX_METACHARS = frozenset(".^$*+?()[]{}|")
+# Metacharacters that make a pattern non-exact (a genuine wildcard / quantifier
+# / group / alternation). ``.`` is intentionally absent — see regex_to_literal_uri.
+_REGEX_WILDCARD_CHARS = frozenset("*+?()[]{}|")
+
+
+def regex_literal_prefix(pattern: str) -> str:
+    """Return the longest leading substring of `pattern` that matches literally.
+
+    Walks the regex left-to-right, un-escaping literal escapes such as ``\\.``
+    and stopping at the first unescaped regex metacharacter or special escape
+    (``\\d``, ``\\w``, ...). The result is always a prefix of every string the
+    full pattern can match, so it is safe to hand to S3's ``ListObjectsV2`` as a
+    ``Prefix`` filter.
+    """
+    out: List[str] = []
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            if i + 1 >= n:
+                break
+            nxt = pattern[i + 1]
+            if nxt.isalnum():  # \d \w \s \b ... -> special escape, not a literal
+                break
+            out.append(nxt)  # \. \/ \- \\ ... -> literal character
+            i += 2
+            continue
+        if c in _REGEX_METACHARS:
+            break
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def regex_to_literal_uri(pattern: str) -> Optional[str]:
+    """Return the single exact key a `pattern` describes, or None if it is not exact.
+
+    A template is "exact" when, after stripping a leading ``^`` and a *required*
+    trailing ``$`` anchor, it contains no genuine wildcard — no quantifier,
+    group, character class or alternation (``_REGEX_WILDCARD_CHARS``) and no
+    character-class escape (``\\d``, ``\\w`` ...). Escaped literals (``\\.``) and
+    a bare ``.`` are both interpreted as a literal dot — which is exactly what
+    thumbnail path templates mean by ``.png`` / ``.usd``.
+
+    For such templates the candidate is a single, fully determined key, so the
+    caller can skip the LIST entirely and let the per-candidate GET probe decide
+    existence. Returns None (forcing a prefix-narrowed LIST) for anything with a
+    real wildcard, or for unanchored patterns, where ``re.match``'s
+    prefix-matching semantics must be preserved.
+    """
+    if not pattern.endswith("$"):
+        return None
+    s = pattern[:-1]
+    if s.startswith("^"):
+        s = s[1:]
+    out: List[str] = []
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\":
+            if i + 1 >= n:
+                return None
+            nxt = s[i + 1]
+            if nxt.isalnum():  # char-class escape -> genuine wildcard
+                return None
+            out.append(nxt)
+            i += 2
+            continue
+        if c == ".":
+            out.append(".")  # interpret unescaped dot as a literal separator
+            i += 1
+            continue
+        if c in _REGEX_WILDCARD_CHARS or c in ("^", "$"):
+            return None  # mid-pattern anchor or wildcard -> not a single exact key
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 async def get_thumbnails_nucleus_style(
     storage_client: StorageClient,
     uri: RemoteFileUri,
@@ -363,16 +446,27 @@ async def get_thumbnails_nucleus_style(
     if thumbnail_path_templates is not None:
         thumbnail_uris_list: List[str] = []
         folder_name, file_name = os.path.split(uri)
+        folder_uri = f"{folder_name}/{thumbs_loc}"
         for template in thumbnail_path_templates:
             template = template.format(folder_name=folder_name, file_name=file_name)
-            async for result in storage_client.list_items(
-                path_list=[f"{folder_name}/{thumbs_loc}"],
-                recursive=True,
-                ignore_patterns=None,
-                show_hidden=True,
+            # Fast path: the template resolves to a single exact key, so emit it
+            # directly and let the per-candidate GET probe in `load_thumbnail`
+            # decide existence — no LIST round-trip at all.
+            exact_uri = regex_to_literal_uri(template)
+            if exact_uri is not None:
+                thumbnail_uris_list.append(exact_uri)
+                continue
+            # Wildcard template: instead of enumerating the entire `.thumbs`
+            # folder and discarding almost everything, narrow the listing to the
+            # template's longest literal prefix (S3 does this server-side via
+            # ListObjectsV2 Prefix; folder-based backends fall back to the
+            # folder). The full regex still filters the small result set.
+            async for candidate_uri in storage_client.list_thumbnail_candidate_uris(
+                literal_prefix_uri=regex_literal_prefix(template),
+                folder_uri=folder_uri,
             ):
-                if re.match(template, result.uri):
-                    thumbnail_uris_list.append(result.uri)
+                if re.match(template, candidate_uri):
+                    thumbnail_uris_list.append(candidate_uri)
     else:
         if suffixes is None:
             suffixes = ["", ".auto"]

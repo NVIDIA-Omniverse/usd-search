@@ -80,13 +80,11 @@ def add_VersioningServiceServicer_to_server(servicer, server):
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-        "nvidia.omniverse.storage.versioning.v1alpha.VersioningService",
-        rpc_method_handlers,
+        "nvidia.omniverse.storage.versioning.v1alpha.VersioningService", rpc_method_handlers
     )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers(
-        "nvidia.omniverse.storage.versioning.v1alpha.VersioningService",
-        rpc_method_handlers,
+        "nvidia.omniverse.storage.versioning.v1alpha.VersioningService", rpc_method_handlers
     )
 
 

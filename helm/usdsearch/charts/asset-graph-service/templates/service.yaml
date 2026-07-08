@@ -15,6 +15,7 @@
 
 {{  $releaseName := include "asset-graph-service.releaseName" . }}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 
 apiVersion: v1
 kind: Service
@@ -24,7 +25,8 @@ metadata:
     {{- include "asset-graph-service.labels" . | nindent 4 }}
     release_name: {{ $releaseName }}
     component: "asset-graph-service"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
   {{- template "asset-graph-service.template.service.annotations" ( .Values.service.annotations ) }}
 spec:
   type: {{ .Values.service.type }}

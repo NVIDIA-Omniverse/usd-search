@@ -18,10 +18,26 @@ repos:
     rev: v5.0.0
     hooks:
     -   id: check-yaml
-        exclude: (\.gitlab-ci\.yml|docker-compose\.web-ui\.yml|infra/compose/openapi-merge\.yml)
+        # Helm chart templates are Go templates ({{ ... }}), not parseable as
+        # plain YAML — exclude them (helm lint/template validates those instead).
+        exclude: (\.gitlab-ci\.yml|docker-compose\.web-ui\.yml|infra/compose/openapi-merge\.yml|helm/.*/templates/.*\.ya?ml)
+    # Two carve-outs from the content-rewriting fixers:
+    #   - services/explorer/dist/ is a generated build artifact (see
+    #     scripts/generate-explorer-build.sh) committed verbatim — the public
+    #     Explorer image serves it and CI diffs it byte-for-byte.
+    #   - licenses/ holds third-party license texts reproduced verbatim; the
+    #     whitespace/EOF fixups mangle the originals (and would fight the
+    #     third-party-notice hook below, which regenerates them verbatim).
     -   id: end-of-file-fixer
+        exclude: ^(services/explorer/dist/|licenses/)
     -   id: trailing-whitespace
+        exclude: ^(services/explorer/dist/|licenses/)
     -   id: check-added-large-files
+        # uv.lock files are machine-generated and legitimately exceed the
+        # default 500 KB limit; they must stay tracked for reproducible builds.
+        # The Explorer bundle (services/explorer/dist/) is likewise a tracked
+        # generated artifact that exceeds the limit.
+        exclude: (^|/)uv\.lock$|^services/explorer/dist/
 -   repo: local
     hooks:
     -   id: format
@@ -35,7 +51,7 @@ repos:
     hooks:
     -   id: flake8
         args:
-        - "--exclude=*test*,*stubs*"
+        - "--exclude=*test*,*stubs*,*_pb2.py,*_pb2_grpc.py"
         - "--ignore=E501,W503,E203"
 -   repo: local
     hooks:
@@ -44,4 +60,39 @@ repos:
         entry: python3 scripts/apply_spdx_headers.py
         language: system
         files: \.(py|pyi|sh|bash|yml|yaml|js|jsx|ts|tsx|proto|lua)$|(^|/)Dockerfile($|\.[^/]+$)|^ci/skills/[^/]+/mocks/[^/]+$
+        # Never inject headers into the generated Explorer bundle (would break
+        # the app and CI's byte-for-byte dist/ verification).
+        exclude: ^services/explorer/dist/
         pass_filenames: true
+-   repo: local
+    hooks:
+    # Regenerate THIRD_PARTY_NOTICE.md + licenses/ into a temp tree and fail if
+    # they differ from the committed copies (scripts/generate_third_party_notice.sh
+    # --check). Runs once (pass_filenames: false) — the script rebuilds the whole
+    # notice from the dependency graph + the bundled images' apt layers, so it
+    # can't be scoped to individual files. Only fires when an input that can
+    # change the notice is staged. Fix a failure by running
+    # ./scripts/generate_third_party_notice.sh and committing the result.
+    # NOTE: needs docker + NGC pull access (for the apt base images) and network
+    # access to PyPI/GitHub, same as a manual regeneration.
+    -   id: third-party-notice
+        name: Verify THIRD_PARTY_NOTICE.md + licenses/ are up to date
+        entry: scripts/generate_third_party_notice.sh --check
+        language: script
+        pass_filenames: false
+        files: |
+          (?x)^(
+            (.*/)?pyproject\.toml
+            |uv\.lock
+            |services/rendering-job/uv\.lock
+            |services/asset-graph-builder/uv\.lock
+            |services/siglip2-triton/docker/uv\.lock
+            |docker/Dockerfile\.usdsearch
+            |docker/Dockerfile\.siglip2-triton
+            |scripts/generate_third_party_notice\.sh
+            |scripts/_generate_third_party_notice\.py
+            |scripts/_apt_deps_incontainer\.sh
+            |scripts/third_party_extras\.json
+            |THIRD_PARTY_NOTICE\.md
+            |licenses/.*
+          )$

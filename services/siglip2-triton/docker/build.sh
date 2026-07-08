@@ -42,23 +42,17 @@ NC='\033[0m' # No Color
 
 export REPO=nvcr.io/omniverse/deeptag-internal
 
-# Export dependencies from pyproject.toml
-echo ""
-echo "Exporting server dependencies..."
-uv export --no-hashes -o docker/requirements.txt --project docker
-if [ $? -eq 0 ]; then
-    echo -e "${GREEN}✓ Server dependencies exported to docker/requirements.txt${NC}"
-else
-    echo -e "${RED}✗ Failed to export server dependencies${NC}"
-    exit 1
-fi
+# Dependencies are installed inside the image directly from
+# docker/pyproject.toml + docker/uv.lock by the Dockerfile (uv export at build
+# time), so there is no requirements.txt to pre-generate here.
 
 # Check for required files
 echo ""
 echo "Checking required files..."
 required_files=(
     "../../docker/Dockerfile.siglip2-triton"
-    "docker/requirements.txt"
+    "docker/pyproject.toml"
+    "docker/uv.lock"
     "docker/PACKAGE-LICENSES"
     "model_repo/siglip2_vision_encoder_onnx"
     "model_repo/siglip2_text_encoder_onnx"
@@ -106,4 +100,3 @@ echo ""
 echo "========================================"
 echo "Build complete!"
 echo "========================================"
-

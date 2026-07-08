@@ -25,7 +25,8 @@ services:
     environment:
       DB_URI: neo4j://neo4j:7687
       DB_USERNAME: neo4j
-      DB_PASSWORD: password
+      # CHANGE BEFORE NON-LOCAL USE — must match neo4j NEO4J_AUTH; override via NEO4J_PASSWORD.
+      DB_PASSWORD: ${NEO4J_PASSWORD:-password}
       N_WORKERS: 1
       ACCEPT_EULA: "Y"
       OTEL_SDK_DISABLED: "true"

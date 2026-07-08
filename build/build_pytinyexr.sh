@@ -35,7 +35,7 @@ DIR="$( cd "$(dirname "$0")" ; pwd -P )"
 
 WHEELS_DIR="${WHEELS_DIR:-$DIR/../wheels}"
 REPO="${PYTINYEXR_REPO:-https://github.com/syoyo/pytinyexr}"
-PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.10 3.11 3.12 3.13 3.14}"
+PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.11 3.12 3.13 3.14}"
 PYTINYEXR_JOBS="${PYTINYEXR_JOBS:-5}"
 
 mkdir -p "$WHEELS_DIR"

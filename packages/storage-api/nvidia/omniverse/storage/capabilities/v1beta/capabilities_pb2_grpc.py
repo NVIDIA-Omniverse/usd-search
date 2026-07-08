@@ -103,13 +103,11 @@ def add_CapabilitiesServiceServicer_to_server(servicer, server):
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-        "nvidia.omniverse.storage.capabilities.v1beta.CapabilitiesService",
-        rpc_method_handlers,
+        "nvidia.omniverse.storage.capabilities.v1beta.CapabilitiesService", rpc_method_handlers
     )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers(
-        "nvidia.omniverse.storage.capabilities.v1beta.CapabilitiesService",
-        rpc_method_handlers,
+        "nvidia.omniverse.storage.capabilities.v1beta.CapabilitiesService", rpc_method_handlers
     )
 
 

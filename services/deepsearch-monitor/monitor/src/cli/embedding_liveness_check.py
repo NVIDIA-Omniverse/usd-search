@@ -15,7 +15,7 @@
 
 import time
 
-from vision_endpoint import SigLIP2, SigLIP2Config
+from siglip2_triton_client import SigLIP2, SigLIP2Config
 
 from .. import logger
 

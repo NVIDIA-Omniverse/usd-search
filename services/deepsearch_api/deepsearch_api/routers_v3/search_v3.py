@@ -34,8 +34,8 @@ from deepsearch_api.search_backend.models import (
 )
 from deepsearch_api.telemetry_decorator import telemetry_track_search
 from deepsearch_api.utils import DurationLogger
-from deepsearch_api.validation import SearchResultValidator
-from fastapi import APIRouter, Body, HTTPException, Request, Response
+from deepsearch_api.validation import SearchResultValidator, VLMServiceUnavailable
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.params import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasicCredentials
 from opentelemetry import trace
@@ -60,6 +60,19 @@ vlm_router = APIRouter(
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+
+def _active_vlm_model_identifier(
+    vlm_validator: Optional[SearchResultValidator],
+) -> Optional[str]:
+    """Return a stable identifier for the currently-configured validation model,
+    or None when validation is disabled. The identifier is intentionally opaque to
+    clients — they just include it in their cache key. Bumping the model env var
+    (``USDSEARCH_VISION_VALIDATION_MODEL``) changes the string and forces re-validation.
+    """
+    if vlm_validator is None:
+        return None
+    return vlm_validator.settings.model
 
 
 async def validate_result(
@@ -100,36 +113,46 @@ async def validate_result(
                     image_ids.append(mv.image)
     image_ids = image_ids[:8]
 
-    with tracer.start_as_current_span("routers_v3.validate_result", kind=SpanKind.INTERNAL) as validate_result_span:
-        validate_result_span.set_attribute("hit.source.base_key", hit.source.get("base_key"))
-        validate_result_span.set_attribute("image_count", len(image_ids))
+    async def _load_and_validate() -> Optional[QueryRelevanceValidationResult]:
+        with tracer.start_as_current_span("routers_v3.validate_result", kind=SpanKind.INTERNAL) as span:
+            span.set_attribute("hit.source.base_key", hit.source.get("base_key"))
+            span.set_attribute("image_count", len(image_ids))
 
-        try:
-            if image_ids:
-                # Fast path: batch load images by key
-                images_dict = await image_loader.load_images(image_ids)
-                loaded_images = [img for key in image_ids if (img := images_dict.get(key)) is not None]
-            else:
-                # Fallback: load single image by asset URL
-                image_base64 = await resolve_image_by_asset_url(
-                    asset_url=hit.source.get("base_key"),
-                    storage_client=storage_client,
-                    search_backend_v2=search_backend_v2,
-                    storage_require_auth=request.app.global_settings.storage_require_auth,
-                    image_loader=image_loader,
-                )
-                loaded_images = [image_base64] if image_base64 else []
+            try:
+                if image_ids:
+                    # Fast path: batch load images by key
+                    images_dict = await image_loader.load_images(image_ids)
+                    loaded_images = [img for key in image_ids if (img := images_dict.get(key)) is not None]
+                else:
+                    # Fallback: load single image by asset URL
+                    image_base64 = await resolve_image_by_asset_url(
+                        asset_url=hit.source.get("base_key"),
+                        storage_client=storage_client,
+                        search_backend_v2=search_backend_v2,
+                        storage_require_auth=request.app.global_settings.storage_require_auth,
+                        image_loader=image_loader,
+                    )
+                    loaded_images = [image_base64] if image_base64 else []
 
-            if not loaded_images:
-                logger.warning(f"No images found for hit {hit.source.get('base_key', hit.id)}")
+                if not loaded_images:
+                    logger.warning(f"No images found for hit {hit.source.get('base_key', hit.id)}")
+                    return None
+
+                logger.info(f"Got {len(loaded_images)} image(s) for hit {hit.source.get('base_key')}")
+            except HTTPException as e:
+                logger.error(f"Failed to get image: {e} for hit {hit.source.get('base_key', hit.id)}")
                 return None
 
-            logger.info(f"Got {len(loaded_images)} image(s) for hit {hit.source.get('base_key')}")
-        except HTTPException as e:
-            logger.error(f"Failed to get image: {e} for hit {hit.source.get('base_key', hit.id)}")
-            return None
+            return (await vlm_validator.validate_results(query_text, query_image, [loaded_images]))[0]
 
-        return (await vlm_validator.validate_results(query_text, query_image, [loaded_images]))[0]
+    # Memoize by (model, query, image identity): duplicate assets in one page
+    # (deduplicate_by_hash=false) coalesce into a single load+VLM call, and
+    # re-runs of the same query reuse the cached verdict entirely. When the hit
+    # exposes no image keys, the asset URL is the identity for the fallback path.
+    cache_key = vlm_validator.make_cache_key(
+        query_text, query_image, image_ids or [str(hit.source.get("base_key", hit.id))]
+    )
+    return await vlm_validator.validate_once(cache_key, _load_and_validate)
 
 
 @vlm_router.post(
@@ -191,7 +214,14 @@ async def validate_result_endpoint(
         if not loaded_images:
             raise HTTPException(status_code=404, detail="No images could be loaded for validation")
 
-        results = await vlm_validator.validate_results(body.query_text, body.query_image, [loaded_images])
+        try:
+            results = await vlm_validator.validate_results(body.query_text, body.query_image, [loaded_images])
+        except VLMServiceUnavailable as e:
+            # Provider is unreachable (network/DNS/TLS/connection refused).
+            # 503 is the contract: Explorer's reactive 503 handler tears down
+            # the batch and surfaces the "VLM unavailable" banner, instead of
+            # hammering through dozens of failing per-hit 504s.
+            raise HTTPException(status_code=503, detail=f"VLM service unavailable: {e}") from e
         result = results[0]
 
         if result is None:
@@ -202,6 +232,7 @@ async def validate_result_endpoint(
             confidence=result.confidence,
             similarity_score=result.similarity_score,
             reasoning=result.reasoning,
+            model=_active_vlm_model_identifier(vlm_validator),
         )
 
 
@@ -326,8 +357,7 @@ async def search_post(
                         query_image if query_image is not None else "None",
                     )
                     span.set_attribute("hits_count", len(results.hits))
-                    span.set_attribute("vlm_service", vlm_validator.settings.vlm_service is not None)
-                    span.set_attribute("vlm_model", vlm_validator._validation._vlm.model is not None)
+                    span.set_attribute("vlm_model", vlm_validator.settings.model)
                     validation_results = await asyncio.gather(
                         *[
                             validate_result(

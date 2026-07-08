@@ -2,7 +2,7 @@
 
 Plugin-support utilities shared by the DeepSearch monitor workers and other
 USD Search services. Sits one layer above `search-utils` and depends on
-`ngsearch-storage` and `vision-endpoint`.
+`ngsearch-storage` and `siglip2-triton-client`.
 
 ## What's inside
 

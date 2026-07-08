@@ -22,7 +22,12 @@ DIR="$(cd "$(dirname "$0")" && pwd -P)"
 CHART_DIR="$DIR/../usdsearch"
 
 if command -v helm-docs > /dev/null 2>&1; then
-    helm-docs --chart-search-root "$(dirname "$CHART_DIR")" --chart-to-generate "$CHART_DIR"
+    # helm-docs keys charts by their path relative to the search root, so run
+    # from the root with relative paths — absolute --chart-to-generate values
+    # don't match and the chart is silently skipped. Scoped to a subshell so the
+    # cd does not leak into the caller's working directory.
+    (cd "$(dirname "$CHART_DIR")" && \
+        helm-docs --chart-search-root . --chart-to-generate "$(basename "$CHART_DIR")")
 else
     docker run --rm --volume "$(dirname "$CHART_DIR"):/helm-docs" -u "$(id -u)" jnorwood/helm-docs:latest --chart-to-generate usdsearch
 fi

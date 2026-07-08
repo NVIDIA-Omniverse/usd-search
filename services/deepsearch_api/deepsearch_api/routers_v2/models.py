@@ -134,7 +134,12 @@ class DeepSearchSearchRequest(BaseModel):
     )
     cutoff_threshold: Optional[float] = Field(
         default=None,
-        description="Minimum embedding similarity score required for results. Results below this threshold are excluded. Use to filter out low-relevance matches. Typical range depends on query type.",
+        description="Minimum raw engine score for VECTOR search legs only (text/keyword legs are "
+        "never cut off). Applied per leg BEFORE Reciprocal Rank Fusion, so a cut hit can still "
+        "appear if another leg ranks it. The scale is the engine's transformed score, not plain "
+        "cosine: for innerproduct kNN over normalized SigLIP2 embeddings OpenSearch maps "
+        "ip >= 0 to 1 + ip, so the useful range is roughly 1.0 (orthogonal) to 2.0 (identical); "
+        "values below 1.0 are effectively no-ops. Leave unset to keep every vector hit.",
         ge=0,
     )
     search_path: Optional[str] = Field(
@@ -342,6 +347,14 @@ class QueryRelevanceValidationResult(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence in the decision (0-1)")
     similarity_score: int = Field(..., ge=0, le=100, description="Query-asset relevancy score (0-100)")
     reasoning: str = Field(..., description="Explanation of the validation decision")
+    model: Optional[str] = Field(
+        default=None,
+        description=(
+            "Identifier of the VLM service+model that produced this verdict. Returned so "
+            "clients can cache verdicts under a model-aware key — when the server-side "
+            "model changes, cached entries become misses and re-validation runs."
+        ),
+    )
 
 
 class ValidateResultRequest(BaseModel):
@@ -374,6 +387,10 @@ class ValidateResultRequest(BaseModel):
             raise ValueError("At least one of asset_url, image_key, or image_keys must be provided")
         if provided > 1:
             raise ValueError("Only one of asset_url, image_key, or image_keys should be provided")
+        # Treat a whitespace-only text query as absent: it carries no signal and
+        # would otherwise be sent verbatim to the VLM, producing noise.
+        if self.query_text is not None and not self.query_text.strip():
+            self.query_text = None
         if not self.query_text and not self.query_image:
             raise ValueError("At least one of query_text or query_image must be provided")
         # Normalize image_key to image_keys for uniform downstream handling

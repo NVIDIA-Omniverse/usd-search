@@ -60,8 +60,8 @@ Common labels
 {{- define "ngsearch.labels" -}}
 helm.sh/chart: {{ include "ngsearch.chart" . }}
 {{ include "ngsearch.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/component: "ngsearch"
 app.kubernetes.io/managed-by: {{ .Release.Service }}
@@ -111,7 +111,7 @@ Defaults to the unified `usdsearch` image; honors per-service overrides
 {{- define "ngsearch.ngsearchRestAPIDockerImage" -}}
 {{- $img := .Values.microservices.search_rest_api.image -}}
 {{- if $img.name -}}
-{{ default .Values.global.registry $img.registry }}/{{ $img.name }}:{{ default .Chart.AppVersion $img.tag }}
+{{ default .Values.global.registry $img.registry }}/{{ $img.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) $img.tag }}
 {{- else -}}
 {{ include "deepsearch-global.usdsearchImage" . }}
 {{- end -}}
@@ -125,7 +125,7 @@ Defaults to the unified `usdsearch` image; honors a sub-chart-level override
 */}}
 {{- define "ngsearch.ngsearchDockerImage" -}}
 {{- if .Values.image.name -}}
-{{ .Values.global.registry }}/{{ .Values.image.name }}:{{ default .Chart.AppVersion .Values.image.tag }}
+{{ .Values.global.registry }}/{{ .Values.image.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) .Values.image.tag }}
 {{- else -}}
 {{ include "deepsearch-global.usdsearchImage" . }}
 {{- end -}}
@@ -181,7 +181,7 @@ Service Loadbalancer source ranges template
 */}}
 {{- define "ngsearch.template.service.loadBalancerSourceRanges" -}}
   {{- with . }}
-  loadBalancerSourceRanges: 
+  loadBalancerSourceRanges:
   {{- toYaml . | nindent 4}}
   {{- end }}
 {{- end }}
@@ -232,11 +232,9 @@ VLM API Key Secret Fields template
 */}}
 {{- define "ngsearch.template.vlm.config" -}}
 {{- $outer := . -}}
-  {{- range $k, $v := .source.parameters  }}
-    {{- if $v }}
-- name: {{ printf "%s%s" ( $outer.source.env_prefix ) ( upper $k ) }}
-  value: {{ $v | quote }}
-    {{- end }}
+  {{- if .source.base_url }}
+- name: {{ printf "%sBASE_URL" $outer.source.env_prefix }}
+  value: {{ .source.base_url | quote }}
   {{- end }}
 - name: {{ $outer.source.env_prefix }}API_KEY
   valueFrom:

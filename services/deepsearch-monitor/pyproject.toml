@@ -7,7 +7,7 @@ authors = [
     {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
     {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
 ]
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "base-logging",
     "usdsearch",
@@ -18,7 +18,8 @@ dependencies = [
     "ngsearch-crawlers",
     "deepsearch-crawler",
     "deepsearch-utils",
-    "vision-endpoint>=0.12.0",
+    "llm-client",
+    "siglip2-triton-client[preprocessing]",
     "pydantic>=2.0",
     "pydantic-settings>=2.6.1",
     "fastapi>=0.110.0",
@@ -31,7 +32,7 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=6.1.0",
     "opentelemetry-api>=1.25.0",
     "opentelemetry-sdk>=1.25.0",
-    "numpy>=1.26.4,<2",
+    "numpy>=1.26.4",
     "pillow>=10.2.0",
     "pyyaml>=6.0.2",
     "fire>=0.6.0",

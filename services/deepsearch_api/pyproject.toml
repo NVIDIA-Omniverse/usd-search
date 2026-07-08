@@ -7,13 +7,13 @@ authors = [
     {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
     {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
 ]
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "base-logging",
     "search-utils[storage-api,pillow,search-backend]",
     "asset-graph-client",
-    "siglip2-triton-client>=0.3.0",
-    "vision-endpoint[siglip2]>=0.13.0",
+    "siglip2-triton-client[preprocessing]>=0.3.0",
+    "llm-client",
     "openai>=0.28.0",
     "fastapi>=0.115.0",
     "starlette>=0.40.0",
@@ -23,7 +23,7 @@ dependencies = [
     "tenacity>=8.2.3",
     "pydantic>=2.0",
     "pydantic-settings>=2.7.0",
-    "numpy>=1.26.4,<2",
+    "numpy>=1.26.4",
     "pillow>=10.2.0",
     "opensearch-py>=3.0.0",
     "prometheus-fastapi-instrumentator>=6.1.0",

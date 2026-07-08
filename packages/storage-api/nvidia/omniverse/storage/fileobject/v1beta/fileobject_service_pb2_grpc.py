@@ -288,13 +288,11 @@ def add_FileObjectServiceServicer_to_server(servicer, server):
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-        "nvidia.omniverse.storage.fileobject.v1beta.FileObjectService",
-        rpc_method_handlers,
+        "nvidia.omniverse.storage.fileobject.v1beta.FileObjectService", rpc_method_handlers
     )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers(
-        "nvidia.omniverse.storage.fileobject.v1beta.FileObjectService",
-        rpc_method_handlers,
+        "nvidia.omniverse.storage.fileobject.v1beta.FileObjectService", rpc_method_handlers
     )
 
 

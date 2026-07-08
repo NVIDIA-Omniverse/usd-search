@@ -42,9 +42,7 @@ class ConsumeNonDurableEventsResponse(_message.Message):
     events: _containers.RepeatedCompositeFieldContainer[Event]
     reconnect_token: str
     def __init__(
-        self,
-        events: _Optional[_Iterable[_Union[Event, _Mapping]]] = ...,
-        reconnect_token: _Optional[str] = ...,
+        self, events: _Optional[_Iterable[_Union[Event, _Mapping]]] = ..., reconnect_token: _Optional[str] = ...
     ) -> None: ...
 
 class ConsumeDurableEventsRequest(_message.Message):
@@ -110,13 +108,7 @@ class UpdateDurableQueueResponse(_message.Message):
     def __init__(self) -> None: ...
 
 class Event(_message.Message):
-    __slots__ = (
-        "event_type",
-        "principal_identity",
-        "occurred_at",
-        "published_at",
-        "message",
-    )
+    __slots__ = ("event_type", "principal_identity", "occurred_at", "published_at", "message")
     EVENT_TYPE_FIELD_NUMBER: _ClassVar[int]
     PRINCIPAL_IDENTITY_FIELD_NUMBER: _ClassVar[int]
     OCCURRED_AT_FIELD_NUMBER: _ClassVar[int]
@@ -143,9 +135,7 @@ class FilterGroup(_message.Message):
     event_type: str
     filters: _containers.RepeatedCompositeFieldContainer[ResourceFilter]
     def __init__(
-        self,
-        event_type: _Optional[str] = ...,
-        filters: _Optional[_Iterable[_Union[ResourceFilter, _Mapping]]] = ...,
+        self, event_type: _Optional[str] = ..., filters: _Optional[_Iterable[_Union[ResourceFilter, _Mapping]]] = ...
     ) -> None: ...
 
 class ResourceFilter(_message.Message):
@@ -167,7 +157,5 @@ class ResourceFilter(_message.Message):
     filter_type: ResourceFilter.FilterType
     resource_id: str
     def __init__(
-        self,
-        filter_type: _Optional[_Union[ResourceFilter.FilterType, str]] = ...,
-        resource_id: _Optional[str] = ...,
+        self, filter_type: _Optional[_Union[ResourceFilter.FilterType, str]] = ..., resource_id: _Optional[str] = ...
     ) -> None: ...

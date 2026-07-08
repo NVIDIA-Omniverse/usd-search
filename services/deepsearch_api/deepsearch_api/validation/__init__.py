@@ -14,6 +14,6 @@
 # limitations under the License.
 
 from .config import ValidationSettings
-from .validator import SearchResultValidator
+from .validator import SearchResultValidator, VLMServiceUnavailable
 
-__all__ = ["ValidationSettings", "SearchResultValidator"]
+__all__ = ["SearchResultValidator", "VLMServiceUnavailable", "ValidationSettings"]

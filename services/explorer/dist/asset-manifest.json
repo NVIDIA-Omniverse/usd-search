@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/static/css/main.6d96fa0b.css",
+    "main.js": "/static/js/main.21c7c468.js",
+    "static/media/NVIDIASans_Rg.ttf": "/static/media/NVIDIASans_Rg.42c23c0088a472da5233.ttf",
+    "static/media/NVIDIASans_Bd.ttf": "/static/media/NVIDIASans_Bd.25d7b49e9e81d453f25c.ttf",
+    "index.html": "/index.html",
+    "main.6d96fa0b.css.map": "/static/css/main.6d96fa0b.css.map",
+    "main.21c7c468.js.map": "/static/js/main.21c7c468.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.6d96fa0b.css",
+    "static/js/main.21c7c468.js"
+  ]
+}

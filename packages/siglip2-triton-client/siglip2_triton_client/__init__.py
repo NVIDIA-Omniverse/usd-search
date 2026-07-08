@@ -37,6 +37,14 @@ _LAZY_IMPORTS = {
     "TritonPreprocessedTextClient": ".client",
     "AsyncTritonPreprocessedImageClient": ".async_client",
     "AsyncTritonPreprocessedTextClient": ".async_client",
+    # High-level SigLIP2 embedding wrapper (needs pillow + transformers via the
+    # preprocessed clients) — moved here from the retired vision_endpoint package.
+    "SigLIP2": ".clip",
+    "SigLIP2Config": ".clip",
+    "BaseCLIP": ".clip",
+    "CLIPConfig": ".clip",
+    "CLIPService": ".clip",
+    "CLIPException": ".clip",
 }
 
 
@@ -66,4 +74,10 @@ __all__ = [
     "TritonEnsembleTextClient",
     "TritonEnsembleImageClient",
     "TritonClientSettings",
+    "SigLIP2",
+    "SigLIP2Config",
+    "BaseCLIP",
+    "CLIPConfig",
+    "CLIPService",
+    "CLIPException",
 ]

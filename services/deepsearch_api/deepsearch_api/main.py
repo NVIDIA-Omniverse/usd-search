@@ -19,7 +19,6 @@ import os
 from contextlib import asynccontextmanager
 from importlib.metadata import version
 from time import time
-from typing import Any, Dict
 
 # local / proprietary modules
 import deepsearch_api
@@ -38,8 +37,15 @@ from deepsearch_api.exceptions import (
     AuthenticationError,
     NoneTokenProvided,
 )
+from deepsearch_api.llm_parse import (
+    LLMParseExtractionError,
+    LLMParseExtractor,
+    LLMParseSettings,
+)
+from deepsearch_api.llm_parse.router import router as query_parsing_router
 from deepsearch_api.routers_v2 import ags, authorization, search
-from deepsearch_api.routers_v3 import images, search_v3
+from deepsearch_api.routers_v3 import download, images, search_v3
+from deepsearch_api.routers_v3.download import DownloadSettings
 from deepsearch_api.search_backend.embeddings import USDSearchEmbeddingClient
 from deepsearch_api.search_backend.exceptions import (
     ImageProcessingError,
@@ -56,10 +62,10 @@ from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_fastapi_instrumentator import PrometheusFastApiInstrumentator
 from pydantic_settings import BaseSettings
+from siglip2_triton_client import SigLIP2Config
 from siglip2_triton_client.interface import TritonClientException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from vision_endpoint.clip_triton_client import SigLIP2Config
 
 from search_utils.misc_utils import str2bool
 from search_utils.storage_client import StorageClientAuthenticationError
@@ -131,18 +137,44 @@ tags_metadata = [
 async def lifespan(app: FastAPI):
     siglip2_config = SigLIP2Config(triton_server_url=os.getenv("TRITON_SERVER_URL", "0.0.0.0:8001"))
     app.usd_search_embedding_client = USDSearchEmbeddingClient(config=siglip2_config)
+    # Download bundler tunables (DOWNLOAD_* env vars). Resolved here in the
+    # lifespan rather than at module import so tests can build the app without
+    # the import-time env read; the /download/asset handler reads app.download_settings.
+    app.download_settings = DownloadSettings()
     # Initialize VLM validator if enabled
     validation_settings = ValidationSettings()
     if validation_settings.enabled:
         try:
             app.vlm_validator = SearchResultValidator(validation_settings)
             logger.info(
-                "VLM validator initialized with service: %s",
-                validation_settings.vlm_service,
+                "VLM validator initialized with model: %s",
+                validation_settings.model,
             )
         except Exception as e:
             logger.warning(
                 "Failed to initialize VLM validator: %s. Validation feature will be disabled.",
+                e,
+            )
+    # Initialize the LLM query parser if enabled, and probe reachability:
+    # if the model is unreachable the extractor stays None, so /llm_parse/query 503s
+    # and the Explorer shows the "LLM Search not active" banner + plain search.
+    app.llm_parse_extractor = None
+    llm_parse_settings = LLMParseSettings()
+    if llm_parse_settings.enabled:
+        try:
+            extractor = LLMParseExtractor(llm_parse_settings)
+            if await extractor.aping():
+                app.llm_parse_extractor = extractor
+                logger.info("LLM query parsing ready with model: %s", llm_parse_settings.model)
+            else:
+                logger.warning(
+                    "LLM query parsing model unreachable (model=%s); /llm_parse/query will 503 and the UI "
+                    "falls back to plain search.",
+                    llm_parse_settings.model,
+                )
+        except Exception as e:
+            logger.warning(
+                "Failed to initialize LLM query parser: %s. /llm_parse/query will 503.",
                 e,
             )
     yield
@@ -154,6 +186,10 @@ app = FastAPI(
     version=get_app_version(),
     openapi_tags=tags_metadata,
     lifespan=lifespan,
+    # Disabled so a trailing-slash request (e.g. /search/) returns a clean 404
+    # instead of a 307 to the internal /v2/deepsearch/... path, which the gateway
+    # does not expose (it 404s) and which leaks the internal route prefix.
+    redirect_slashes=False,
 )
 v2_api_router = APIRouter(prefix="/v2")
 v2_api_router.include_router(search.router)
@@ -162,10 +198,13 @@ v2_api_router.include_router(authorization.router)
 v3_api_router = APIRouter(prefix="/v3")
 v3_api_router.include_router(search_v3.router)
 v3_api_router.include_router(search_v3.vlm_router)
+v3_api_router.include_router(query_parsing_router)
 v3_api_router.include_router(images.router)
+v3_api_router.include_router(download.router)
 app.include_router(v2_api_router)
 app.include_router(v3_api_router)
 app.include_router(images.router)
+app.include_router(download.router)
 app.include_router(health.router)
 
 
@@ -182,6 +221,20 @@ async def image_processing_error(request: Request, exc: ImageProcessingError) ->
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={"error": "Image processing error.", "details": str(exc)},
+    )
+
+
+@app.exception_handler(LLMParseExtractionError)
+async def llm_parse_extraction_error(request: Request, exc: LLMParseExtractionError) -> JSONResponse:
+    # The /llm_parse/query LLM call failed after retries. Surface a clear 503
+    # instead of an ambiguous 500; the client (e.g. the Explorer) treats this as
+    # a cue to fall back to plain semantic search on the raw text.
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "LLM query parsing is temporarily unavailable.",
+            "details": str(exc),
+        },
     )
 
 
@@ -424,7 +477,7 @@ app.add_middleware(
 )
 
 # Local filesystem path rewriting (no-op unless LOCAL_FS_MODE=true).
-from search_utils.local_fs_middleware import LocalFSPathMiddleware
+from search_utils.local_fs_middleware import LocalFSPathMiddleware  # noqa: E402
 
 app.add_middleware(LocalFSPathMiddleware)
 

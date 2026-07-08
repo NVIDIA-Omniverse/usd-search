@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import os
+from enum import Enum
 from io import BytesIO
 from tempfile import TemporaryDirectory
 from typing import List, Literal, Optional, Union
@@ -27,6 +28,17 @@ from .misc_utils import get_pillow_supported_formats
 
 PILLOW_FORMATS = get_pillow_supported_formats()
 EXR_FLOAT_TYPE = os.getenv("EXR_FLOAT_TYPE", "float16")
+
+
+class GifSamplingMode(str, Enum):
+    """GIF frame sampling strategy.
+
+    ``FIXED`` strides by ``frame_sample_frequency`` and caps at ``max_frames``;
+    ``UNIFORM`` spreads up to ``max_frames`` frames evenly across the whole GIF.
+    """
+
+    FIXED = "fixed"
+    UNIFORM = "uniform"
 
 
 def get_exr_float_type():
@@ -60,7 +72,9 @@ def load_image_from_bytes_by_type(
     file_format: str,
     exr_gamma_correction: bool = True,
     downsize: Optional[int] = None,
-    offset_ms: int = 1000,
+    gif_frame_sample_frequency: int = 1,
+    gif_max_frames: int = 512,
+    gif_sampling_mode: GifSamplingMode = GifSamplingMode.FIXED,
 ) -> List[Image.Image]:
     """Load image from bytes
 
@@ -69,7 +83,9 @@ def load_image_from_bytes_by_type(
         file_format (str): file format
         exr_gamma_correction (bool, optional): Optional Gamma correction . Defaults to True.
         downsize (Optional[int], optional): size to which image needs to be down-sampled if not None. If the image has smaller size - it would be kept unchanged. Defaults to None.
-        offset_ms (int, optional): offset in milliseconds for GIF. Defaults to 1000.
+        gif_frame_sample_frequency (int, optional): for GIFs in "fixed" mode, sample every Nth frame (1 = every frame). Defaults to 1.
+        gif_max_frames (int, optional): for GIFs, cap on the total number of extracted frames. Defaults to 512.
+        gif_sampling_mode (GifSamplingMode, optional): GIF frame sampling strategy. Defaults to GifSamplingMode.FIXED.
 
     Raises:
         NotImplementedError: _description_
@@ -81,7 +97,12 @@ def load_image_from_bytes_by_type(
     if file_format == "gif":
         return [
             downsize_keep_aspect(im, sz=downsize).convert("RGBA")
-            for im in load_gif_as_multiple_images(content=content, offset_ms=offset_ms)
+            for im in load_gif_as_multiple_images(
+                content=content,
+                frame_sample_frequency=gif_frame_sample_frequency,
+                max_frames=gif_max_frames,
+                sampling_mode=gif_sampling_mode,
+            )
         ]
     elif file_format in PILLOW_FORMATS:
         with BytesIO(content) as stream:
@@ -95,14 +116,55 @@ def load_image_from_bytes_by_type(
         raise NotImplementedError(f"{format} is not supported")
 
 
-def load_gif_as_multiple_images(content: bytearray, offset_ms: int = 1000) -> List[Image.Image]:
-    """Load GIF as multiple images
+def _fixed_sampling_indices(n_frames: int, frame_sample_frequency: int, max_frames: int) -> List[int]:
+    """Stride-based sampling: every Nth frame, capped at max_frames."""
+    indices: List[int] = []
+    for frame_index in range(0, n_frames, frame_sample_frequency):
+        if len(indices) >= max_frames:
+            break
+        indices.append(frame_index)
+    return indices
+
+
+def _uniform_sampling_indices(n_frames: int, max_frames: int) -> List[int]:
+    """Uniform sampling: up to max_frames frames spread evenly across the GIF.
+
+    Uses even buckets ``(arange(k) * n) // k`` with ``k = min(max_frames,
+    n_frames)``. Since ``n_frames / k >= 1`` the indices are strictly
+    increasing, so when ``n_frames <= max_frames`` every frame is returned.
+    """
+    k = min(max_frames, n_frames)
+    return ((np.arange(k) * n_frames) // k).tolist()
+
+
+def load_gif_as_multiple_images(
+    content: bytearray,
+    frame_sample_frequency: int = 1,
+    max_frames: int = 512,
+    sampling_mode: GifSamplingMode = GifSamplingMode.FIXED,
+) -> List[Image.Image]:
+    """Load GIF as multiple images using the requested sampling strategy.
+
     Args:
         content (bytearray): GIF content
-        offset_ms (int): offset in milliseconds
+        frame_sample_frequency (int): for ``FIXED`` mode, sample every Nth frame
+            (1 = every frame). Ignored in ``UNIFORM`` mode.
+        max_frames (int): cap on the total number of extracted frames. In
+            ``UNIFORM`` mode this is the target number of evenly-spaced frames.
+        sampling_mode (GifSamplingMode): ``FIXED`` strides by
+            ``frame_sample_frequency`` and caps at ``max_frames``; ``UNIFORM``
+            spreads up to ``max_frames`` frames evenly across the whole GIF.
     Returns:
         List[Image.Image]: List of images
     """
+    if max_frames < 1:
+        raise ValueError("max_frames must be >= 1")
+    try:
+        sampling_mode = GifSamplingMode(sampling_mode)
+    except ValueError:
+        raise ValueError(
+            f"Unknown sampling_mode: {sampling_mode!r} (expected one of {[m.value for m in GifSamplingMode]})"
+        ) from None
 
     with TemporaryDirectory() as tmp_dir:
         tmp_file_path = os.path.join(tmp_dir, "thumbnail.gif")
@@ -112,23 +174,17 @@ def load_gif_as_multiple_images(content: bytearray, offset_ms: int = 1000) -> Li
 
         im = Image.open(tmp_file_path)
 
+        if sampling_mode == GifSamplingMode.UNIFORM:
+            indices = _uniform_sampling_indices(im.n_frames, max_frames)
+        else:
+            if frame_sample_frequency < 1:
+                raise ValueError("frame_sample_frequency must be >= 1")
+            indices = _fixed_sampling_indices(im.n_frames, frame_sample_frequency, max_frames)
+
         frames: List[Image.Image] = []
-        elapsed = 0  # ms from start of GIF
-        next_target = offset_ms  # next second mark in ms
-
-        for frame_index in range(im.n_frames):
+        for frame_index in indices:
             im.seek(frame_index)
-
-            # Some GIFs store duration in various places
-            duration = im.info.get("duration", 0)  # ms
-
-            # If we've crossed a 1-second boundary, save this frame
-            if elapsed >= next_target:
-                frames.append(im.copy())
-                # move to next second mark
-                next_target += offset_ms
-
-            elapsed += duration
+            frames.append(im.copy())
 
     return frames
 

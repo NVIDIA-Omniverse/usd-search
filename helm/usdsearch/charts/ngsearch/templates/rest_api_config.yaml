@@ -21,5 +21,20 @@ metadata:
 data:
   logging.yaml: |
     {{ .Values.microservices.search_rest_api.loggingConfig | toYaml | nindent 4 }}
+  {{- /* nindent the raw string — piping through toYaml here would leak the
+         block-scalar marker into the mounted file's content. */}}
   validation_domain_context.txt: |
-    {{ .Values.microservices.search_rest_api.validation.domain_context | toYaml | nindent 4 }}
+    {{- .Values.microservices.search_rest_api.validation.domain_context | nindent 4 }}
+{{- with .Values.microservices.search_rest_api.llm_parsing.prompt }}
+  llm_parsing_system_prompt.txt: |
+    {{- . | nindent 4 }}
+{{- end }}
+{{- with .Values.microservices.search_rest_api.llm_parsing.fields }}
+  search_fields.yaml: |
+    fields:
+    {{- . | toYaml | nindent 6 }}
+{{- end }}
+{{- with .Values.microservices.search_rest_api.llm_parsing.property_catalog }}
+  usd_property_catalog.yaml: |
+    {{- . | toYaml | nindent 4 }}
+{{- end }}

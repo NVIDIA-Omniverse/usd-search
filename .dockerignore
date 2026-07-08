@@ -19,6 +19,9 @@
 **/*.egg-info/
 packages/**/dist/
 services/**/dist/
+# The public Explorer image (docker/Dockerfile.explorer) COPYs this tracked,
+# pre-built bundle, so it must stay in the build context.
+!services/explorer/dist/
 packages/**/build/
 services/**/build/
 **/.eggs/

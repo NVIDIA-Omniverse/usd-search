@@ -24,7 +24,9 @@ services:
       retries: 50
     environment:
       NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_AUTH: neo4j/password
+      # CHANGE BEFORE NON-LOCAL USE — local-dev default password. Override via
+      # NEO4J_PASSWORD; the asset-graph-service DB_PASSWORD reads the same var.
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-password}
     ports:
       - "7474:7474"
       - "7687:7687"

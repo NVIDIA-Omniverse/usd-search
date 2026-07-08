@@ -30,5 +30,11 @@ class S3StorageClientConfig(StorageClientConfig):
     allow_non_system_writes: Optional[bool] = True
     system_path_prefix: str = ".omniverse/deepsearch"
     re_scan_timeout: Optional[float] = 86400  # in seconds (equivalent to 1 day)
+    # Size of the underlying HTTP connection pool. The botocore default is 10,
+    # which becomes a bottleneck when many requests are issued concurrently
+    # (e.g. several parallel monitor task processors sharing one client all
+    # fetching thumbnails from S3 at once). Raise this to allow more in-flight
+    # connections before requests start queueing for a free socket.
+    max_pool_connections: int = 50
 
     model_config = SettingsConfigDict(env_prefix="s3_storage_")

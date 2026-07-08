@@ -27,35 +27,20 @@
 #   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml -f docker-compose.vlm-plugins.yml up
 #
 # Required environment variables (set in .env or shell):
-#   METADATA_GENERATION_VLM_SERVICE  — provider name. Supported values match
-#   `vision_endpoint.vlm.base_vlm.VLMService`:
-#     "inference_hub" (default), "openai", "anthropic", "nim", "azure_openai",
-#     "google", "qwen", "qwen_alibaba", "mistralai"
-#   Plus the provider-specific API key. The convention is
-#   `<PROVIDER_UPPERCASED>_API_KEY`, e.g.:
-#     INFERENCE_HUB_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, NIM_API_KEY,
-#     AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, QWEN_API_KEY,
-#     QWEN_ALIBABA_API_KEY, MISTRALAI_API_KEY
-#   Optional `inference_hub` overrides: INFERENCE_HUB_MODEL,
-#   INFERENCE_HUB_BASE_URL.
+#   USDSEARCH_LLM_API_KEY  — the one shared LLM key. Every LLM role (metadata
+#   generation, validation) reuses it; there is no per-provider or per-role key
+#   to set. Optional overrides:
+#     USDSEARCH_LLM_BASE_URL            (defaults to the shipped OpenAI-compatible endpoint)
+#     USDSEARCH_VISION_METADATA_MODEL   (default gcp/google/gemini-3.1-pro-preview)
+#     USDSEARCH_VISION_VALIDATION_MODEL (default gcp/google/gemini-3.5-flash)
 
-# Provider API keys — null-pass-through (`KEY:` with no value): forwards the
-# var from the host if set, omits it from the container otherwise. Shared by
-# the metadata workers (read via vision-endpoint's `<provider>_` env_prefix)
-# and by `deepsearch-api`'s VLM validation path (same provider configs).
-# Only the key matching the active VLM service is read at runtime.
+# Shared LLM connection — null-pass-through (`KEY:` with no value): forwards the
+# var from the host if set, omits it from the container otherwise. Read once by
+# llm_client.LLMConnectionConfig and reused by the metadata workers and
+# deepsearch-api's validation path. Point BASE_URL at any OpenAI-compatible endpoint.
 x-vlm-provider-env: &vlm-provider-env
-  INFERENCE_HUB_API_KEY:
-  INFERENCE_HUB_MODEL:
-  INFERENCE_HUB_BASE_URL:
-  OPENAI_API_KEY:
-  ANTHROPIC_API_KEY:
-  NIM_API_KEY:
-  AZURE_OPENAI_API_KEY:
-  GOOGLE_API_KEY:
-  QWEN_API_KEY:
-  QWEN_ALIBABA_API_KEY:
-  MISTRALAI_API_KEY:
+  USDSEARCH_LLM_API_KEY:
+  USDSEARCH_LLM_BASE_URL:
 
 x-vlm-worker-env: &vlm-worker-env
   # Storage backend — overridable from the host shell (kept in sync with the
@@ -73,28 +58,49 @@ x-vlm-worker-env: &vlm-worker-env
   OV_SERVER:
   OV_USERNAME:
   OV_PASSWORD:
+  # Storage API backend (STORAGE_BACKEND_TYPE=storage_api) — null-pass-through,
+  # kept in sync with x-common-env so VLM workers reach the same gRPC endpoint.
+  STORAGE_API_GRPC_ENDPOINT:
+  STORAGE_API_BASE_URI:
+  STORAGE_API_TOKEN:
+  STORAGE_API_SSL:
+  STORAGE_API_OPENID_CLIENT_ID:
+  STORAGE_API_OPENID_CLIENT_SECRET:
+  STORAGE_API_OPENID_TOKEN_URL:
+  STORAGE_API_OPENID_SCOPE:
+  STORAGE_API_OPENID_GRANT_TYPE:
   LOGGING_CONFIG: /logging.yml
   PYTHONUNBUFFERED: "1"
   REDIS_URL: redis://redis:6379
   OTEL_SDK_DISABLED: "true"
-  METADATA_GENERATION_VLM_SERVICE: ${METADATA_GENERATION_VLM_SERVICE:-openai}
+  # Per-role model override (optional; default gcp/google/gemini-3.1-pro-preview).
+  USDSEARCH_VISION_METADATA_MODEL:
   <<: *vlm-provider-env
 
 services:
   # ─── DeepSearch API: enable VLM validation ──────────────────────────────
-  # Flips the base compose's `VLM_VALIDATION_ENABLED: "false"` and supplies
-  # the same provider keys + service the metadata workers use, so the
-  # `/vlm_validate/...` endpoints can call out to the VLM. The validation
-  # config (`services/deepsearch_api/.../validation/config.py`) reads the
-  # `VLM_VALIDATION_*` env vars below; pinning VLM_VALIDATION_VLM_SERVICE
-  # to METADATA_GENERATION_VLM_SERVICE keeps validation aligned with whatever
-  # provider the workers were started with.
+  # Flips the base compose's validation-disabled default and supplies the same
+  # shared LLM connection the metadata workers use, so the
+  # `/vlm_validate/...` endpoints can call out to the VLM. The validation config
+  # (`services/deepsearch_api/.../validation/config.py`) reads the
+  # `USDSEARCH_VISION_VALIDATION_*` env vars below (model defaults to
+  # gcp/google/gemini-3.5-flash).
   deepsearch-api:
     environment:
       <<: *vlm-provider-env
-      VLM_VALIDATION_ENABLED: "true"
-      VLM_VALIDATION_VLM_SERVICE: ${METADATA_GENERATION_VLM_SERVICE:-openai}
-      VLM_VALIDATION_MAX_CONCURRENT: ${VLM_VALIDATION_MAX_CONCURRENT:-30}
+      USDSEARCH_VISION_VALIDATION_ENABLED: "true"
+      USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT: ${USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT:-30}
+      USDSEARCH_VISION_VALIDATION_MODEL:
+      # LLM query parsing (`/llm_parse/*`) on the same
+      # shared connection. Model defaults to llm_parse/config.py's value; the
+      # null pass-through forwards USDSEARCH_LLM_PARSING_MODEL from the host if
+      # set and omits it otherwise.
+      USDSEARCH_LLM_PARSING_ENABLED: "true"
+      USDSEARCH_LLM_PARSING_MODEL:
+      # Optional corpus grounding for the parser's `usd_property` filter: point
+      # at a `usd_property_catalog.yaml` (see docs/usd-property-catalog.md) and
+      # bind-mount the file via a local overlay. Null pass-through as above.
+      USDSEARCH_LLM_PARSING_PROPERTY_CATALOG_FILEPATH:
 
   # ─── VLM Metadata Workers (CPU-only, call remote VLM APIs) ───────────────
 

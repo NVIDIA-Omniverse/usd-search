@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional, Tuple
 from deepsearch_utils.ds_plugin_utils import DSPluginStatus
 
 # local/proprietary modules
-from vision_endpoint import MetadataGeneration
+from llm_client import MetadataGeneration
 
 from search_utils.storage_client import StorageClient
 

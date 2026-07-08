@@ -36,8 +36,10 @@ COPY openapi_merge/ ./openapi_merge/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-editable
 
-# Runtime config (read by the tool from its working directory).
-COPY main.yaml openapi-merge.json version.md ./
+# Runtime config (read by the tool from its working directory). The merged-spec
+# version is supplied via the API_VERSION env var (sourced from the repo-root
+# VERSION.md by scripts/build-openapi-docs.sh), not a file baked into the image.
+COPY main.yaml openapi-merge.json ./
 
 ENV PATH=/app/.venv/bin:${PATH}
 ENV PYTHONUNBUFFERED=1

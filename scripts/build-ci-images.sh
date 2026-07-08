@@ -32,11 +32,13 @@ push them to a registry. Mirrors the three image build jobs defined in
 .gitlab-ci.yml: build-usdsearch, build-rendering-job, build-siglip2-triton.
 
 Usage:
-  scripts/build-ci-images.sh <tag> [--push] [--registry <host/namespace>]
-                                   [--image <name> ...] [--no-cache]
+  scripts/build-ci-images.sh [<tag>] [--push] [--registry <host/namespace>]
+                                     [--image <name> ...] [--no-cache]
 
 Arguments:
-  <tag>                Required. Image tag applied to every built image.
+  <tag>                Optional. Image tag applied to every built image.
+                       Defaults to <VERSION.md>-<git-short-hash> when omitted
+                       (e.g. 1.3.3-c57b747).
 
 Flags:
   --push               Tag images as <registry>/<name>:<tag> and push them.
@@ -52,6 +54,7 @@ Flags:
   -h, --help           Show this help text.
 
 Examples:
+  scripts/build-ci-images.sh                # uses VERSION.md + git short hash
   scripts/build-ci-images.sh dev-local
   scripts/build-ci-images.sh 1.4.0 --push
   scripts/build-ci-images.sh 1.4.0 --push --registry myreg.example.com/team
@@ -112,9 +115,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$TAG" ]]; then
-  echo "ERROR: <tag> is required" >&2
-  usage >&2
-  exit 2
+  version_file="$REPO_ROOT/VERSION.md"
+  if [[ ! -f "$version_file" ]]; then
+    echo "ERROR: <tag> not provided and VERSION.md not found at $version_file" >&2
+    exit 2
+  fi
+  version="$(tr -d '[:space:]' < "$version_file")"
+  short_hash="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ -z "$version" || -z "$short_hash" ]]; then
+    echo "ERROR: could not derive default tag from VERSION.md ('$version') and git short hash ('$short_hash')" >&2
+    exit 2
+  fi
+  TAG="${version}-${short_hash}"
+  echo "No <tag> provided; using ${TAG} (VERSION.md + git short hash)"
 fi
 
 # Default to all images if none were explicitly selected.

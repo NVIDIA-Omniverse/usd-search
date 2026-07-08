@@ -18,6 +18,7 @@
 {{- $fullServiceName := printf "%s-%s" $fullName $serviceName -}}
 {{- $releaseName := include "deepsearch-global.releaseName" . -}}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 {{- $license := include "deepsearch.license" . -}}
 {{- $monitorDockerImage := include "deepsearch.monitorDockerImage" . -}}
 {{- $excludeIndexingStringsPatterns := include "deepsearch.excludeIndexingStringsPatterns" . -}}
@@ -32,7 +33,8 @@ metadata:
   labels:
     release_name: {{ $releaseName }}
     component: "deepsearch"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
     deepsearch.service.name: {{ $serviceName }}
     {{- include "deepsearch.MainDeploymentlabels" . | nindent 4 }}
 spec:
@@ -56,7 +58,8 @@ spec:
       labels:
         release_name: {{ $releaseName }}
         component: "deepsearch"
-        version: {{ $chartVersion }}
+        version: {{ $appVersion }}
+        chart.version: {{ $chartVersion }}
         deepsearch.service.name: {{ $serviceName }}
         {{- include "deepsearch.MainDeploymentSelectorlabels" . | nindent 8 }}
     spec:
@@ -136,6 +139,8 @@ spec:
               value: "orjson"
             - name: CLEAN_TASK_QUEUES
               value: "False"
+            - name: PROCESSING_BATCH_SIZE
+              value: {{ .Values.microservices.monitor.processing_batch_size | default 1 | quote }}
             - name: ACCEPT_EULA
               value: {{ required "Please accept the license agreement: '--set global.accept_eula=true'" $license | quote}}
           {{- if eq .Values.global.storage_backend_type "nucleus" }}

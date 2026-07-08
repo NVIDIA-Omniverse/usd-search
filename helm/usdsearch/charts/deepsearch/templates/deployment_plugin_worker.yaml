@@ -25,6 +25,7 @@
 {{- $values := .Values -}}
 {{- $releaseName := include "deepsearch-global.releaseName" . -}}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 {{- $deploymentLabels := include "deepsearch.MainDeploymentlabels" . }}
 {{- $deploymentSelectorLabels := include "deepsearch.MainDeploymentSelectorlabels" . }}
 {{- $serviceAccountName := include "deepsearch.serviceAccountName" . }}
@@ -42,8 +43,6 @@
 {{- range $plugin_name, $plugin_config := $values.plugins }}
 
   {{- if $plugin_config.active }}
-    
-{{- $vlm_service := ( $plugin_config.vision_endpoint.vlm_service | default $values.vision_endpoint.vlm_service ) -}}
 
     {{- range $worker_name, $worker_config := $values.microservices.plugin_worker.worker_config }}
 
@@ -56,7 +55,8 @@ metadata:
   labels:
     release_name: {{ $releaseName }}
     component: "deepsearch"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
     deepsearch.service.name: {{ $serviceName }}-{{ $plugin_name }}
     deepsearch.worker.type.name: {{ $worker_name }}
     {{- $deploymentLabels | nindent 4 }}
@@ -85,7 +85,8 @@ spec:
       labels:
         release_name: {{ $releaseName }}
         component: "deepsearch"
-        version: {{ $chartVersion }}
+        version: {{ $appVersion }}
+        chart.version: {{ $chartVersion }}
         deepsearch.service.name: {{ $serviceName }}-{{ $plugin_name }}
         deepsearch.worker.plugin: {{ $plugin_name }}
         deepsearch.worker.type.name: {{ $worker_name }}
@@ -148,7 +149,7 @@ spec:
             {{- if $worker_config.job_type }}
             --job_item_type={{ printf "%s," ( join "," $worker_config.job_type ) }}
             {{- end }}
-            
+
           ports:
           {{- if and ($plugin_config.requires_rendering | default false) ( eq ($plugin_config.renderer_type | default $values.microservices.plugin_worker.rendering_settings.renderer_type) "k8s" ) }}
           - containerPort: 8765
@@ -196,30 +197,14 @@ spec:
                   key: {{ $values.global.embedding_deployment.authentication.secret_key }}
             {{- end }}
             {{- if $plugin_config.requires_vision_metadata }}
-            - name: METADATA_YAML_FILEPATH
+            - name: USDSEARCH_VISION_METADATA_YAML_FILEPATH
               value: /vision_metadata_config/metadata_fields.yaml
-            - name: METADATA_PROMPT_FILEPATH
+            - name: USDSEARCH_VISION_METADATA_PROMPT_FILEPATH
               value: /vision_metadata_config/image_prompt.txt
-            - name: METADATA_GENERATION_VLM_SERVICE
-              value: {{ required "Please provide the VLM service type: --set deepsearch.vision_endpoint.vlm_service=<VLM Service type>" $vlm_service -}} 
-              {{- if eq $vlm_service "azure_openai" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.azure_openai "default" $values.vision_endpoint.azure_openai) | nindent 12 }}
-              {{- else if eq $vlm_service "openai" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.openai "default" $values.vision_endpoint.openai) | nindent 12 }}
-              {{- else if eq $vlm_service "anthropic" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.anthropic "default" $values.vision_endpoint.anthropic ) | nindent 12 }}
-              {{- else if eq $vlm_service "mistralai" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.mistralai "default" $values.vision_endpoint.mistralai ) | nindent 12 }}
-              {{- else if eq $vlm_service "google" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.google "default" $values.vision_endpoint.google ) | nindent 12 }}
-              {{- else if eq $vlm_service "nim" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.nim "default" $values.vision_endpoint.nim ) | nindent 12 }}
-              {{- else if eq $vlm_service "qwen" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.qwen "default" $values.vision_endpoint.qwen ) | nindent 12 }}
-              {{- else if eq $vlm_service "inference_hub" -}}
-            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.inference_hub "default" $values.vision_endpoint.inference_hub ) | nindent 12 }}
-              {{- end }}
-            {{- end }}            
+            - name: USDSEARCH_VISION_METADATA_MODEL
+              value: {{ ( $plugin_config.vision_endpoint.metadata_model | default $values.vision_endpoint.metadata_model ) | quote }}
+            {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.provider "default" $values.vision_endpoint.provider) | nindent 12 }}
+            {{- end }}
             {{- if $plugin_config.requires_thumbnail_settings }}
             - name: THUMBNAIL_LOCATION
               {{- if $plugin_config.thumbnail_settings }}
@@ -240,9 +225,17 @@ spec:
               value: {{ $values.thumbnail_settings.filepath_patterns | toJson | quote }}
               {{- end }}
             {{- end }}
-            {{- if $plugin_config.gif_offset_ms }}
-            - name: GIF_OFFSET_MS
-              value: {{ $plugin_config.gif_offset_ms | quote }}
+            {{- if $plugin_config.gif_sampling_mode }}
+            - name: GIF_SAMPLING_MODE
+              value: {{ $plugin_config.gif_sampling_mode | quote }}
+            {{- end }}
+            {{- if $plugin_config.gif_frame_sample_frequency }}
+            - name: GIF_FRAME_SAMPLE_FREQUENCY
+              value: {{ $plugin_config.gif_frame_sample_frequency | quote }}
+            {{- end }}
+            {{- if $plugin_config.gif_max_frames }}
+            - name: GIF_MAX_FRAMES
+              value: {{ $plugin_config.gif_max_frames | quote }}
             {{- end }}
             - name: SENTRY_DSN
               value: {{ $values.microservices.plugin_worker.sentry_dsn | default $.Values.global.sentry_dsn | default "" }}
@@ -325,6 +318,13 @@ spec:
               value: {{ .client_batch_size | quote }}
             - name: FARM_CLIENT_RENDERING_BATCH_TIMEOUT
               value: {{ .client_batch_timeout | quote }}
+            # Cap the size of a single farm-result WebSocket frame to bound the
+            # memory an oversized / zlib-bomb render payload can allocate.
+            # int64 keeps large byte counts as plain integers (helm parses YAML
+            # numbers as float64, which `quote` would emit in scientific
+            # notation and break int() parsing in the app).
+            - name: FARM_CLIENT_WS_MAX_SIZE
+              value: {{ .ws_max_size | int64 | quote }}
             - name: DEEPSEARCH_RENDERER_CONFIG_PENDING_JOB_LIMIT
               value: {{ $worker_config.pending_job_limit | default ( $plugin_config.pending_job_limit | default .pending_job_limit ) | quote }}
                 {{- end }}
@@ -396,6 +396,10 @@ spec:
               value: {{ $values.microservices.plugin_worker.sentry_dsn | default $.Values.global.sentry_dsn | default "" }}
             - name: ACCEPT_EULA
               value: {{ $license | quote }}
+            # Match the sidecar's request concurrency to the worker's: prefer the
+            # plugin-specific n_concurrent_queue_workers, else the generic one.
+            - name: N_PARALLEL_PROCESSES
+              value: {{ $plugin_config.n_concurrent_queue_workers | default $values.microservices.plugin_worker.settings.n_concurrent_queue_workers | quote }}
             {{- if $plugin_config.indexed_properties }}
             - name: INDEXED_PROPERTIES
               value: {{ $plugin_config.indexed_properties | quote }}
@@ -440,7 +444,7 @@ spec:
             {{- toYaml $values.securityContext | nindent 12 }}
           image: {{ $monitorDockerImage }}
           imagePullPolicy: {{ $values.imagePullPolicy }}
-          command: 
+          command:
           - python
           - -c
           - |

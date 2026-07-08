@@ -66,6 +66,16 @@
 #   docker compose up --build
 #   Open http://localhost:8080/docs/   (Swagger UI for the API)
 #   Add the web-ui overlay to also get the Explorer at /ui/.
+#
+# ⚠️  SECURITY — LOCAL DEVELOPMENT ONLY ⚠️
+#   This file ships hardcoded quickstart credentials (admin access key, Neo4j
+#   DB password, and — in the local-s3 overlay — MinIO root creds). They exist
+#   only to make `docker compose up` work with zero setup on a local machine.
+#   DO NOT deploy this compose file, or these defaults, anywhere reachable by
+#   untrusted networks. For any shared/hosted deployment use the Helm chart
+#   (which generates a random admin key when unset) and override every
+#   credential below. Each hardcoded secret is flagged with a "CHANGE BEFORE
+#   NON-LOCAL USE" comment.
 
 # ─── Infrastructure (from infra/compose/, with quickstart overrides) ─────────
 include:
@@ -109,6 +119,20 @@ x-common-env: &common-env
   OV_SERVER:
   OV_USERNAME:
   OV_PASSWORD:
+  # Storage API backend (used when STORAGE_BACKEND_TYPE=storage_api). Points at
+  # an external Omniverse/Sevan gRPC storage service. STORAGE_API_GRPC_ENDPOINT
+  # must be reachable from inside the container (not localhost) — e.g. an
+  # external host:port or host.docker.internal:50051. Same null-pass-through
+  # pattern (StorageAPIStorageClientConfig declares env_prefix="storage_api_").
+  STORAGE_API_GRPC_ENDPOINT:
+  STORAGE_API_BASE_URI:
+  STORAGE_API_TOKEN:
+  STORAGE_API_SSL:
+  STORAGE_API_OPENID_CLIENT_ID:
+  STORAGE_API_OPENID_CLIENT_SECRET:
+  STORAGE_API_OPENID_TOKEN_URL:
+  STORAGE_API_OPENID_SCOPE:
+  STORAGE_API_OPENID_GRANT_TYPE:
   ASSERT_ADMIN_USER: false
   LOGGING_CONFIG: /logging.yml
   PYTHONUNBUFFERED: "1"
@@ -163,9 +187,14 @@ services:
       ASSET_GRAPH_SERVICE_ENDPOINT: http://asset-graph-service:8000
       # Auth
       ENABLE_ACCESS_VERIFICATION: "False"
-      DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY: quickstart-admin
-      # Disable VLM validation (no VLM service in quickstart)
-      VLM_VALIDATION_ENABLED: "false"
+      # CHANGE BEFORE NON-LOCAL USE — admin access key (x-api-key) granting the
+      # ADMIN role. Override by exporting DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY.
+      DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY: ${DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY:-quickstart-admin}
+      # Disable VLM validation and natural-language query parsing (no LLM
+      # configured in the base quickstart — the vlm-plugins overlay re-enables
+      # both with the shared USDSEARCH_LLM_* connection)
+      USDSEARCH_VISION_VALIDATION_ENABLED: "false"
+      USDSEARCH_LLM_PARSING_ENABLED: "false"
       # Telemetry
       OTEL_SDK_DISABLED: "true"
       # Search config
@@ -174,7 +203,7 @@ services:
       # Hybrid search scoring (parsed as JSON by pydantic-settings;
       # populates ScoringConfig at services/deepsearch_api/.../search_backend/models.py)
       HYBRID_SEARCH_SCORING_CONFIG_RRF_CONFIG: '{"rank_constant":60,"query_rank_constants":{}}'
-      HYBRID_SEARCH_SCORING_CONFIG_HYBRID_TEXT: '{"enabled":true,"weight":1.2,"fields":[{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":true,"analyzer":"standard"},{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":false,"analyzer":"whitespace"},{"field":"name","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.simple","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.standard","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.key","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.tag","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree_reverse","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"__VISION_METADATA_FIELDS__","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true}],"cross_field_operator":"or"}'
+      HYBRID_SEARCH_SCORING_CONFIG_HYBRID_TEXT: '{"enabled":true,"weight":1.2,"fields":[{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":true,"analyzer":"standard"},{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":false,"analyzer":"whitespace"},{"field":"name","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.simple","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.standard","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.key","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.tag","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree_reversed","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"__VISION_METADATA_FIELDS__","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name","nested":false,"enabled":true,"weight":5,"match_type":"exact","analyzer":"keyword","wildcard":false},{"field":"name.standard","nested":false,"enabled":true,"weight":5,"match_type":"exact","analyzer":"keyword","wildcard":false}],"cross_field_operator":"or"}'
       HYBRID_SEARCH_SCORING_CONFIG_VECTOR_FIELDS: '{"siglip2-embedding.embedding":{"enabled":true,"weight":1,"field_name":"siglip2-embedding.embedding","dimension":1536}}'
     depends_on:
       opensearch:
@@ -223,7 +252,9 @@ services:
     environment:
       DB_URI: neo4j://neo4j:7687
       DB_USERNAME: neo4j
-      DB_PASSWORD: password
+      # CHANGE BEFORE NON-LOCAL USE — must match the neo4j server's NEO4J_AUTH
+      # (infra/compose/neo4j.yml). Override both via NEO4J_PASSWORD.
+      DB_PASSWORD: ${NEO4J_PASSWORD:-password}
       N_WORKERS: "1"
       ACCEPT_EULA: "Y"
       OTEL_SDK_DISABLED: "true"

@@ -2,7 +2,7 @@
 name = "base-logging"
 version = "0.1.0"
 description = "Shared logging configuration loader for USD Search services"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "pyyaml>=6.0",
 ]

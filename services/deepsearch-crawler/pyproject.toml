@@ -6,7 +6,7 @@ authors = [
     {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
 ]
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "base-logging",
     "search-utils[storage-api]",

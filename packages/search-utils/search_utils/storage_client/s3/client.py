@@ -36,6 +36,7 @@ from xml.dom.minicompat import StringTypes
 import aioboto3
 import botocore.exceptions
 from aioboto3.session import ResourceCreatorContext
+from botocore.config import Config as BotocoreConfig
 from botocore.handlers import disable_signing
 
 from ...misc_utils import str2bool
@@ -122,9 +123,26 @@ class S3StorageClient(StorageClient):
         return self._listing_finished
 
     def _key_from_uri(self, uri: str) -> RemoteFilePath:
-        url_prefix = f"s3://{self.config.bucket_name}/"
-        if uri.startswith(url_prefix):
-            return RemoteFilePath(uri[len(url_prefix) :])
+        bucket = self.config.bucket_name
+        # Accept the native s3:// form plus the https URL forms some deployments
+        # index assets under (the search index can store either), so callers may
+        # pass an https base_key straight through. All are reduced to the object
+        # key for the configured bucket.
+        prefixes = [f"s3://{bucket}/"]
+        if self.config.aws_endpoint_url:
+            # Custom (non-AWS) endpoint, path-style: https://<endpoint>/<bucket>/<key>
+            prefixes.append(f"https://{self.config.aws_endpoint_url}/{bucket}/")
+        else:
+            # AWS virtual-hosted-style. The region segment may be dot- or
+            # dash-separated (s3.us-west-2 vs the legacy s3-us-west-2) or absent.
+            region = self.config.region_name
+            if region:
+                prefixes.append(f"https://{bucket}.s3.{region}.amazonaws.com/")
+                prefixes.append(f"https://{bucket}.s3-{region}.amazonaws.com/")
+            prefixes.append(f"https://{bucket}.s3.amazonaws.com/")
+        for prefix in prefixes:
+            if uri.startswith(prefix):
+                return RemoteFilePath(uri[len(prefix) :])
         raise InvalidURL(f"{uri} is not a valid S3 URL")
 
     def s3_uri_to_https_uri(self, uri: str) -> str:
@@ -166,7 +184,11 @@ class S3StorageClient(StorageClient):
         # TODO: Support re-using the connection from args
         try:
             s3: ResourceCreatorContext
-            async with self.session.resource("s3", endpoint_url=self.config.aws_endpoint_url) as s3:
+            async with self.session.resource(
+                "s3",
+                endpoint_url=self.config.aws_endpoint_url,
+                config=BotocoreConfig(max_pool_connections=self.config.max_pool_connections),
+            ) as s3:
                 if self.config.aws_access_key_id is None:
                     s3.meta.client.meta.events.register("choose-signer.s3.*", disable_signing)
                 self._s3 = s3
@@ -347,6 +369,46 @@ class S3StorageClient(StorageClient):
         async for item in self.list_items(uri_list=[self._key_from_uri(uri)], max_items=1):
             return item
         return None
+
+    async def head_item(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Optional[PathType]:
+        """Fast existence + minimal metadata check using S3 ``head_object``.
+
+        Returns a partial ``PathType`` populated with the fields available from
+        the HEAD response (uri, etag, hash_value, size, modified_date_seconds,
+        created_date_seconds, type). Owner-related fields (``created_by`` /
+        ``modified_by``) are not populated — use ``get_item`` if those are
+        required.
+        """
+        try:
+            key = self._key_from_uri(uri)
+        except InvalidURL:
+            key = str(uri).lstrip("/")
+
+        try:
+            response = await self.s3.meta.client.head_object(
+                Bucket=self.config.bucket_name,
+                Key=key,
+            )
+        except botocore.exceptions.ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in ("404", "NoSuchKey", "NotFound"):
+                return None
+            raise
+
+        # Preserve the raw ETag (S3 returns it wrapped in double quotes,
+        # matching what aioboto3's ObjectSummary.e_tag previously yielded).
+        etag = response.get("ETag") or None
+        last_modified = response.get("LastModified")
+        last_modified_ts = last_modified.timestamp() if last_modified is not None else None
+        return PathType.model_construct(
+            uri=f"s3://{self.config.bucket_name}/{key}",
+            etag=etag,
+            hash_value=etag,
+            size=response.get("ContentLength"),
+            modified_date_seconds=last_modified_ts,
+            created_date_seconds=last_modified_ts,
+            type=FileTypeMapping.asset,
+        )
 
     async def upload_items(
         self,
@@ -547,6 +609,9 @@ class S3StorageClient(StorageClient):
         timeout: Optional[float] = None,
     ) -> Union[List[ThumbnailItem], ThumbnailItem]:
 
+        if mode not in (ThumbnailLoadMode.one, ThumbnailLoadMode.all):
+            raise ValueError(f"thumbnail mode is incorrectly set: {mode}")
+
         # get thumbnails in nucleus style
         thumbnail_uris_list = await get_thumbnails_nucleus_style(
             storage_client=self,
@@ -557,42 +622,68 @@ class S3StorageClient(StorageClient):
             res_map=res_map,
         )
 
-        thumbnail_list = []
-
-        for thumbnail_uri in thumbnail_uris_list:
+        # Fetch all candidates in parallel. Drop the previous LIST-before-GET
+        # existence probe — the GET itself raises S3ObjectNotFound on
+        # NoSuchKey, so the LIST round-trip per candidate was redundant.
+        async def _fetch_thumbnail(thumbnail_uri: str) -> Optional[ThumbnailItem]:
             try:
-                s3_object = await self.get_item(thumbnail_uri)
-                if s3_object is not None:
-                    if mode == ThumbnailLoadMode.one:
-                        return ThumbnailItem(
-                            data=await asyncio.wait_for(
-                                self.download_file_content(thumbnail_uri),
-                                timeout=timeout,
-                            ),
-                            uri=thumbnail_uri,
-                            etag=s3_object.etag,
-                        )
-                    elif mode == ThumbnailLoadMode.all:
-                        thumbnail_list.append(
-                            ThumbnailItem(
-                                data=await asyncio.wait_for(
-                                    self.download_file_content(thumbnail_uri),
-                                    timeout=timeout,
-                                ),
-                                uri=thumbnail_uri,
-                                etag=s3_object.etag,
-                            )
-                        )
-                    else:
-                        raise ValueError(f"thumbnail mode is incorrectly set: {mode}")
-            except FileNotFoundError:
+                key = self._key_from_uri(thumbnail_uri)
+                response = await asyncio.wait_for(
+                    (await self.bucket.Object(key)).get(),
+                    timeout=timeout,
+                )
+                data = bytes(await response["Body"].read())
+                # Preserve the raw ETag (S3 returns it wrapped in double quotes,
+                # matching what aioboto3's ObjectSummary.e_tag previously yielded).
+                etag = response.get("ETag") or None
+                return ThumbnailItem(data=data, uri=thumbnail_uri, etag=etag)
+            except botocore.exceptions.ClientError as exc:
+                code = exc.response.get("Error", {}).get("Code", "")
+                if code == "NoSuchKey":
+                    logger.debug("Thumbnail thumbnail_uri=%s not found", thumbnail_uri)
+                    return None
+                raise
+            except (FileNotFoundError, S3ObjectNotFound):
                 logger.debug("Thumbnail thumbnail_uri=%s not found", thumbnail_uri)
+                return None
+            # NB: asyncio.TimeoutError is intentionally NOT caught here — a fetch
+            # exceeding `timeout` must propagate so callers can distinguish a slow
+            # backend from a genuinely missing thumbnail (S3ObjectNotFound).
+
+        results = await asyncio.gather(*[_fetch_thumbnail(u) for u in thumbnail_uris_list])
+        thumbnail_list = [r for r in results if r is not None]
+
         if len(thumbnail_list) == 0:
             # if no file found
             logger.debug("Thumbnail is missing for asset uri=%s", uri)
             raise S3ObjectNotFound(f"Thumbnail is missing for asset {uri=}")
 
+        if mode == ThumbnailLoadMode.one:
+            return thumbnail_list[0]
         return thumbnail_list
+
+    async def list_thumbnail_candidate_uris(
+        self,
+        *,
+        literal_prefix_uri: RemoteFileUri,
+        folder_uri: RemoteFileUri,
+    ) -> AsyncIterator[RemoteFileUri]:
+        """Narrow the candidate listing to the literal regex prefix.
+
+        S3's ``ListObjectsV2`` supports only a literal ``Prefix`` (no wildcard
+        matching), so we pass `literal_prefix_uri` — the longest literal prefix
+        of the formatted regex template — instead of the whole ``.thumbs``
+        folder. This turns a full-folder scan into a tightly scoped LIST that
+        returns only the keys of the asset we actually care about; the caller
+        still applies the full regex to the (now tiny) result set.
+        """
+        async for result in self.list_items(
+            uri_list=[literal_prefix_uri],
+            recursive=True,
+            ignore_patterns=None,
+            show_hidden=True,
+        ):
+            yield result.uri
 
     def get_path_from_uri(self, uri: str) -> RemoteFilePath:
         try:

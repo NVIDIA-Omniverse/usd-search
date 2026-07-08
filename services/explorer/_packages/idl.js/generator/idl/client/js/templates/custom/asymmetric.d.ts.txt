@@ -1,1 +1,0 @@
-export type {{ definition.name }} = {% if asymmetric.client %}{{ definition.client|schema_dtype_name }}{% else %}{{ definition.server|schema_dtype_name }}{% endif %};

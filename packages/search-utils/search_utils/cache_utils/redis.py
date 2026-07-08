@@ -15,16 +15,16 @@
 
 import abc
 import logging
-import os
-import pickle
 import queue
 from time import time
 from typing import Any, Iterator, List, MutableMapping, Optional, TypeVar
 
 from redis import Redis
+from redis.asyncio import Redis as AsyncRedis
 from redis.exceptions import RedisError
 
-from search_utils.log_utils import set_simple_logger
+from search_utils import secure_pickle
+from search_utils.secure_pickle import CACHE_APPROVED_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -115,10 +115,10 @@ class BaseCacheDictRedis(abc.ABC, MutableMapping[str, _VT]):
 
 class CacheDictRedis(BaseCacheDictRedis):
     def _serialize(self, value) -> bytes:
-        return pickle.dumps(value)
+        return secure_pickle.dumps(value)
 
     def _deserialize(self, value: bytes) -> _VT:
-        return pickle.loads(value)
+        return secure_pickle.loads(value, approved_imports=CACHE_APPROVED_CLASSES)
 
 
 class RawCacheDictRedis(BaseCacheDictRedis[bytes]):
@@ -129,6 +129,49 @@ class RawCacheDictRedis(BaseCacheDictRedis[bytes]):
 
     def _deserialize(self, value: bytes) -> bytes:
         return value
+
+
+class AsyncRawCacheDictRedis(RawCacheDictRedis):
+    """Async-capable raw-bytes Redis cache.
+
+    Per-item hot-path operations (:meth:`aget` / :meth:`aset` / :meth:`adelete`
+    / :meth:`alen` / :meth:`akeys`) use an asyncio Redis client so they do not
+    block the event loop. The synchronous operations inherited from
+    :class:`BaseCacheDictRedis` (``is_ready``, ``__len__``, ``clean_cache``)
+    remain available for one-off startup / admin use that runs outside the
+    per-item loop. Values are stored and returned as raw ``bytes``, identical
+    to :class:`RawCacheDictRedis`.
+    """
+
+    def __init__(
+        self,
+        redis_url: str,
+        database: Optional[int] = None,
+        ttl_seconds: Optional[int] = None,
+    ) -> None:
+        super().__init__(redis_url, database=database, ttl_seconds=ttl_seconds)
+        url = f"{redis_url}/{database}" if database else redis_url
+        self.aclient = AsyncRedis.from_url(url)
+
+    async def aget(self, key: str) -> Optional[bytes]:
+        """Return the cached value for ``key`` or ``None`` if absent."""
+        return await self.aclient.get(key)
+
+    async def aset(self, key: str, value: bytes) -> None:
+        await self.aclient.set(key, value, ex=self.ttl_seconds)
+
+    async def adelete(self, key: str) -> None:
+        """Delete ``key``; a no-op if the key is absent (mirrors ``DEL``)."""
+        await self.aclient.delete(key)
+
+    async def alen(self) -> int:
+        return await self.aclient.dbsize()
+
+    async def akeys(self, reverse: bool = False) -> List[str]:
+        """Return all cache keys in sorted order (mirrors :meth:`iterkeys`)."""
+        keys = [k.decode("utf-8") for k in await self.aclient.keys()]
+        keys.sort(reverse=reverse)
+        return keys
 
 
 class CacheSetRedis(CacheDictRedis):
@@ -177,15 +220,15 @@ class RedisQueue:
         self.client.delete(self.queue_name)
 
     def enqueue(self, *values):
-        self.client.rpush(self.queue_name, *[pickle.dumps(v) for v in values])
+        self.client.rpush(self.queue_name, *[secure_pickle.dumps(v) for v in values])
 
     def dequeue(self, count: Optional[int] = None):
         value = self.client.lpop(self.queue_name, count=count)
         if value is None:
             raise queue.Empty()
         if isinstance(value, list):
-            return [pickle.loads(v) for v in value]
-        return pickle.loads(value)
+            return [secure_pickle.loads(v, approved_imports=CACHE_APPROVED_CLASSES) for v in value]
+        return secure_pickle.loads(value, approved_imports=CACHE_APPROVED_CLASSES)
 
     def __len__(self):
         return self.client.llen(self.queue_name)

@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # Multi-stage build:
-#   - builder-base: python:3.13-bookworm — common preparation (apt deps, uv, source,
+#   - builder-base: python:3.12-bookworm — common preparation (apt deps, uv, source,
 #                   build_pytinyexr.sh, build_search_utils.sh). Reused by `builder`
 #                   and `test-runner` so the expensive prep is shared via BuildKit cache.
 #   - builder:      production .venv only — wheel-built, no editable installs, no test/dev/lint
@@ -23,13 +23,15 @@
 #                   source kept on disk, and `uv sync --all-extras --all-groups` so test deps
 #                   are pre-installed. Used by services/deepsearch_api/test_in_docker_compose.sh
 #                   (and any other CI script that needs to exec pytest inside the image).
-#   - runtime:      nvcr.io/nvidia/distroless/python:3.13-v4.0.6-dev — hardened
-#                   security-approved base; ships only python + busybox + libc/
-#                   libstdc++/libgomp/openssl/CA certs. The .venv from `builder` is
-#                   copied in; its bin/python symlinks resolve to the distroless
-#                   image's own /usr/local/bin/python3.13 (same minor version).
+#   - runtime:      nvcr.io/nvidia/base/ubuntu:noble-20260217 — minimal Ubuntu base. Python
+#                   is apt-installed here (Ubuntu noble ships CPython 3.12 natively); only the
+#                   interpreter + stdlib (python3.12) and ca-certificates are added — no
+#                   compilers, headers, pip, or venv tooling. The .venv from `builder` is copied
+#                   in; the builder records its base interpreter at /usr/local/bin/python3.12
+#                   while apt installs to /usr/bin/python3.12, so a symlink bridges the two
+#                   (both are CPython 3.12 — the venv's cp312 wheels are ABI-compatible).
 #                   This is the LAST stage so a default `docker build` produces it.
-FROM python:3.13-bookworm AS builder-base
+FROM python:3.12-bookworm AS builder-base
 
 RUN apt-get update && apt-get install -y -qq git p7zip-full && rm -rf /var/lib/apt/lists/*
 
@@ -80,6 +82,11 @@ FROM builder-base AS builder
 #   pillow          — Image processing (deepsearch-monitor, vision-endpoint)
 #   tools           — CLI helpers (tqdm)
 # Not included: siglip2 (pulls transformers, ~1 GB); add --extra siglip2 if needed.
+#
+# UV_LINK_MODE=copy forces real file copies into .venv (rather than hardlinks into the
+# /root/.cache/uv mount), so the venv is self-contained and survives the COPY --from into
+# the runtime stage on a different base image.
+ENV UV_LINK_MODE=copy
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync \
         --no-editable \
@@ -107,21 +114,46 @@ ENV PYTHONUNBUFFERED=1
 
 
 # ── runtime ──────────────────────────────────────────────────────────────
-# Hardened distroless final image — the default target.
-FROM nvcr.io/nvidia/distroless/python:3.13-v4.0.6-dev AS runtime
+# Minimal Ubuntu base — the default target (LAST stage).
+FROM nvcr.io/nvidia/base/ubuntu:noble-20260217 AS runtime
+
+# Runtime-only OS dependencies:
+#   python3.12       — interpreter + standard library. Ubuntu noble ships CPython 3.12
+#                      natively; its shared-lib deps (libssl3, libffi8, libsqlite3-0, …)
+#                      arrive as Depends, so --no-install-recommends still pulls them.
+#   ca-certificates  — TLS trust store for Nucleus / S3 / outbound HTTPS.
+# No compilers, headers, pip, or venv tooling — the .venv is built in `builder`.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3.12 ca-certificates \
+    && apt-get autoremove \
+    && rm -rf /var/lib/apt/lists/*
+
+# The .venv was built in python:3.12-bookworm, whose interpreter lives at
+# /usr/local/bin/python3.12; Ubuntu apt-installs to /usr/bin/python3.12. Bridge the paths
+# so the venv's bin/python symlinks resolve. Both are CPython 3.12, so the venv's cp312
+# extension wheels and the system stdlib are ABI-compatible.
+RUN ln -s /usr/bin/python3.12 /usr/local/bin/python3.12 \
+    && ln -s /usr/bin/python3.12 /usr/local/bin/python3 \
+    && ln -s /usr/bin/python3.12 /usr/local/bin/python
+
+# Non-root runtime user at UID/GID 1000 (matches the previous distroless `nvs`). Ubuntu
+# noble ships a default `ubuntu` user/group at 1000 — remove it first to free the IDs.
+RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
+    && if getent group ubuntu >/dev/null 2>&1; then groupdel ubuntu; fi \
+    && groupadd -g 1000 nvs \
+    && useradd -u 1000 -g nvs -m -d /home/nvs -s /usr/sbin/nologin nvs
 
 WORKDIR /app
 
-# Bring in the prepared virtualenv and the logging config. Owned by `nvs`
-# (UID 1000), the default user of the distroless image.
+# Bring in the prepared virtualenv and the logging config. Owned by `nvs` (UID 1000).
 COPY --from=builder --chown=nvs:nvs /app/.venv /app/.venv
 COPY --from=builder /logging.yml /logging.yml
 # tools/openapi-merge ships in its own image (docker/Dockerfile.openapi-merge);
 # it must NOT leak into this runtime image — its deps (httpx, pyyaml,
 # openapi-spec-validator) are dev/CI-only.
 
-# Override the default ENTRYPOINT (/busybox/sh) so docker-compose `command:`
-# arrays (e.g. ["uvicorn", "deepsearch_api.main:app", ...]) execute directly.
+# Override the default ENTRYPOINT so docker-compose `command:` arrays
+# (e.g. ["uvicorn", "deepsearch_api.main:app", ...]) execute directly.
 ENTRYPOINT []
 
 ENV PATH=/app/.venv/bin:${PATH}

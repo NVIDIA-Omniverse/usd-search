@@ -44,8 +44,8 @@ Common labels
 {{- define "deepsearch-crawler.labels" -}}
 helm.sh/chart: {{ include "deepsearch-crawler.chart" . }}
 {{ include "deepsearch-crawler.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/component: "deepsearch-crawler"
 app.kubernetes.io/managed-by: {{ .Release.Service }}
@@ -96,7 +96,7 @@ per-service `image.name` overrides for backwards compatibility.
 {{- if .Values.image.overwrite -}}
 {{ .Values.image.overwrite }}
 {{- else if .Values.image.name -}}
-{{ .Values.global.registry }}/{{ .Values.image.name }}:{{ default .Chart.AppVersion .Values.image.tag }}
+{{ .Values.global.registry }}/{{ .Values.image.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) .Values.image.tag }}
 {{- else -}}
 {{ include "deepsearch-global.usdsearchImage" . }}
 {{- end -}}

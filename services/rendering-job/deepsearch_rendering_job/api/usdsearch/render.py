@@ -90,6 +90,9 @@ async def render(
     basic_auth: Annotated[HTTPBasicCredentials, Depends(http_basic)],
     url: Annotated[str, Query(description="URL of an asset that needs to be rendered")],
     x_basic_auth: Annotated[Optional[str], Header(description="Authorization header", alias="X-Basic-Auth")] = None,
+    x_token_auth: Annotated[
+        Optional[str], Header(description="Bearer token for the Storage API backend", alias="X-Token-Auth")
+    ] = None,
     content_type: Annotated[
         SupportedMediaTypes,
         Header(
@@ -102,6 +105,10 @@ async def render(
     fastapi_request: Request = None,
     asset_rendering_timeout: Annotated[Optional[float], Query(description="Asset rendering timeout", gt=0)] = None,
     kit_worker_memory_limit: Annotated[Optional[int], Query(description="Kit worker memory limit in MB", gt=0)] = None,
+    storage_api_url: Annotated[
+        Optional[str],
+        Query(description="Storage API gRPC endpoint to open the asset from (Storage API backend only)"),
+    ] = None,
 ) -> Response:
     """
     Render a URL and return its images and metadata.
@@ -127,7 +134,9 @@ async def render(
             traceback=None,
         )
 
-    auth: Authentication = prepare_authentication(basic_auth, x_basic_auth, url)
+    auth: Authentication = prepare_authentication(
+        basic_auth, x_basic_auth, url, x_token_auth=x_token_auth, storage_api_url=storage_api_url
+    )
 
     # Check cache first
     cache_key = get_key(url, auth)
@@ -227,6 +236,9 @@ async def render_post(
     request: RenderingPostRequest,
     basic_auth: Annotated[HTTPBasicCredentials, Depends(http_basic)],
     x_basic_auth: Annotated[Optional[str], Header(description="Authorization header", alias="X-Basic-Auth")] = None,
+    x_token_auth: Annotated[
+        Optional[str], Header(description="Bearer token for the Storage API backend", alias="X-Token-Auth")
+    ] = None,
     content_type: Annotated[
         SupportedMediaTypes,
         Header(
@@ -239,6 +251,7 @@ async def render_post(
     return await render(
         basic_auth=basic_auth,
         x_basic_auth=x_basic_auth,
+        x_token_auth=x_token_auth,
         content_type=content_type,
         url=request.url,
         force_render=request.force_render,
@@ -246,4 +259,5 @@ async def render_post(
         fastapi_request=fastapi_request,
         asset_rendering_timeout=request.asset_rendering_timeout,
         kit_worker_memory_limit=request.kit_worker_memory_limit,
+        storage_api_url=request.storage_api_url,
     )

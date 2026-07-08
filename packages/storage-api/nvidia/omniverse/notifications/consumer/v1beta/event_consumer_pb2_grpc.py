@@ -239,13 +239,11 @@ def add_EventConsumerServiceServicer_to_server(servicer, server):
         ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-        "nvidia.omniverse.notifications.consumer.v1beta.EventConsumerService",
-        rpc_method_handlers,
+        "nvidia.omniverse.notifications.consumer.v1beta.EventConsumerService", rpc_method_handlers
     )
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers(
-        "nvidia.omniverse.notifications.consumer.v1beta.EventConsumerService",
-        rpc_method_handlers,
+        "nvidia.omniverse.notifications.consumer.v1beta.EventConsumerService", rpc_method_handlers
     )
 
 

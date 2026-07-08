@@ -159,7 +159,9 @@ class ThumbnailToEmbedding(BasePlugin):
                 imgs = load_image_from_bytes_by_type(
                     content=thumbnail.data,
                     file_format=os.path.splitext(thumbnail.uri)[1],
-                    offset_ms=self.config.gif_offset_ms,
+                    gif_frame_sample_frequency=self.config.gif_frame_sample_frequency,
+                    gif_max_frames=self.config.gif_max_frames,
+                    gif_sampling_mode=self.config.gif_sampling_mode,
                 )
                 content.extend(imgs)
             status = DSPluginStatus.valid

@@ -36,5 +36,8 @@ def decompress_np_data(encoding: Union[str, bytes], field: str = "x") -> NDArray
         encoding = encoding.encode("latin1")
     # decoding the
     with BytesIO(encoding) as stream:
-        data: NDArray[Union[np.int64, np.float32]] = np.load(stream, allow_pickle=True)[field]
+        # compress_np_data only ever writes a plain numeric array (savez x=…),
+        # so object-array unpickling is never needed — keep it disabled to avoid
+        # the np.load pickle RCE path.
+        data: NDArray[Union[np.int64, np.float32]] = np.load(stream, allow_pickle=False)[field]
     return data

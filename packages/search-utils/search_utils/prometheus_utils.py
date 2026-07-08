@@ -17,7 +17,6 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from functools import partial
 
 # standard imports
 from typing import Any, Callable, Dict, List, Optional, TypedDict
@@ -27,9 +26,6 @@ import psutil
 # third party modules
 from prometheus_client import Gauge, Info, Summary, start_http_server
 from prometheus_client.core import REGISTRY, GaugeMetricFamily
-
-# local / proprietary modules
-from search_utils.database_utils import AssetDB, SQLContext
 
 __all__ = ["Gauge", "Info"]
 
@@ -125,10 +121,9 @@ class PromMetrics:
 
 
 class CacheMetricsPublisher:
-    """Cache Publisher class that computes some metrics from the cache SQL database.
+    """Publisher class that computes and exposes prometheus metrics.
 
     Args:
-        path (str): path to the SQLite database.
         metrics (PromMetrics): metrics class that stored various prometheus metrics classes and their hooks.
         timeout (float, optional): Timeout, which which metrics will be recomputed if using the default :py:func:`run` method. Defaults to ``1``.
         port (int, optional): port, at which prometheus metrics will be published. Defaults to ``8000``.
@@ -137,31 +132,17 @@ class CacheMetricsPublisher:
 
     def __init__(
         self,
-        path: str = None,
         metrics: PromMetrics = None,
         collectors: list = [],
         timeout: float = 1,
         port: int = 8000,
         host: str = "0.0.0.0",
     ):
-        self.sql_db = AssetDB(path) if path is not None else None
         self.timeout = timeout
         self.port = port
         self.host = host
         self.metrics = metrics
         self.collectors = collectors
-
-    def row_count_hook(self, table_name: str) -> int:
-        """Metric hook that compute the number of rows in the gived table.
-
-        Args:
-            table_name (str): name of the table that need to be processed.
-
-        Returns:
-            int: number of rows in that table
-        """
-        setattr(self, f"{table_name}_count", self.sql_db.count_all(table_name)[0][0])
-        return getattr(self, f"{table_name}_count")
 
     def get_metrics(self):
         """Compute all metrics specified in :py:mod:``metrics`` attribute."""
@@ -188,66 +169,23 @@ class CacheMetricsPublisher:
 
 
 class GenericPublisher(CacheMetricsPublisher):
-    """Prometheus publisher class for the inference task.
-
-    Args:
-        value_fields (list, optional): list of fields for which simple row count metric will be computed. Defaults to [].
-    """
+    """Prometheus publisher class for the inference task."""
 
     def __init__(
         self,
         *args,
         labels: dict = {"omni_instance": "localhost", "omni_service": "test_app"},
-        value_fields: list = [],
         collectors: list = [],
         **kwargs,
     ):
         self.labels = labels
         collectors = [self.prepare_collector(c) for c in collectors]
-        # general metrics that show the number of samples in the database
-        metrics = PromMetrics(
-            [GaugeMetric(v, partial(self.row_count_hook, v)) for v in value_fields],
-            labels=labels,
-        )
+        metrics = PromMetrics([], labels=labels)
         super().__init__(*args, metrics=metrics, collectors=collectors, **kwargs)
 
     def prepare_collector(self, collector):
         collector.labels.update(self.labels)
         return collector
-
-    def table_hook(self, table_name: str, column_name: str, callback: callable) -> Any:
-        """Generic table hook
-
-        Args:
-            table_name (str): name of the table that need to be processed.
-            column_name (str): name of the column that need to be extracted from the table.
-            callback (callable): callback function that need to be applied to the data.
-
-        Returns:
-            Any: result of the callback function
-        """
-        return callback([r[0] for r in self.sql_db.get_all(table_name, column_name)])
-
-    def generic_callback(
-        self,
-        lst: list,
-        name: str,
-        verify_content_fn: callable,
-        namespace: str = "appearance",
-    ) -> int:
-        """Generic callback function that measures the lenght of the list of elements filtered by the :py:mod:`verify_content_fn`.
-
-        Args:
-            lst (list): input list of elements
-            name (str): name of the callback
-            verify_content_fn (callable): function that returns false for those elements that need to be filtered out.
-
-        Returns:
-            int: length of the filtered list of elements
-        """
-        with SQLContext(self.sql_db) as c:
-            res = len([h for h in lst if verify_content_fn(h, c)])
-        return res
 
     def init_metric(self, m: Metric, labels_dict: dict = {}):
         """Initialize a metric

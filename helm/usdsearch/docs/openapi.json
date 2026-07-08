@@ -3,7 +3,7 @@
   "info": {
     "title": "USD Search and Asset Graph Search APIs",
     "description": "# USD Search API Overview\n**USD Search API** is a collection of cloud-native microservices that enable developers, creators, and workflow specialists to efficiently search through vast collections of OpenUSD data, images, and other assets using natural language or image-based inputs.\nWith these production-ready microservices, developers can deploy USD Search API onto their own infrastructure. With USD Search API\u2019s artificial intelligence (AI) features, you can quickly locate untagged and unstructured 3D data and digital assets, saving time navigating unstructured, untagged 3D data. USD Search API is capable of searching and indexing 3D asset databases, as well as navigating complex 3D scenes to perform spatial searches, without requiring manual tagging of assets.\n## Features\n- **Natural Language Searches:** - Utilize AI to search for images and USD-based 3D models using simple, descriptive language.\n- **Image Similarity Searches:** - Find images similar to a reference image through AI-driven image comparisons.\n- **Metadata Filtering:** - Filter search results by file name, file type, creation/modification dates, file size, and creator/modifier metadata.\n- **USD Content Filtering with Asset Graph Search:** - When used with the Asset Graph Search, search capabilities are expanded to include filtering based on USD properties and object dimensions.\n- **Multiple Storage Backend Support:** - Compatible with various storage backends, including AWS S3 buckets and Omniverse Nucleus server.\n- **Advanced File Name, Extension, and Path Filters:** - Use wildcards for broad or specific file name and extension searches.\n- **Date and Size Range Filtering:** - Specify assets created or modified within certain date ranges or file sizes larger or smaller than a designated threshold.\n- **User-based Filtering:** - Filter assets based on their creator or modifier, allowing for searches tailored to particular users' contributions.\n- **Embedding-based Similarity Threshold:** - Set a similarity threshold for more nuanced control over search results in embedding-based searches.\n- **Custom Search Paths and Scenes:** - Specify search locations within the storage backend or conduct searches within specific scenes for targeted results.\n- **Return Detailed Results:** - Option to include images, metadata, root prims, and predictions in the search results.\n\n# Asset Graph Search (AGS) API Overview\n**Asset Graph Search (AGS)** provides advanced querying capabilities for assets and USD trees indexed in a graph database. It supports proximity queries based on coordinates or prims to find objects within specified areas or radii, sorted by distance, and includes transformation options for vector alignment. The API also offers dependency and reverse dependency searches, helping to identify all assets referenced in a scene or scenes containing a particular asset, which can optimize scene loading and track dependency changes. By combining different query types, the AGS API enables complex scenarios for scene understanding, manipulation, and generation. Integrated with USD Search it provides in-scene search functionality.\n## Features\n- **Proximity Queries:** - Find objects within a specified bounding box or radius. - Results sorted by distance with options for vector alignment using a transformation matrix.\n- **USD Property Queries:** - Enables querying objects in a 3D scene using USD properties, such as finding all assets with a specific semantic label.\n- **Asset Dependency Searches:** - Identify all assets referenced in a scene \u2014 including USD references, material references, or textures. - Reverse search to find all scenes containing a particular asset.\n- **Combined Query Capabilities:** - Enable complex scenarios for enhanced scene understanding, manipulation, and generation.\n- **Integration with USD Search:** - Provides in-scene search functionality.\n",
-    "version": "1.3.2"
+    "version": "1.4.0"
   },
   "servers": [
     {
@@ -48,6 +48,7 @@
             "required": true,
             "schema": {
               "type": "number",
+              "exclusiveMinimum": 0,
               "description": "Radius of the proximity query",
               "title": "Radius"
             },
@@ -1679,7 +1680,7 @@
           "Asset"
         ],
         "summary": "On-demand asset processing",
-        "description": "USD Search processes all assets on the storage backend in the background. This, however, may\ntake time depending on the amount of data on the storage backend and the amount of available resources,\nwhich could lead to delays in specific assets appearing in the search index. In order to address this\nand prioritize processing of specific assets, it is possible to use this endpoint to trigger\nindexing of a specific asset on demand.\n\nWhen triggering processing of a specific asset URL the user could decide, with which plugin the\nasset needs to be processed. By default, when no plugin is selected - the service will trigger\nprocessing for all plugins that could work with this asset type. Please find below the list of\nsupported plugins:\n\n* **asset_graph_generation**: \nConstructs several graphs based on the prim hierarchy of a USD file. This plugin is an essential component of Asset Graph Service (AGS).\n\n    * This plugin supports the following data types: *usdc, usda, usdz, usd*\n\n* **image_to_embedding**: \nExtracts CLIP embeddings from the images that are found on the storage backend.\n\n    * This plugin supports the following data types: *avif, hdf, dib, bmp, avifs, ftu, pfm, tga, mpg, fits, pbm, ps, grib, jpx, iim, msp, pcd, psd, im, pxr, ftc, pgm, blp, xpm, jpc, pcx, dcx, jpf, rgb, vda, vst, rgba, jpg, jpe, jpeg, tiff, ppm, qoi, pnm, xbm, dds, gbr, fit, mpeg, h5, j2k, icns, sgi, exr, bufr, gif, bw, apng, png, emf, flc, jfif, webp, jp2, icb, wmf, cur, tif, fli, j2c, eps, ico, ras*\n\n* **image_to_vision_metadata**: \nExtracts VLM-generated metadata from the images that are found on the storage backend.\n\n    * This plugin supports the following data types: *avif, hdf, dib, bmp, avifs, ftu, pfm, tga, mpg, fits, pbm, ps, grib, jpx, iim, msp, pcd, psd, im, pxr, ftc, pgm, blp, xpm, jpc, pcx, dcx, jpf, rgb, vda, vst, rgba, jpg, jpe, jpeg, tiff, ppm, qoi, pnm, xbm, dds, gbr, fit, mpeg, h5, j2k, icns, sgi, exr, bufr, gif, bw, apng, png, emf, flc, jfif, webp, jp2, icb, wmf, cur, tif, fli, j2c, eps, ico, ras*\n\n* **rendering_to_embedding**: \nRenders the asset and extracts CLIP embeddings from the generated preview images.\n\n    * This plugin supports the following data types: *usdc, usda, usdz, usd*\n\n* **rendering_to_vision_metadata**: \nRenders the asset and extracts VLM-generated metadata using the generated preview images.\n\n    * This plugin supports the following data types: *usdc, usda, usdz, usd*\n\n* **thumbnail_generation**: \nRenders the asset uploads one of the rendered images to the storage backend to serve as a thumbnail for this asset.\n\n    * This plugin supports the following data types: *usdc, usda, usdz, usd*\n\n* **thumbnail_to_embedding**: \nFor any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract CLIP embeddings.\n\n    * This plugin supports the following data types: *any*\n\n* **thumbnail_to_vision_metadata**: \nFor any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract VLM-generated metadata.\n\n    * This plugin supports the following data types: *any*\n\n\n**NOTE**: If some of the plugins are not enabled for the USD Search instance, selecting them for the\n*plugins* parameter setting will have not effect. Please reach out to your USD Search service administrator\nif you would like to enable certain plugin functionality. The list of plugins that are enabled for\nthis USD Search instance could be retrieved using **/info/plugins** endpoint.",
+        "description": "USD Search processes all assets on the storage backend in the background. This, however, may\ntake time depending on the amount of data on the storage backend and the amount of available resources,\nwhich could lead to delays in specific assets appearing in the search index. In order to address this\nand prioritize processing of specific assets, it is possible to use this endpoint to trigger\nindexing of a specific asset on demand.\n\nWhen triggering processing of a specific asset URL the user could decide, with which plugin the\nasset needs to be processed. By default, when no plugin is selected - the service will trigger\nprocessing for all plugins that could work with this asset type. Please find below the list of\nsupported plugins:\n\n* **asset_graph_generation**: \n    Constructs several graphs based on the prim hierarchy of a USD file. This plugin is an essential component of Asset Graph Service (AGS).\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **image_to_embedding**: \n    Extracts CLIP embeddings from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *avifs, h5, jpc, j2k, pxr, dcx, rgba, vst, xpm, blp, fits, rgb, dds, ras, icb, apng, jpeg, grib, jpf, ftu, jpe, pcd, emf, bw, jpg, psd, jp2, pcx, ico, j2c, cur, msp, iim, ftc, eps, fit, mpg, bufr, exr, hdf, pnm, fli, im, avif, jpx, dib, jfif, pbm, vda, pgm, sgi, gif, ps, icns, flc, mpeg, pfm, bmp, webp, tiff, wmf, xbm, qoi, ppm, png, tif, gbr, tga*\n\n* **image_to_vision_metadata**: \n    Extracts VLM-generated metadata from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *avifs, h5, jpc, j2k, pxr, dcx, rgba, vst, xpm, blp, fits, rgb, dds, ras, icb, apng, jpeg, grib, jpf, ftu, jpe, pcd, emf, bw, jpg, psd, jp2, pcx, ico, j2c, cur, msp, iim, ftc, eps, fit, mpg, bufr, exr, hdf, pnm, fli, im, avif, jpx, dib, jfif, pbm, vda, pgm, sgi, gif, ps, icns, flc, mpeg, pfm, bmp, webp, tiff, wmf, xbm, qoi, ppm, png, tif, gbr, tga*\n\n* **rendering_to_embedding**: \n    Renders the asset and extracts CLIP embeddings from the generated preview images.\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **rendering_to_vision_metadata**: \n    Renders the asset and extracts VLM-generated metadata using the generated preview images.\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **thumbnail_generation**: \n    Renders the asset uploads one of the rendered images to the storage backend to serve as a thumbnail for this asset.\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **thumbnail_to_embedding**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract CLIP embeddings.\n    \n    * This plugin supports the following data types: *any*\n\n* **thumbnail_to_vision_metadata**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract VLM-generated metadata.\n    \n    * This plugin supports the following data types: *any*\n\n\n**NOTE**: If some of the plugins are not enabled for the USD Search instance, selecting them for the\n*plugins* parameter setting will have not effect. Please reach out to your USD Search service administrator\nif you would like to enable certain plugin functionality. The list of plugins that are enabled for\nthis USD Search instance could be retrieved using **/info/plugins** endpoint.",
         "operationId": "submit_for_processing_process_asset_get",
         "parameters": [
           {
@@ -2287,21 +2288,21 @@
                   "type": "null"
                 }
               ],
-              "description": "Set the cutoff threshold for embedding-based searches",
+              "description": "Minimum raw engine score for vector search legs only, applied per leg before rank fusion. Scale is the engine's transformed score (innerproduct kNN over normalized SigLIP2 maps ip >= 0 to 1 + ip), so the useful range is roughly 1.0-2.0; values below 1.0 are effectively no-ops.",
               "title": "Cutoff Threshold"
             },
-            "description": "Set the cutoff threshold for embedding-based searches",
+            "description": "Minimum raw engine score for vector search legs only, applied per leg before rank fusion. Scale is the engine's transformed score (innerproduct kNN over normalized SigLIP2 maps ip >= 0 to 1 + ip), so the useful range is roughly 1.0-2.0; values below 1.0 are effectively no-ops.",
             "examples": {
               "None": {
-                "summary": "No cutoff threshold"
+                "summary": "No cutoff threshold (keep every vector hit)"
               },
-              "Threshold of 0": {
-                "summary": "Example cutoff threshold set to 0",
-                "value": 0
+              "Mild cutoff at 1.05": {
+                "summary": "Drop vector hits with near-zero cosine similarity",
+                "value": 1.05
               },
-              "Similarity above 0.7": {
-                "summary": "Example cutoff threshold set to 0.7",
-                "value": 0.7
+              "Strict cutoff at 1.3": {
+                "summary": "Keep only strongly similar vector hits (cosine >= 0.3)",
+                "value": 1.3
               }
             }
           },
@@ -2986,7 +2987,7 @@
           "AI Search"
         ],
         "summary": "Stats Usd Properties",
-        "description": "Get statistics for USD properties: count of unique properties, count of unique values, and count of unique kv pairs.",
+        "description": "Inventory of USD properties across the indexed corpus: every unique property key, every unique\nvalue, and every unique key=value pair \u2014 each with the number of assets that carry it\n(``asset_count``), sorted by coverage. The full lists (not just counts) power property discovery;\nsee the ``/usd-property-catalog`` skill, which turns this into a local catalog + filter config.",
         "operationId": "stats_usd_properties_v2_deepsearch_search_stats_usd_properties_get",
         "responses": {
           "200": {
@@ -3280,6 +3281,74 @@
         ]
       }
     },
+    "/llm_parse/query": {
+      "post": {
+        "tags": [
+          "AI Search"
+        ],
+        "summary": "Parse a free-text query into structured search parameters",
+        "description": "Uses an LLM with constrained (JSON-schema) decoding to turn free-text into a structured intermediate representation, then deterministically maps it onto search request fields. Returns a 503 if the feature is disabled on this server or the LLM call fails.",
+        "operationId": "llm_parse_query_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryParsingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryParsingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/llm_parse/fields": {
+      "get": {
+        "tags": [
+          "AI Search"
+        ],
+        "summary": "List the filters this deployment supports",
+        "description": "Returns the configured filter field catalog (from search_fields.yaml): name, value type, valid operators, description, and examples. Lets the UI show users which filters are available and let them add filters without typing a query. Static metadata \u2014 works regardless of whether the LLM extractor is enabled.",
+        "operationId": "llm_parse_fields_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FilterFieldInfo"
+                  },
+                  "type": "array",
+                  "title": "Response List Filter Fields V3 Deepsearch Llm Parse Fields Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/images": {
       "get": {
         "tags": [
@@ -3455,6 +3524,95 @@
               "application/json": {
                 "example": {
                   "detail": "Failed to process image data"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/download/asset": {
+      "get": {
+        "tags": [
+          "Download"
+        ],
+        "summary": "Download an asset and its dependencies as a ZIP archive",
+        "description": "Fetch a USD asset together with all of its transitive dependency files (sublayers, referenced USDs, textures) and return them as a single ZIP. Files are laid out relative to a shared root directory so the scene's relative references resolve after extraction. A `manifest.json` describing the bundle (root url, included files, any per-file errors) is added at the archive root. Works for every storage backend (S3, Nucleus, local-fs). If the asset has no recorded dependencies (or the asset graph is unavailable) a single-file archive is returned.",
+        "operationId": "download_asset_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "HTTPBasic": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "asset_url",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The complete storage URL of the asset to download (e.g. s3://bucket/path/scene.usd).",
+              "title": "Asset Url"
+            },
+            "description": "The complete storage URL of the asset to download (e.g. s3://bucket/path/scene.usd)."
+          },
+          {
+            "name": "manifest_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "If true, do not build the ZIP \u2014 return JSON describing the bundle (root url, file count, total size in bytes, per-file sizes, errors). Lets a UI show the bundle size before the user commits to the download.",
+              "default": false,
+              "title": "Manifest Only"
+            },
+            "description": "If true, do not build the ZIP \u2014 return JSON describing the bundle (root url, file count, total size in bytes, per-file sizes, errors). Lets a UI show the bundle size before the user commits to the download."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ZIP archive containing the asset and its dependencies",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access Denied",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Access denied"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Asset Not Found",
+            "content": {
+              "application/json": {
+                "example": {
+                  "detail": "Asset 's3://bucket/asset.usd' not found"
                 }
               }
             }
@@ -4965,7 +5123,7 @@
               }
             ],
             "title": "Cutoff Threshold",
-            "description": "Minimum embedding similarity score required for results. Results below this threshold are excluded. Use to filter out low-relevance matches. Typical range depends on query type."
+            "description": "Minimum raw engine score for VECTOR search legs only (text/keyword legs are never cut off). Applied per leg BEFORE Reciprocal Rank Fusion, so a cut hit can still appear if another leg ranks it. The scale is the engine's transformed score, not plain cosine: for innerproduct kNN over normalized SigLIP2 embeddings OpenSearch maps ip >= 0 to 1 + ip, so the useful range is roughly 1.0 (orthogonal) to 2.0 (identical); values below 1.0 are effectively no-ops. Leave unset to keep every vector hit."
           },
           "search_path": {
             "anyOf": [
@@ -5456,6 +5614,41 @@
           }
         ]
       },
+      "DroppedFilter": {
+        "properties": {
+          "filter": {
+            "$ref": "#/components/schemas/IRFilter",
+            "description": "The extracted filter that was not applied."
+          },
+          "reason": {
+            "$ref": "#/components/schemas/DroppedFilterReason",
+            "description": "Machine-readable reason the filter was dropped."
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "description": "Human-readable explanation suitable for surfacing in the UI."
+          }
+        },
+        "type": "object",
+        "required": [
+          "filter",
+          "reason",
+          "message"
+        ],
+        "title": "DroppedFilter",
+        "description": "A filter the LLM extracted that the mapper could not apply, with the\nreason. Lets the client tell the user a constraint was understood but not\nenforced (and why), instead of silently ignoring it."
+      },
+      "DroppedFilterReason": {
+        "type": "string",
+        "enum": [
+          "unknown_field",
+          "unsupported_operator",
+          "invalid_value"
+        ],
+        "title": "DroppedFilterReason",
+        "description": "Why the mapper could not apply an extracted filter."
+      },
       "FieldScoreConfig": {
         "properties": {
           "field": {
@@ -5512,7 +5705,7 @@
             ],
             "title": "Fuzzy Max Expansions",
             "description": "Maximum number of fuzzy term expansions. Lower values are faster but less tolerant of typos.",
-            "default": 50
+            "default": 1
           },
           "nested": {
             "type": "boolean",
@@ -5542,6 +5735,82 @@
         "type": "object",
         "title": "FieldScoreConfig",
         "description": "Configuration for scoring a single text field in hybrid search.\n\nControls how text queries match against a specific field and how much weight\nthat field contributes to the overall text search score."
+      },
+      "FilterFieldInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "IR field name, e.g. 'polygon_count'."
+          },
+          "value_type": {
+            "type": "string",
+            "title": "Value Type",
+            "description": "string | number | boolean | date | array."
+          },
+          "operators": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Operators",
+            "description": "Operators valid for this field."
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "description": "Human-readable description for the picker."
+          },
+          "examples": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Examples",
+            "description": "Worked input \u2192 field op value hints."
+          },
+          "params": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Params",
+            "description": "DeepSearchSearchRequestV2 field key(s) this filter maps to."
+          },
+          "comma_join": {
+            "type": "boolean",
+            "title": "Comma Join",
+            "description": "True if this filter's request params accumulate as a comma-joined list (union on repeat) rather than being overwritten.",
+            "default": false
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": "The map.kind builder behind this field (e.g. 'property_exists', 'bbox').",
+            "default": ""
+          },
+          "property": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property",
+            "description": "Resolved USD property key (env override applied) for property-backed fields; null for fields not backed by a single property."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "value_type",
+          "operators",
+          "description"
+        ],
+        "title": "FilterFieldInfo",
+        "description": "One discoverable filter the deployment supports (from search_fields.yaml)."
       },
       "HybridTextConfig": {
         "properties": {
@@ -5578,6 +5847,65 @@
         "type": "object",
         "title": "HybridTextConfig",
         "description": "Configuration for the text search leg of hybrid search.\n\nControls which fields are searched, how they're weighted, and how matches\nare combined across fields. The text leg runs in parallel with vector search,\nand results are merged via RRF.\n\nRecommended fields for USD asset search: name, name.simple, name.standard,\npath, usd_properties.value, usd_properties.key, __VISION_METADATA_FIELDS__."
+      },
+      "IRFieldName": {
+        "type": "string",
+        "enum": [
+          "file_type",
+          "name",
+          "path_prefix",
+          "created_at",
+          "modified_at",
+          "size",
+          "created_by",
+          "tag",
+          "usd_property",
+          "polygon_count",
+          "dimension"
+        ],
+        "title": "IRFieldName"
+      },
+      "IRFilter": {
+        "properties": {
+          "field": {
+            "$ref": "#/components/schemas/IRFieldName",
+            "description": "The field to filter on (one of the allowed enum values)."
+          },
+          "operator": {
+            "$ref": "#/components/schemas/Operator",
+            "description": "Comparison operator. Must be valid for the chosen field."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            ],
+            "title": "Value",
+            "description": "The value to compare against. Use a list only for `in` operators."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field",
+          "operator",
+          "value"
+        ],
+        "title": "IRFilter",
+        "description": "A single structured filter: which field, which operator, what value."
       },
       "KeyValuePair": {
         "properties": {
@@ -5682,6 +6010,22 @@
         ],
         "title": "Metadata"
       },
+      "Operator": {
+        "type": "string",
+        "enum": [
+          "eq",
+          "neq",
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "contains",
+          "in",
+          "exists"
+        ],
+        "title": "Operator",
+        "description": "Comparison operators an IR filter may use. The set is the union across\nall fields; each field constrains which subset is valid (see ``IRField``)."
+      },
       "Prediction": {
         "properties": {
           "tag": {
@@ -5701,6 +6045,58 @@
           "prob"
         ],
         "title": "Prediction"
+      },
+      "QueryParsingRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Query",
+            "description": "Raw free-text search text from the search bar."
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "QueryParsingRequest"
+      },
+      "QueryParsingResponse": {
+        "properties": {
+          "interpreted_query": {
+            "$ref": "#/components/schemas/SearchIR",
+            "description": "Structured interpretation of the query."
+          },
+          "search_params": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Search Params",
+            "description": "Mapped DeepSearchSearchRequestV2 fields that were merged into the search request."
+          },
+          "dropped_filters": {
+            "items": {
+              "$ref": "#/components/schemas/DroppedFilter"
+            },
+            "type": "array",
+            "title": "Dropped Filters",
+            "description": "Filters that were extracted but could not be applied (unsupported operator, unknown field, or invalid value). Empty when every extracted filter was applied; its length is the dropped count. interpreted_query reflects only applied filters."
+          },
+          "unmapped_constraints": {
+            "items": {
+              "$ref": "#/components/schemas/UnmappedConstraint"
+            },
+            "type": "array",
+            "title": "Unmapped Constraints",
+            "description": "Constraints the user expressed that match no catalog field, so they could not become a filter and were not searched on. Surfaced (verbatim, with a note) so the client can tell the user the constraint was understood but not enforced. Mirrors interpreted_query.unmapped_constraints."
+          }
+        },
+        "type": "object",
+        "required": [
+          "interpreted_query",
+          "search_params"
+        ],
+        "title": "QueryParsingResponse",
+        "description": "Same shape as ParsedQuery; kept as a distinct schema name for\n/llm_parse/query back-compat."
       },
       "QueryRelevanceValidationResult": {
         "properties": {
@@ -5727,6 +6123,18 @@
             "type": "string",
             "title": "Reasoning",
             "description": "Explanation of the validation decision"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": "Identifier of the VLM service+model that produced this verdict. Returned so clients can cache verdicts under a model-aware key \u2014 when the server-side model changes, cached entries become misses and re-validation runs."
           }
         },
         "type": "object",
@@ -5767,7 +6175,7 @@
             },
             "type": "object",
             "title": "Query Rank Constants",
-            "description": "Override rank_constant for specific search types (e.g., {\"text\": 30, \"vector\": 90}). Allows fine-tuning the relative influence of each search leg."
+            "description": "Override rank_constant for specific search legs, keyed by leg name (e.g., {\"hybrid\": 30, \"text_to_vector\": 90}). Valid leg names: \"hybrid\" (text leg), \"text_to_vector\" (description embedding), \"image_similarity\", and \"vector_<n>\" for explicit vector queries."
           }
         },
         "type": "object",
@@ -5901,7 +6309,53 @@
         "additionalProperties": true,
         "type": "object",
         "title": "ScoringConfig",
-        "description": "Controls how text, vector, and hybrid search results are combined via Reciprocal Rank Fusion.\n\nFor most use cases, the defaults work well. Customize when you need to:\n- Boost text keyword matching over visual similarity (increase hybrid_text.weight)\n- Prioritize vector similarity over text (increase vector_fields weight)\n- Enable/disable specific search legs\n\nTypical configuration for agentic search:\n- rrf_config: rank_constant=60 (default)\n- hybrid_text: enabled=true, weight=1.2, fields=[name(2), name.simple(2), path(1), __VISION_METADATA_FIELDS__(1)]\n- vector_fields: {\"siglip2-embedding.embedding\": {enabled: true, weight: 1, dimension: 1536}}"
+        "description": "Controls how text, vector, and hybrid search results are combined via Reciprocal Rank Fusion.\n\nFor most use cases, the defaults work well. Customize when you need to:\n- Boost text keyword matching over visual similarity (increase hybrid_text.weight)\n- Prioritize vector similarity over text (increase vector_fields weight)\n- Enable/disable specific search legs\n\nTypical configuration for agentic search:\n- rrf_config: rank_constant=60 (default)\n- hybrid_text: enabled=true, weight=1.2, fields=[name(2), name exact(5), path(1), __VISION_METADATA_FIELDS__(1)]\n- vector_fields: {\"siglip2-embedding.embedding\": {enabled: true, weight: 1, dimension: 1536}}"
+      },
+      "SearchIR": {
+        "properties": {
+          "semantic_query": {
+            "type": "string",
+            "title": "Semantic Query",
+            "description": "Descriptive nouns/phrase for semantic + keyword search (e.g. 'warehouse'). Put ONLY descriptive nouns/adjectives here \u2014 not structured constraints. May be empty if the query is purely a filter."
+          },
+          "filters": {
+            "items": {
+              "$ref": "#/components/schemas/IRFilter"
+            },
+            "type": "array",
+            "title": "Filters",
+            "description": "Structured filters extracted from the query. Empty if the query maps to no known filter."
+          },
+          "unmapped_constraints": {
+            "items": {
+              "$ref": "#/components/schemas/UnmappedConstraint"
+            },
+            "type": "array",
+            "title": "Unmapped Constraints",
+            "description": "Constraints the user clearly expressed that match NO catalog field. Never drop such a clause and never put it in semantic_query \u2014 record it here so the client can report it as understood-but-not-enforced."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Maximum number of results, only if the user explicitly asked for a count."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "semantic_query"
+        ],
+        "title": "SearchIR",
+        "description": "Structured interpretation of a free-text search query."
       },
       "SearchMethod": {
         "type": "string",
@@ -6293,6 +6747,28 @@
           "asset_count"
         ],
         "title": "UniqueValue"
+      },
+      "UnmappedConstraint": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "The verbatim fragment of the user's query expressing this constraint."
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "description": "Plain-English explanation of what was understood and why no catalog field fits."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text",
+          "note"
+        ],
+        "title": "UnmappedConstraint",
+        "description": "A constraint the user clearly expressed that maps to no catalog field.\n\nThe escape hatch that keeps the parse honest: a clause like \"Isaac version\nbetween 5 and 6\" is neither a descriptive noun (so it does not belong in\n``semantic_query``) nor a known filter (so it cannot become an ``IRFilter``).\nRouting it here makes the drop explicit \u2014 the client can tell the user the\nconstraint was understood but not enforced \u2014 instead of it silently vanishing\nor polluting the semantic query."
       },
       "ValidateResultRequest": {
         "properties": {
@@ -6722,7 +7198,6 @@
             "description": "Scoring transparency: individual search leg scores, RRF rank, and original positions"
           },
           "source": {
-            "$ref": "#/components/schemas/SearchResultSource",
             "description": "Indexed asset data including URL, metadata, thumbnail, USD properties, and AI-generated labels"
           },
           "inner_hits": {

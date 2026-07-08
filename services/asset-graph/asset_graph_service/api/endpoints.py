@@ -34,9 +34,9 @@ from asset_graph_service.db import Asset, BaseGraphDB, Prim, USDAsset
 from asset_graph_service.db.models import AssetGraph
 from asset_graph_service.vector_utils import get_transformed_vector
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.params import Param, Query
+from fastapi.params import Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from ..db.models import PropertiesFilter, PropertiesFilterRelation
 
@@ -289,14 +289,14 @@ async def get_prims_within_radius(
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     prims_filter: Annotated[CommonPrimFilterBoundedBbox, Depends(CommonPrimFilterBoundedBbox)],
     scene_url: Annotated[str, Query(description="URL of the scene to search.")],
-    radius: Annotated[float, Query(description="Radius of the proximity query")],
+    radius: Annotated[float, Query(description="Radius of the proximity query", gt=0, allow_inf_nan=False)],
     center_prim_usd_path: Annotated[
         str,
         Query(description="USD path of the reference Prim. (Returned in results unless excluded by filters)"),
     ] = None,
-    center_x: Annotated[float, Query(description="X coordinate of the query center.")] = None,
-    center_y: Annotated[float, Query(description="Y coordinate of the query center.")] = None,
-    center_z: Annotated[float, Query(description="Z coordinate of the query center.")] = None,
+    center_x: Annotated[float, Query(description="X coordinate of the query center.", allow_inf_nan=False)] = None,
+    center_y: Annotated[float, Query(description="Y coordinate of the query center.", allow_inf_nan=False)] = None,
+    center_z: Annotated[float, Query(description="Z coordinate of the query center.", allow_inf_nan=False)] = None,
     transformation_matrix: Annotated[
         str,
         Query(description="Transformation matrix for the vector space. By default does not apply any transformation."),
@@ -412,27 +412,27 @@ async def get_prims_within_bounding_box(
     ],
     min_bbox_x: Annotated[
         float,
-        Query(description="Query bounding box minimum X"),
+        Query(description="Query bounding box minimum X", allow_inf_nan=False),
     ],
     min_bbox_y: Annotated[
         float,
-        Query(description="Query bounding box minimum Y"),
+        Query(description="Query bounding box minimum Y", allow_inf_nan=False),
     ],
     min_bbox_z: Annotated[
         float,
-        Query(description="Query bounding box minimum Z"),
+        Query(description="Query bounding box minimum Z", allow_inf_nan=False),
     ],
     max_bbox_x: Annotated[
         float,
-        Query(description="Query bounding box maximum X"),
+        Query(description="Query bounding box maximum X", allow_inf_nan=False),
     ],
     max_bbox_y: Annotated[
         float,
-        Query(description="Query bounding box maximum Y"),
+        Query(description="Query bounding box maximum Y", allow_inf_nan=False),
     ],
     max_bbox_z: Annotated[
         float,
-        Query(description="Query bounding box maximum Z"),
+        Query(description="Query bounding box maximum Z", allow_inf_nan=False),
     ],
     limit: Annotated[
         int,

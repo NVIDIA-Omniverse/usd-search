@@ -22,6 +22,7 @@
 {{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
 {{- $releaseName := include "deepsearch-global.releaseName" . -}}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 
 {{- if not .Values.global.maintenance_mode }}
 
@@ -32,7 +33,8 @@ metadata:
   labels:
     release_name: {{ $releaseName }}
     component: "deepsearch-crawler"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
     deepsearch.service.name: {{ $serviceName }}
     {{- include "deepsearch-crawler.MainDeploymentlabels" . | nindent 4 }}
 spec:
@@ -59,7 +61,8 @@ spec:
       labels:
         release_name: {{ $releaseName }}
         component: "deepsearch"
-        version: {{ $chartVersion }}
+        version: {{ $appVersion }}
+        chart.version: {{ $chartVersion }}
         deepsearch.service.name: {{ $serviceName }}
         {{- include "deepsearch-crawler.deploymentSelectorlabels" . | nindent 8 }}
     spec:

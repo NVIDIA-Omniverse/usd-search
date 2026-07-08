@@ -7,7 +7,7 @@ authors = [
     {name = "Rafal Wytrykus", email = "rwytrykus@nvidia.com"},
     {name = "Nikola Spasojevic", email = "nspasojevic@nvidia.com"},
 ]
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "ngsearch-cache",
     "ngsearch-plugins",

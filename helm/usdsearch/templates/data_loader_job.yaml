@@ -55,7 +55,7 @@ spec:
         - name: es-check
           {{- $apiImg := .Values.ngsearch.microservices.search_rest_api.image }}
           {{- if $apiImg.name }}
-          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default .Chart.AppVersion }}
+          image: {{ .Values.global.registry }}/{{ $apiImg.name }}:{{ $apiImg.tag | default (include "deepsearch-global.unifiedImageTag" .) }}
           {{- else }}
           image: {{ include "deepsearch-global.usdsearchImage" . }}
           {{- end }}
@@ -66,7 +66,7 @@ spec:
             import requests, time
             ready = False
             while True:
-              try: 
+              try:
                   response = requests.get('{{ .Values.global.search_backend_config.schema }}://{{ .Values.global.search_backend_config.host }}:{{ .Values.global.search_backend_config.port }}')
                   break
               except Exception as exc_info:

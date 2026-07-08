@@ -54,6 +54,12 @@ class DeepSearchMonitorConfig(BaseSettings):
     clean_queues: bool = Field(default=False, alias="clean_task_queues")  #: if True - Clean task queues on startup
     verify_asset_existence: bool = True
     processing_batch_size: int = 1
+    #: How often (in seconds) the Prometheus gauges are refreshed from stream
+    #: statistics. Statistics require extra Redis round trips, so they are not
+    #: recomputed on every processed asset.
+    prom_metrics_update_interval_seconds: float = 5.0
+    #: How often (in seconds) stream statistics are logged at INFO level.
+    stats_log_interval_seconds: float = 60.0
 
 
 class DeepSearchMonitorWorkerConfig(BaseSettings):
@@ -64,7 +70,6 @@ class DeepSearchMonitorWorkerConfig(BaseSettings):
     ]
     use_metrics: bool = True
     metrics_port: int = 8011
-    batch_size: int = 8
     n_parallel_queue_processors: int = 1
     use_embedding_client: bool = True
     model_config = SettingsConfigDict(env_prefix="deepsearch_monitor_worker_config_")

@@ -29,13 +29,11 @@ import opentelemetry.trace as trace
 import orjson
 from typing_extensions import NotRequired
 
-from search_utils.cache_utils.base import CacheDict
-from search_utils.log_utils import set_simple_logger, set_telemetry_logger
+from search_utils.log_utils import set_telemetry_logger
 from search_utils.misc_utils import str2bool
 
 USE_SEARCH_TELEMETRY = str2bool(os.getenv("USE_SEARCH_TELEMETRY", "False"))
 SEARCH_TELEMETRY_STDOUT = str2bool(os.getenv("SEARCH_TELEMETRY_STDOUT", "False"))
-SEARCH_TELEMETRY_DIR = os.getenv("SEARCH_TELEMETRY_DIR", "/tmp/deepsearch/telemetry/search")
 telemetry_utils_logger = logging.getLogger(__name__)
 telemetry_logger = set_telemetry_logger("telemetry")
 
@@ -114,15 +112,19 @@ class BaseTelemetry(dict):
                 self.add(content, key=key)
 
 
-class Telemetry(CacheDict, BaseTelemetry):
-    def __init__(self, path: str, enabled: bool = True):
-        self.enabled = enabled
-        if self.enabled:
-            super().__init__(
-                path=path,
-                serializer=lambda x: orjson.dumps(x).decode("utf-8"),
-                deserializer=orjson.loads,
-            )
+class Telemetry(BaseTelemetry):
+    """In-memory telemetry buffer.
+
+    Historically this persisted events to a per-service SQLite database; that
+    backend has been removed. Events are now held in memory only and, for the
+    stdout variant (:class:`JSONStdoutTelemetry`), emitted as structured logs
+    when a :meth:`memory_context` exits.
+    """
+
+    def __init__(self, path: str = None, enabled: bool = True):
+        # ``path`` is accepted for backwards compatibility but is no longer used
+        # now that the SQLite backend has been removed.
+        super().__init__(enabled=enabled)
 
     @contextmanager
     def memory_context(self, use_telemetry: bool = True) -> Generator[BaseTelemetry, None, None]:
@@ -172,7 +174,7 @@ class JSONStdoutTelemetry(Telemetry):
 
 # search telemetry class
 telemetry_class = JSONStdoutTelemetry if SEARCH_TELEMETRY_STDOUT else Telemetry
-SearchTelemetry = telemetry_class(path=f"{SEARCH_TELEMETRY_DIR}/search_telemetry.db", enabled=USE_SEARCH_TELEMETRY)
+SearchTelemetry = telemetry_class(enabled=USE_SEARCH_TELEMETRY)
 
 
 class AsyncIteratorWrapper:

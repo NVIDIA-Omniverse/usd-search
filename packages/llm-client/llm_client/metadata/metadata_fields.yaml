@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+metadata_fields:
+
+# ── Identity ────────────────────────────────────────────────────────────────
+
+- name: caption
+  description: >
+    A concise, specific title (5-12 words) naming the object precisely.
+    Format: "[distinguishing adjectives] [specific object name]".
+    Examples: "Counterbalance warehouse forklift", "Galvanized steel pallet rack",
+    "Articulated 6-axis industrial robot arm", "Weathered red shipping container",
+    "Ergonomic mesh office chair", "Stainless commercial kitchen prep table".
+  type: str
+
+- name: description
+  description: >
+    One or two factual sentences describing the asset for search: what it is, its
+    notable visual features, materials, and typical function/role. Be informative
+    and specific (mention parts, mechanisms, branding, or condition if visible).
+    Only describe what is actually visible — do not invent backstory.
+  type: str
+
+- name: object_type
+  description: >
+    The single most specific common noun for the object (lowercase), e.g.
+    "forklift", "pallet rack", "conveyor belt", "office chair", "fire extinguisher",
+    "traffic cone", "robot gripper", "cardboard box", "transformer", "hand drill".
+    Prefer the precise term over a generic one ("sectional sofa", not "furniture").
+  type: str
+
+- name: category
+  description: >
+    The single best top-level category. Choose exactly ONE:
+    furniture, appliance, electronics, lighting, vehicle, robot, machinery, tool,
+    material_handling, container, packaging, structure, fixture, signage,
+    safety_equipment, sensor, instrument, weapon, clothing, food, nature, terrain,
+    character, decoration, prop, other.
+  type: str
+
+# ── Discovery keywords ────────────────────────────────────────────────────────
+
+- name: tags
+  description: >
+    8-15 lowercase keywords a user might actually search, ordered most→least
+    relevant. Cover: the object name + synonyms (forklift, lift truck, fork truck);
+    specific type/variant (counterbalance, reach truck, pallet jack); visible parts
+    and features (forks, mast, cab, hydraulics); brand or model text if legible;
+    and domain/industry terms (warehouse, logistics, material handling). Be
+    thorough and include synonyms — this field drives most retrieval.
+  type: list[str]
+
+- name: use_cases
+  description: >
+    Pipelines / domains / applications this asset is well suited for (lowercase,
+    0-6). Examples: "synthetic data generation", "warehouse simulation",
+    "robotics manipulation", "autonomous mobile robots", "autonomous driving",
+    "digital twin", "retail planogram", "factory automation", "architectural
+    visualization", "game environment", "film vfx". Only include genuinely
+    plausible uses.
+  type: list[str]
+
+- name: environment
+  description: >
+    Typical real-world settings where this asset is found (lowercase, 0-5), e.g.
+    "warehouse", "factory floor", "loading dock", "office", "retail store",
+    "hospital", "kitchen", "construction site", "outdoor", "urban street",
+    "residential interior", "laboratory".
+  type: list[str]
+
+# ── Appearance ────────────────────────────────────────────────────────────────
+
+- name: colors
+  description: >
+    Dominant colors, most→least prominent (max 5). Simple searchable names:
+    red, orange, yellow, green, blue, purple, pink, brown, black, white, gray,
+    beige, gold, silver. Add a modifier only when distinctive (dark_gray, safety_yellow).
+  type: list[str]
+
+- name: materials
+  description: >
+    Apparent materials, primary→secondary (max 5). Common terms: steel, aluminum,
+    metal, wood, plastic, glass, fabric, leather, rubber, concrete, stone, ceramic,
+    cardboard, paper, foam, carbon_fiber, chrome, brass, composite.
+  type: list[str]
+
+- name: style
+  description: >
+    The dominant visual/representation style. Choose exactly ONE:
+    photorealistic, realistic, stylized, cartoon, low_poly, hand_painted, sci_fi,
+    fantasy, retro, modern, vintage, industrial, cad, scanned.
+  type: str
+
+# ── Physical / simulation attributes ──────────────────────────────────────────
+
+- name: scale
+  description: >
+    Approximate real-world size class. Choose exactly ONE:
+    tiny (fits in a hand), small (desktop), medium (human-scale / furniture),
+    large (vehicle / machine), huge (building / structure), unknown.
+  type: str
+
+- name: state
+  description: >
+    Apparent condition / finish. Choose exactly ONE:
+    pristine, new, used, worn, weathered, damaged, dirty, unknown.
+    (Useful for synthetic-data variety and digital-twin realism.)
+  type: str
+
+- name: physical_attributes
+  description: >
+    Functional / mechanical traits relevant to simulation and robotics
+    (lowercase, 0-6). From: articulated, has_moving_parts, wheeled, deformable,
+    rigid, stackable, graspable, openable, foldable, transparent, emissive,
+    reflective, mounted, modular. Only include traits clearly evident.
+  type: list[str]
+
+- name: visible_text
+  description: >
+    Any legible text, labels, brand names, model numbers, signage, or warnings on
+    the asset (verbatim, 0-6 short strings). Empty list if none. This is a strong,
+    unique search signal (e.g. brand, "EXIT", load ratings, hazard labels).
+  type: list[str]
+
+# ── Quality flags (for filtering) ─────────────────────────────────────────────
+
+- name: is_high_quality
+  description: >
+    True if the asset looks high quality — complete and properly textured, with clean
+    geometry, plausible materials, and no obviously missing parts. False if it is a
+    bare primitive, placeholder, or visually incomplete.
+  type: bool
+
+- name: has_issues
+  description: >
+    True if there are visible defects: missing/pink textures, UV errors, stretched
+    textures, artifacts, or incomplete geometry. False if it renders cleanly.
+  type: bool

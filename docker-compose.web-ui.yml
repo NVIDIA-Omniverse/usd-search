@@ -39,12 +39,18 @@ services:
         REACT_APP_VERSION: "${REACT_APP_VERSION:-}"
         REACT_APP_DEFAULT_EMBEDDING_FIELD_NAME: ${REACT_APP_DEFAULT_EMBEDDING_FIELD_NAME:-siglip2-embedding.embedding}
         REACT_APP_DEFAULT_EMBEDDING_DIMENSION: ${REACT_APP_DEFAULT_EMBEDDING_DIMENSION:-1536}
+        # Default search-form values baked into the SPA at build time.
+        # Empty cutoff = no similarity cutoff sent unless the user enters one.
+        REACT_APP_DEFAULT_CUTOFF_THRESHOLD: ${REACT_APP_DEFAULT_CUTOFF_THRESHOLD:-}
+        REACT_APP_DEFAULT_FILE_EXTENSION_INCLUDE: ${REACT_APP_DEFAULT_FILE_EXTENSION_INCLUDE:-usd*}
     container_name: usdsearch-explorer
     restart: unless-stopped
-    volumes:
-      - ./infra/quickstart/explorer.conf:/etc/nginx/conf.d/default.conf:ro
+    # bitnami nginx serves the static SPA from /app on :8080 by default — no
+    # config mount needed. The gateway routes /ui and the APIs.
+    # The bitnami image has no wget/curl, so probe the port with a bash
+    # /dev/tcp connect instead.
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
       interval: 10s
       timeout: 5s
       retries: 5

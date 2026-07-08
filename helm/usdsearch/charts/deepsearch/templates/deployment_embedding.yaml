@@ -21,6 +21,7 @@
 {{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
 {{- $releaseName := include "deepsearch-global.releaseName" . -}}
 {{- $chartVersion := .Chart.Version -}}
+{{- $appVersion := .Values.global.appVersion | default "0.0.0-dev" -}}
 
 {{- if not .Values.global.embedding_deployment.endpoint }}
 
@@ -31,7 +32,8 @@ metadata:
   labels:
     release_name: {{ $releaseName }}
     component: "deepsearch"
-    version: {{ $chartVersion }}
+    version: {{ $appVersion }}
+    chart.version: {{ $chartVersion }}
     deepsearch.service.name: {{ $serviceName }}
     {{- include "deepsearch.MainDeploymentlabels" . | nindent 4 }}
 spec:
@@ -50,11 +52,15 @@ spec:
       labels:
         release_name: {{ $releaseName }}
         component: "deepsearch"
-        version: {{ $chartVersion }}
+        version: {{ $appVersion }}
+        chart.version: {{ $chartVersion }}
         deepsearch.service.name: {{ $serviceName }}
         {{- include "deepsearch.EmbeddingDeploymentSelectorlabels" . | nindent 8 }}
     spec:
       {{- $globalImagePullSecrets | nindent 6 }}
+      {{- with .Values.microservices.embedding.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       hostname: {{ $fullName }}
       volumes:
       - name: dshm

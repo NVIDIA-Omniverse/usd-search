@@ -264,7 +264,7 @@ echo "── 8. deepsearch-api: VLM validation ──"
 #   200 — body has is_match / confidence / similarity_score / reasoning
 #   503 — VLM validation is not enabled on this server (compose stack came
 #         up without docker-compose.vlm-plugins.yml, or
-#         VLM_VALIDATION_ENABLED=false). Reported as SKIP, not FAIL — the
+#         USDSEARCH_VISION_VALIDATION_ENABLED=false). Reported as SKIP, not FAIL — the
 #         endpoint itself is the gate, no extra env-flag plumbing needed.
 # Uses --max-time because real VLM calls (especially reasoning models like
 # gemini-3-flash-preview) can run 30s+ per image batch.

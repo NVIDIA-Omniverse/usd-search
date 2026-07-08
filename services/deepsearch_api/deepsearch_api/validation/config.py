@@ -15,32 +15,42 @@
 
 from typing import Optional
 
+from llm_client import ValidationConfig
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from vision_endpoint.validation import ValidationConfig
-from vision_endpoint.vlm import VLMService
 
 
 class ValidationSettings(BaseSettings):
-    """Configuration settings for VLM validation."""
+    """Configuration for the VISION-validation role (per-result VLM relevance check).
 
-    enabled: bool = True
-    vlm_service: VLMService = Field(default=VLMService.azure_openai)
+    Env prefix ``USDSEARCH_VISION_VALIDATION_``. The model runs on the shared LLM
+    connection; only orchestration knobs + the model id live here.
+    """
+
+    enabled: bool = Field(default=True)
+    model: str = Field(default="gcp/google/gemini-3.5-flash")
     domain_context_filepath: Optional[str] = Field(default=None)
-    max_concurrent: int = 10
-    timeout_seconds: float = 30.0
+    max_concurrent: int = Field(default=10)
+    timeout_seconds: float = Field(default=30.0)
     max_tries: int = Field(
         default=1,
-        description="Max attempts for VLM validation calls (1 = no retries). "
-        "Controls vision-endpoint's retry logic on transient VLM errors.",
+        description="Max attempts for VLM validation calls (1 = no retries).",
+    )
+    cache_size: int = Field(
+        default=2048,
+        description="In-process LRU size for memoized validation verdicts, keyed by "
+        "(model, query, asset image identity). 0 disables caching. Failed/None "
+        "verdicts are never cached.",
     )
 
-    model_config = SettingsConfigDict(env_prefix="VLM_VALIDATION_")
+    model_config = SettingsConfigDict(
+        env_prefix="usdsearch_vision_validation_", populate_by_name=True, protected_namespaces=()
+    )
 
     def to_validation_config(self) -> ValidationConfig:
-        """Create a ValidationConfig from these settings."""
+        """Build the llm_client ValidationConfig (model runs on the shared connection)."""
         return ValidationConfig(
-            vlm_service=self.vlm_service,
+            model=self.model,
             domain_context_filepath=self.domain_context_filepath,
             max_tries=self.max_tries,
         )

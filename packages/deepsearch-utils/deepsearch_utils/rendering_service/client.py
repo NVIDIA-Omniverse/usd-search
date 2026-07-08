@@ -313,6 +313,10 @@ class RenderingServiceClient:
             uri = self.transform_s3_uri(uri)
 
         headers = self.headers
+        # Storage API credentials are forwarded explicitly to the rendering
+        # service: the gRPC endpoint goes in the request body (storage_api_url)
+        # and the optional bearer token in the X-Token-Auth header.
+        storage_api_url: Optional[str] = None
         if self._storage_client is not None:
             if (
                 isinstance(self._storage_client, S3StorageClient)
@@ -326,7 +330,15 @@ class RenderingServiceClient:
                     f'Basic {base64.b64encode((self._storage_client.config.auth.user+":"+self._storage_client.config.auth.password).encode()).decode()}'
                 )
             elif isinstance(self._storage_client, StorageAPIStorageClient):
-                raise NotImplementedError("Storage API is not supported for rendering service")
+                storage_api_url = self._storage_client.config.grpc_endpoint
+                # Resolve a concrete bearer token. _get_token() returns the
+                # static config.token when set, otherwise mints one from the
+                # OpenID client-credentials config (cached/refreshed). Forwarding
+                # config.token directly would send nothing for OpenID-only
+                # backends (e.g. Sevan), leaving Kit unauthenticated.
+                token = await self._storage_client._get_token()
+                if token is not None:
+                    headers["X-Token-Auth"] = token
         with self.rendering_jobs_count_metric_context():
             async with self.semaphore:
                 if not await self.is_available():
@@ -349,13 +361,16 @@ class RenderingServiceClient:
                                 read=self.ds_renderer_config.read_timeout,
                             )
                         ) as client:
+                            request_body = {
+                                "url": uri,
+                                "enable_caching": self.ds_renderer_config.enable_caching,
+                                "force_render": self.ds_renderer_config.force_render,
+                            }
+                            if storage_api_url is not None:
+                                request_body["storage_api_url"] = storage_api_url
                             response = await client.post(
                                 rendering_request_url,
-                                json={
-                                    "url": uri,
-                                    "enable_caching": self.ds_renderer_config.enable_caching,
-                                    "force_render": self.ds_renderer_config.force_render,
-                                },
+                                json=request_body,
                                 headers=headers,
                             )
 

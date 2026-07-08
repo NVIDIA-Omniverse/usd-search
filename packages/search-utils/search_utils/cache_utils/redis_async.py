@@ -14,14 +14,13 @@
 # limitations under the License.
 
 import logging
-import os
-import pickle
 from typing import Any, List, Optional
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
-from search_utils.log_utils import set_simple_logger
+from search_utils import secure_pickle
+from search_utils.secure_pickle import CACHE_APPROVED_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +85,7 @@ class AsyncCacheRedis:
         value = await self.client.get(key)
         if value is None:
             raise KeyError(f"{key} not found in the cache")
-        return pickle.loads(value)
+        return secure_pickle.loads(value, approved_imports=CACHE_APPROVED_CLASSES)
 
     async def set(self, key: str, value: Any) -> None:
-        await self.client.set(key, pickle.dumps(value), ex=self.ttl_seconds)
+        await self.client.set(key, secure_pickle.dumps(value), ex=self.ttl_seconds)

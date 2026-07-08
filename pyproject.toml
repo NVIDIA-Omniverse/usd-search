@@ -3,15 +3,28 @@
 
 [tool.uv]
 package = false
+# wheels/ holds the custom pytinyexr wheels built by build/build_pytinyexr.sh.
+# CAUTION: re-locking (uv lock / uv sync after a pyproject change) on a machine
+# where wheels/ is EMPTY silently re-resolves pytinyexr to the PyPI sdist —
+# which is unbuildable (it neither declares its pybind11 build dependency nor
+# bundles the PyEXR.h/tinyexr C++ sources) and breaks CI's repo-init job.
+# Run ./build/build_pytinyexr.sh before re-locking, and check that uv.lock
+# still says `source = { registry = "wheels" }` for pytinyexr (repo-init
+# asserts this).
 find-links = ["wheels/"]
 constraint-dependencies = [
     "protobuf>=6.32.1",
+    "langchain>=1.3.11",
+    "langchain-core>=1.4.8",
+    "langsmith>=0.8.18",
+    "starlette>=1.3.1",
+    "cryptography>=48.0.1"
 ]
 
 [tool.uv.workspace]
 members = [
     "packages/base-logging",
-    "packages/vision-endpoint",
+    "packages/llm-client",
     "packages/search-utils",
     "packages/ngsearch-backend",
     "packages/deepsearch-utils",
@@ -40,6 +53,11 @@ members = [
     # deepsearch-utils' websockets~=10.4 (ws_server.py uses removed max_queue param). Fix in step 11.
     # further services/ added per migration step
 ]
+# ci/skills is a standalone uv project (the NVIDIA nv-base skill validator).
+# nv-base lives only on internal Artifactory, so it is kept out of the
+# workspace — excluded here so `uv sync` ignores it and never reaches
+# Artifactory. validate_skills.sh runs it via `uv run --project ci/skills`.
+exclude = ["ci/skills"]
 
 # ---------------------------------------------------------------------------
 # Workspace-wide source overrides
@@ -47,7 +65,7 @@ members = [
 
 [tool.uv.sources]
 base-logging = { workspace = true }
-vision-endpoint = { workspace = true }
+llm-client = { workspace = true }
 siglip2-triton-client = { workspace = true }
 storage-api = { workspace = true }
 

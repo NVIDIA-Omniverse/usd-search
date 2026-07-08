@@ -15,7 +15,7 @@
 
 FROM ubuntu:22.04 AS kit-loader
 
-ARG KIT_KERNEL_VERSION=110.1.0+feature.manylinux_2_35_x86_64.release
+ARG KIT_KERNEL_VERSION=110.1.1+production.manylinux_2_35_x86_64.release
 
 USER root
 RUN apt-get update && apt-get install -y curl unzip
@@ -29,16 +29,31 @@ RUN VERSION_ENC=$(echo "${KIT_KERNEL_VERSION}" | sed 's/+/%2B/g') && \
 
 FROM nvcr.io/nvidia/omniverse/ov-base-ubuntu-22:2026.2.3
 
-COPY --from=kit-loader /opt/nvidia/omniverse/kit-kernel /opt/nvidia/omniverse/kit-kernel
+# UID/GID/name of the runtime user. Defaults match the base image's `ubuntu`
+# user; override (e.g. USER_ID=27489 GROUP_ID=27489 USER_NAME=appuser) to match
+# the host that will run the container (required for NVPark instances).
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG USER_NAME=ubuntu
+
+COPY --from=kit-loader --chown=${USER_ID}:${GROUP_ID} /opt/nvidia/omniverse/kit-kernel /opt/nvidia/omniverse/kit-kernel
 
 USER root
-RUN mkdir /cache && chown -R ubuntu:ubuntu /cache && chmod 777 /cache
-RUN chown -R ubuntu:ubuntu /opt/nvidia/omniverse/kit-kernel
+
+# Create the runtime user with the requested UID/GID, removing any pre-existing
+# user/group that already claims them (the base image ships a uid 1000 `ubuntu`).
+RUN if getent passwd ${USER_ID} > /dev/null 2>&1; then userdel -f "$(getent passwd ${USER_ID} | cut -d: -f1)"; fi && \
+    if getent group ${GROUP_ID} > /dev/null 2>&1; then groupdel "$(getent group ${GROUP_ID} | cut -d: -f1)" 2>/dev/null || true; fi && \
+    groupadd -g ${GROUP_ID} ${USER_NAME} && \
+    useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash ${USER_NAME}
+
+RUN mkdir /cache && chown -R ${USER_ID}:${GROUP_ID} /cache && chmod 777 /cache
+RUN chown -R ${USER_ID}:${GROUP_ID} /opt/nvidia/omniverse/kit-kernel
 RUN ln -sf /opt/nvidia/omniverse/kit-kernel/python/python /usr/bin/python
 RUN rm /root/.pip/pip.conf
 ADD exts /exts
-RUN chown -R ubuntu:ubuntu /exts && chmod 777 /exts
-USER ubuntu
+RUN chown -R ${USER_ID}:${GROUP_ID} /exts && chmod 777 /exts
+USER ${USER_NAME}
 
 RUN /opt/nvidia/omniverse/kit-kernel/kit \
     --enable omni.services.deepsearch.rendering \
@@ -63,29 +78,29 @@ RUN /opt/nvidia/omniverse/kit-kernel/kit \
     --ext-precache-mode
 
 USER root
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/setuptools*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/urllib3*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/urllib3*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.1.1.lx64.cp312/pip_prebundle/setuptools*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.1.1.lx64.cp312/pip_prebundle/urllib3*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/urllib3*
 RUN rm -rf /opt/nvidia/omniverse/kit-kernel/extscore/omni.kit.registry.nucleus/pip_registry/urllib3*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.0.0.lx64.cp312/pip_prebundle/urllib3*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/urllib3*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/aiohttp*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.0.0.lx64.cp312/pip_prebundle/aiohttp*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/aiohttp*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/aiohttp*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.0.0.lx64.cp312/pip_prebundle/urllib3*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/urllib3*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.1.1.lx64.cp312/pip_prebundle/aiohttp*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.0.0.lx64.cp312/pip_prebundle/aiohttp*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/aiohttp*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/aiohttp*
 RUN rm -rf /opt/nvidia/omniverse/kit-kernel/extscore/omni.kit.registry.nucleus/pip_registry/aiohttp*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/starlette*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/aiomysql*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/python_multipart*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/python_multipart*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/pil*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/Pillow*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/Pillow*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/pil*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/cryptography*
-RUN rm -rf /home/ubuntu/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.18.7+110.1.1.lx64.cp312/pip_prebundle/pyjwt*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/starlette*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.1.1.lx64.cp312/pip_prebundle/aiomysql*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/python_multipart*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/python_multipart*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/pil*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-79306dedf2ccec43/pip_prebundle/Pillow*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/Pillow*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.kit.pip_archive-aaeb857efadae61c/pip_prebundle/pil*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.1.1.lx64.cp312/pip_prebundle/cryptography*
+RUN rm -rf /home/${USER_NAME}/.local/share/ov/data/exts/v2/omni.services.pip_archive-0.0.18.9+110.1.1.lx64.cp312/pip_prebundle/pyjwt*
 RUN apt-get purge --auto-remove -y libnghttp2-14
-USER ubuntu
+USER ${USER_NAME}
 
 COPY _licenses /PACKAGE-LICENSES
 

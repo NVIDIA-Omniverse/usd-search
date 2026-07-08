@@ -57,12 +57,12 @@ services:
       - ${CLAUDE_JSON_HOST:-${HOME}/.claude.json}:/home/agent/.claude.json
 
   codex-sandbox:
-    build:
-      context: .
-      dockerfile: codex.Dockerfile
-    image: docker/sandbox-templates:codex
+    image: docker/sandbox-templates:codex-docker
     container_name: usdsearch-benchmark-codex-sandbox
-    # Image runs as user `agent` (uid 1000), workdir /home/agent/workspace.
+    # Pure upstream image — the sibling of docker/sandbox-templates:claude-code.
+    # Bundles the codex CLI (on PATH via npm-global) and already runs as user
+    # `agent` (uid 1000), workdir /home/agent/workspace, entrypoint `tini --`,
+    # CMD `codex`. No local build needed; `docker compose pull` grabs the latest.
     tty: true
     stdin_open: true
     environment:

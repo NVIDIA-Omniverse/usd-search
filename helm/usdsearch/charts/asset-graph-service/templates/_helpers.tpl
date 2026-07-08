@@ -5,7 +5,7 @@ overrides for backwards compatibility.
 */}}
 {{- define "asset-graph-service.dockerImage" -}}
 {{- if .Values.image.name -}}
-{{ default .Values.global.registry .Values.image.registry }}/{{ .Values.image.name }}:{{ default .Chart.AppVersion .Values.image.tag }}
+{{ default .Values.global.registry .Values.image.registry }}/{{ .Values.image.name }}:{{ default (include "deepsearch-global.unifiedImageTag" .) .Values.image.tag }}
 {{- else -}}
 {{ include "deepsearch-global.usdsearchImage" . }}
 {{- end -}}
@@ -53,8 +53,8 @@ Common labels
 {{- define "asset-graph-service.labels" -}}
 helm.sh/chart: {{ include "asset-graph-service.chart" . }}
 {{ include "asset-graph-service.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- if .Values.global.appVersion }}
+app.kubernetes.io/version: {{ .Values.global.appVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}

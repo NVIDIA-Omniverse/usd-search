@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 import aiohttp
 import aiohttp.client_exceptions
 from cache.src import GenericPluginStatus, PluginItemStatus
+from opentelemetry import trace
 from pydantic import Field
 from pydantic_settings import SettingsConfigDict
 
@@ -39,6 +40,8 @@ from .base_plugin import BasePlugin, BasePluginConfig
 from .models import GenericPluginErrorItem, PluginProcessingResult
 
 logger = logging.getLogger(__name__)
+
+tracer = trace.get_tracer(__name__)
 
 MAX_OS_FLOAT_VALUE = 3.4028234663852886e38
 
@@ -201,29 +204,38 @@ class AssetGraphGeneration(BasePlugin):
         data: list,
         storage_client: StorageClient,
     ) -> Tuple[list[AGSPluginBatchItem], list[str], Dict[str, AGSPluginErrorItem]]:
-        batch_data: list[AGSPluginBatchItem] = []
-        indices: list[str] = []
-        error_indices: Dict[str, AGSPluginErrorItem] = {}
+        with tracer.start_as_current_span("asset_graph_generation.preprocess") as span:
+            span.set_attribute("data_length", len(data))
 
-        for index, path in enumerate(data):
-            # TODO: Add error handling
-            try:
-                await self.wait_for_kit_worker()
-                self.logger.info("Building graph for %s ...", path["omni_path"])
-                graph = await self.get_graph(path["omni_path"], storage_client=storage_client)
-                indices.append(index)
-                batch_data.append(AGSPluginBatchItem(graph=graph, path=path["omni_path"]))
-                self.logger.debug("Graph for %s: %s", path["omni_path"], graph)
-            except aiohttp.client_exceptions.ClientConnectionError as exc:
-                raise ConnectionError("AGS Kit unavailable") from exc
-            except Exception as exc:
-                self.logger.error("Processing %s failed", path["omni_path"], exc_info=exc)
-                error_indices[index] = AGSPluginErrorItem(
-                    status=AGSPluginStatus.graph_construction_failed,
-                    path=path["omni_path"],
-                    error_message=str(exc),
-                )
-        return batch_data, indices, error_indices
+            batch_data: list[AGSPluginBatchItem] = []
+            indices: list[str] = []
+            error_indices: Dict[str, AGSPluginErrorItem] = {}
+
+            for index, path in enumerate(data):
+                # TODO: Add error handling
+                try:
+                    with tracer.start_as_current_span("asset_graph_generation.wait_for_kit_worker"):
+                        await self.wait_for_kit_worker()
+                    self.logger.info("Building graph for %s ...", path["omni_path"])
+                    with tracer.start_as_current_span("asset_graph_generation.get_graph") as item_span:
+                        item_span.set_attribute("omni_path", path["omni_path"])
+                        graph = await self.get_graph(path["omni_path"], storage_client=storage_client)
+                    indices.append(index)
+                    batch_data.append(AGSPluginBatchItem(graph=graph, path=path["omni_path"]))
+                    self.logger.debug("Graph for %s: %s", path["omni_path"], graph)
+                except aiohttp.client_exceptions.ClientConnectionError as exc:
+                    raise ConnectionError("AGS Kit unavailable") from exc
+                except Exception as exc:
+                    self.logger.error("Processing %s failed", path["omni_path"], exc_info=exc)
+                    error_indices[index] = AGSPluginErrorItem(
+                        status=AGSPluginStatus.graph_construction_failed,
+                        path=path["omni_path"],
+                        error_message=str(exc),
+                    )
+
+            span.set_attribute("batch_data_length", len(batch_data))
+            span.set_attribute("error_indices_length", len(error_indices))
+            return batch_data, indices, error_indices
 
     @staticmethod
     def _extract_properties_from_default_prim(graph) -> dict:
@@ -428,26 +440,33 @@ class AssetGraphGeneration(BasePlugin):
         **kwargs,
     ) -> Dict[int, PluginProcessingResult]:
 
-        self.logger.debug(
-            "In process batch_data: %s, indices: %s, sample_ids: %s",
-            batch_data,
-            indices,
-            sample_ids,
-        )
-        results: Dict[int, PluginProcessingResult] = {}
-        for batch_item, item_index in zip(batch_data, indices):
-            self.logger.info("Storing graph for %s in the asset graph service...", batch_item["path"])
-            await self.store_graph(batch_item["graph"])
-            self.logger.info("Graph for %s stored successfully", batch_item["path"])
-            results[sample_ids[item_index]] = {
-                "asset_status": PluginItemStatus(
-                    status=GenericPluginStatus.ok.value,
-                    processing_timestamp=time.time(),
-                ),
-                "search_backend_content": {self.plugin_name: self.get_os_content(batch_item["graph"])},
-            }
+        with tracer.start_as_current_span("asset_graph_generation.process_valid_items") as span:
+            span.set_attribute("batch_data_length", len(batch_data))
+            span.set_attribute("indices_length", len(indices))
+            span.set_attribute("sample_ids_length", len(sample_ids))
 
-        return results
+            self.logger.debug(
+                "In process batch_data: %s, indices: %s, sample_ids: %s",
+                batch_data,
+                indices,
+                sample_ids,
+            )
+            results: Dict[int, PluginProcessingResult] = {}
+            for batch_item, item_index in zip(batch_data, indices):
+                self.logger.info("Storing graph for %s in the asset graph service...", batch_item["path"])
+                with tracer.start_as_current_span("asset_graph_generation.store_graph") as item_span:
+                    item_span.set_attribute("path", batch_item["path"])
+                    await self.store_graph(batch_item["graph"])
+                self.logger.info("Graph for %s stored successfully", batch_item["path"])
+                results[sample_ids[item_index]] = {
+                    "asset_status": PluginItemStatus(
+                        status=GenericPluginStatus.ok.value,
+                        processing_timestamp=time.time(),
+                    ),
+                    "search_backend_content": {self.plugin_name: self.get_os_content(batch_item["graph"])},
+                }
+
+            return results
 
     def clean_up(self) -> bool:
         return True

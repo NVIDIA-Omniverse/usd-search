@@ -40,6 +40,11 @@ PLuginBatchItem: TypeAlias = dict[str, np.ndarray]
 class BasePluginConfig(BaseSettings):
     active: bool = True
     use_embedding_client: bool = True
+    # Max concurrent data-load operations across the worker's parallel queue
+    # processors. None or <= 0 means unlimited. Set this to a small positive
+    # integer for plugins that load large assets where uncontrolled parallelism
+    # would exhaust memory.
+    data_load_concurrency: Optional[int] = None
 
 
 class BasePlugin(ABC):
@@ -102,7 +107,8 @@ class BasePlugin(ABC):
     @abstractmethod
     def preprocess(
         self, data: list, batch_data_dict: dict, storage_clien: StorageClient
-    ) -> Tuple[list, list, Dict[int, GenericPluginErrorItem]]: ...
+    ) -> Tuple[list, list, Dict[int, GenericPluginErrorItem]]:
+        pass
 
     async def process(
         self,
@@ -146,7 +152,8 @@ class BasePlugin(ABC):
         indices: list[int],
         sample_ids: list[int],
         **kwargs,
-    ) -> Dict[int, PluginProcessingResult]: ...
+    ) -> Dict[int, PluginProcessingResult]:
+        pass
 
     async def process_failed_items(
         self,
