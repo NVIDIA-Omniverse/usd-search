@@ -310,6 +310,13 @@ class IRField:
     # Explorer rail can build the exact filter token the deployment uses.
     kind: str = ""
     property: Optional[str] = None
+    # Optional UI-only presentation hints (YAML ``label:`` / ``group:`` — flat
+    # sibling keys of ``name:``/``map:``). ``label`` overrides the humanized
+    # field name in the Explorer; ``group`` names the collapsible rail section
+    # the control renders under (ungrouped fields share a default group). They
+    # never enter the LLM grounding prompt.
+    label: Optional[str] = None
+    group: Optional[str] = None
 
 
 # Kinds backed by a single USD property key (have a resolvable map.property).
@@ -334,6 +341,8 @@ def _build_field(spec: dict) -> IRField:
         examples=tuple(spec.get("examples", ())),
         kind=kind,
         property=(_resolve_property(m) if kind in _PROPERTY_KINDS else None),
+        label=spec.get("label"),
+        group=spec.get("group"),
     )
 
 

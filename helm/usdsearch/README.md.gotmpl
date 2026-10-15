@@ -55,7 +55,9 @@ The document describes how USD Search API helm chart could be configured and ins
 	- [Omniverse Storage APIs](#omniverse-storage-apis)
 		- [SSL support](#ssl-support)
 		- [Authentication](#authentication)
+		- [Thumbnail retrieval](#thumbnail-retrieval)
 		- [Alternative installation options](#alternative-installation-options-3)
+		- [Additional parameters: re-scan frequency](#additional-parameters-re-scan-frequency-1)
 	- [API endpoint access](#api-endpoint-access)
 	- [Monitoring](#monitoring)
 - [Post-installation](#post-installation)
@@ -89,6 +91,7 @@ The document describes how USD Search API helm chart could be configured and ins
 	- [USD properties search](#usd-properties-search)
 	- [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging)
 		- [LLM/VLM provider](#llmvlm-provider)
+		- [Input budget and cache identity](#input-budget-and-cache-identity)
 		- [Customization](#customization)
 			- [Image prompt configuration](#image-prompt-configuration)
 			- [Metadata fields configuration](#metadata-fields-configuration)
@@ -99,7 +102,7 @@ The document describes how USD Search API helm chart could be configured and ins
 		- [OpenSearch authentication](#opensearch-authentication)
 	- [OTEL Telemetry and Traces collection](#otel-telemetry-and-traces-collection)
 		- [Trace collection](#trace-collection)
-		- [Search telemetry collection](#search-telemetry-collection)
+		- [Search and asset-load telemetry collection](#search-and-asset-load-telemetry-collection)
 	- [Values](#values)
 		- [Global settings](#global-settings)
 	- [Embedding service settings](#embedding-service-settings)
@@ -154,10 +157,17 @@ Generate your NGC helm and container registry API Key prior to fetch helm chart.
 Fetch the latest helm chart from the registry
 
 ```bash
-helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.4.0.tgz \
+helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.5.0.tgz \
 	--username='$oauthtoken' \
 	--password=<YOUR API KEY>
 ```
+
+> **Faster eval/prod cluster setup:** if you don't already have a Kubernetes
+> cluster, NGC also publishes MicroK8s bare-metal quickstart scripts and a
+> Terraform module for standing one up on AWS, under the same
+> `nvidia/usdsearch` NGC resources referenced above. This chart's own
+> instructions below assume a cluster already exists and don't cover
+> provisioning one.
 
 # Deployment
 
@@ -253,6 +263,28 @@ If access verification is not desired it is possible to disable it by providing 
 {{ .AutoDescription }}
 {{- end }}
 {{- end}}
+
+### Additional parameters: re-scan frequency
+
+USD Search performs a full re-scan of the Storage API backend daily to detect new data while minimizing load. You can adjust the re-scan frequency by adding the following argument to the installation or upgrade command:
+
+```bash
+  --set global.storage_api.re_scan_timeout=<re scan timeout time in seconds>
+```
+
+Setting this parameter to ``-1`` (or any other non-positive value) disables periodic re-scans, so the backend is scanned only once at startup.
+
+**NOTE**: This parameter only applies when ``global.storage_api.notification_subscription_enabled`` is ``false`` (the default). When notification subscription is enabled, changes are picked up from the Storage API notification stream instead and no periodic re-scan is performed, so the value is ignored.
+
+**NOTE**: Setting this parameter too low may cause processing queues to grow faster than your USD Search instance can handle. It is recommended to monitor the processing queues in Grafana and adjust the parameter to prevent excessive queue growth.
+
+### Additional parameters: thumbnail style
+
+By default (``storage_api``), thumbnails are resolved by reading the thumbnail URL directly from the asset metadata field(s) named in ``global.storage_api.thumbnail_metadata_fields``. To instead resolve thumbnails from the conventional Nucleus ``.thumbs/<width>x<height>/<filename>[.auto].png`` sibling path, set:
+
+```bash
+  --set global.storage_api.thumbnail_style=nucleus
+```
 
 ## API endpoint access
 
@@ -804,6 +836,25 @@ Default provider settings:
 {{- end }}
 {{- end}}
 
+### Input budget and cache identity
+
+{{- range .Values }}
+{{- if (eq "deepsearch.vision_endpoint.input" .Key) }}
+{{ .AutoDescription }}
+
+Default request limits (`metadata_revision` defaults to empty):
+
+{{- $input := (fromJson (trimAll "`" (default .Default .AutoDefault) )) }}
+
+```yaml
+max_images: {{ index $input "max_images" | int64 }}
+max_px: {{ index $input "max_px" | int64 }}
+max_request_bytes: {{ index $input "max_request_bytes" | int64 }}
+```
+
+{{- end }}
+{{- end}}
+
 ### Customization
 
 It is possible to customize the type of information extracted by the VLM-based auto-captioning system. There are two ways how this can be achieved:
@@ -895,7 +946,7 @@ Default provider settings:
 {{- end }}
 {{- end}}
 
-### Search telemetry collection
+### Search and asset-load telemetry collection
 
 {{- range .Values }}
 {{- if and (eq "ngsearch.microservices.search_rest_api.use_search_telemetry" .Key) }}
@@ -996,7 +1047,7 @@ The following parameters allow configuring the Asset Graph Search (AGS) deployme
 	</thead>
 	<tbody>
     {{- range .Values }}
-    {{- if and (not (hasPrefix "rendering-service" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.validation" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.use_search_telemetry" .Key)) (not (hasPrefix "s3proxy" .Key)) (not (hasPrefix "asset-graph-service" .Key)) (not (hasPrefix "deepsearch.microservices.embedding" .Key)) (not (hasPrefix "deepsearch.microservices.plugin_worker" .Key)) (not (hasPrefix "deepsearch_crawler" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.verification" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.admin_authentication" .Key)) (not (hasPrefix "deployServiceMonitors" .Key)) (not (hasPrefix "deployGrafanaDashboards" .Key)) (not (hasPrefix "api-gateway" .Key)) (not (hasPrefix "data_loader" .Key)) (not (hasPrefix "deepsearch_explorer" .Key)) (not (hasPrefix "deepsearch-explorer" .Key)) (not (hasPrefix "deepsearch.persistence" .Key)) (not (hasPrefix "global" .Key)) (not (hasPrefix "redis" .Key)) (not (hasPrefix "opensearch" .Key)) (not (hasPrefix "neo4j" .Key)) (not (hasPrefix "deepsearch.microservices.k8s_renderer" .Key )) (not (hasPrefix "deepsearch-crawler.crawler" .Key)) (not (hasPrefix "global.exclude_patterns" .Key)) (not (hasPrefix "deepsearch.plugins" .Key)) (not (hasPrefix "deepsearch.vision_endpoint" .Key)) }}
+    {{- if and (not (hasPrefix "rendering-service" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.validation" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.use_search_telemetry" .Key)) (not (hasPrefix "s3proxy" .Key)) (not (hasPrefix "asset-graph-service" .Key)) (not (hasPrefix "deepsearch.microservices.embedding" .Key)) (not (hasPrefix "deepsearch.microservices.plugin_worker" .Key)) (not (hasPrefix "deepsearch_crawler" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.verification" .Key)) (not (hasPrefix "ngsearch.microservices.search_rest_api.admin_authentication" .Key)) (not (hasPrefix "deployServiceMonitors" .Key)) (not (hasPrefix "monitorLabels" .Key)) (not (hasPrefix "deployGrafanaDashboards" .Key)) (not (hasPrefix "api-gateway" .Key)) (not (hasPrefix "data_loader" .Key)) (not (hasPrefix "deepsearch_explorer" .Key)) (not (hasPrefix "deepsearch-explorer" .Key)) (not (hasPrefix "deepsearch.persistence" .Key)) (not (hasPrefix "global" .Key)) (not (hasPrefix "redis" .Key)) (not (hasPrefix "opensearch" .Key)) (not (hasPrefix "neo4j" .Key)) (not (hasPrefix "deepsearch.microservices.k8s_renderer" .Key )) (not (hasPrefix "deepsearch-crawler.crawler" .Key)) (not (hasPrefix "global.exclude_patterns" .Key)) (not (hasPrefix "deepsearch.plugins" .Key)) (not (hasPrefix "deepsearch.vision_endpoint" .Key)) }}
 		<tr>
 			<td><div style="width: 150px; overflow-wrap: break-word;">{{ .Key }}</div></td>
 			<td><div style="white-space: nowrap;">{{- template "chart.typeColumnRender" . -}}</div></td>

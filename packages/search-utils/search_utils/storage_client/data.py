@@ -109,6 +109,14 @@ class VerifyBatchAccessResponse(BaseModel):
     uri: RemoteFileUri = Field(description="Full asset URI")
     path: Optional[RemoteFilePath] = Field(default=None, description="Remote asset path")
     exists: bool = Field(..., description="True if file exists on the server, False otherwise")
+    # Tri-state on purpose: only some backends can tell absent from unreadable
+    # (S3 sees the 403/404 split, Nucleus does not). None means "not determined" —
+    # do not guess, the point of the field is to stop conflating the two.
+    access_denied: Optional[bool] = Field(
+        default=None,
+        description="True if the object exists but is not readable, False if it is definitively "
+        "absent, None if this backend cannot distinguish the two",
+    )
     acl: Optional[List[ACL]] = Field(default=None, description="User access permissions")
     meta: Optional[Any] = Field(
         default=None,

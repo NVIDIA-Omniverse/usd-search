@@ -24,11 +24,21 @@ deepsearch-explorer:
   # /ui and routes the APIs; the SPA is wired at build time
   # (REACT_APP_API_URL / REACT_APP_SERVER_MAPPING). No git-clone / build-at-
   # startup init container needed.
+  #
+  # Runtime index registry (optional): the image entrypoint renders
+  # runtime-config.js from env at start, so the picker's index list is a
+  # values change, not a rebuild. Keys are the x-usdsearch-storage-backend
+  # values the API accepts. Uncomment to enable:
+  # extraEnvVars:
+  #   - name: EXPLORER_SERVER_MAPPING
+  #     value: '{"backend-a":{"name":"Backend A","apiUrl":"","embedding_config":{"field_name":"siglip2-embedding.embedding","dimension":1536}}}'
+  #   - name: EXPLORER_DEFAULT_SERVER
+  #     value: "backend-a"
   image:
-    registry: nvcr.io/omniverse/deeptag-internal
+    registry: nvcr.io/m3sujtetvf5w/usdsearch
     repository: usdsearch-explorer
     # Tracks the images-X.Y.Z release (same value as global.appVersion).
-    tag: "1.4.0"
+    tag: "1.5.0"
     pullPolicy: IfNotPresent
   service:
     type: ClusterIP
@@ -75,12 +85,13 @@ api-gateway:
       configMap:
         name: deepsearch-api-gateway-static-content
 
-
   extraSettings:
     # if true, redirect to the UI instead of the docs
     redirectToUIWhenAvailable: true
     cors:
       enabled: false
+      # "*" allows any origin. Otherwise the gateway echoes the request's Origin
+      # back when it is listed here and sends no CORS origin header otherwise.
       allowedOrigins:
         - "*"
 
@@ -246,6 +257,23 @@ deployServiceMonitors: false
 # --
 # @raw
 #
+# PrometheusRule alerts for the indexing pipeline (items dropped from a stream
+# after exhausting their retries, and a stream whose oldest unacknowledged entry
+# blocks trimming) can be deployed as part of this helm chart.
+deployPrometheusRules: false
+
+# --
+# @raw
+#
+# Extra labels to add to every generated ServiceMonitor, PodMonitor and
+# PrometheusRule. Useful for matching a Prometheus Operator's
+# `serviceMonitorSelector` / `podMonitorSelector` / `ruleSelector`. Merged in
+# addition to the default labels.
+monitorLabels: {}
+
+# --
+# @raw
+#
 # Rendering service deployment configuration.
 # @notationType -- yaml
 rendering_service_deployment:
@@ -266,7 +294,6 @@ global:
   ################################################################################
   ## Embedding services deployment setup
   ################################################################################
-
 
   # -- (map)
   # @raw
@@ -300,7 +327,6 @@ global:
   # be used for service registration when using NodePort services.
   nodeIP: ""
 
-
   s3proxy:
     enabled: false
 
@@ -318,6 +344,58 @@ global:
   #  * storage_api - Omniverse Storage API (beta functionality). Please refer to [Omniverse Storage API](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/omniverse/collections/storage_apis) for more information.
   #
   storage_backend_type: s3
+
+  # -- (map)
+  # @raw
+  #
+  # Public asset URLs. By default the API speaks the same URLs the crawler
+  # indexed (e.g. `s3://bucket/key`). Set this to publish a different form —
+  # typically `https://` for an S3-backed deployment — while everything
+  # internally (the search index, the asset graph, storage access) keeps using
+  # the original one.
+  #
+  # Modes:
+  #
+  #  * `off` (default) — no translation; responses are byte-identical to before.
+  #  * `s3_https` — derive the mapping from the configured S3 bucket, i.e.
+  #    `s3://<bucket>/` becomes `https://<bucket>.s3.<region>.amazonaws.com/`
+  #    (or `<aws_endpoint_url>/<bucket>/` for a custom endpoint). No rules to write.
+  #  * `rules` — spell the prefixes out yourself, for a CDN, a Nucleus web
+  #    gateway, or several storage roots:
+  #
+  # ```yaml
+  #   url_mapping:
+  #     mode: rules
+  #     rules:
+  #       - internal: "s3://my-assets/"
+  #         public: "https://assets.example.com/"
+  #       - internal: "omniverse://nucleus.internal/"
+  #         public: "https://viewer.example.com/omni/"
+  # ```
+  #
+  # Requests accept **either** form at all times, so clients holding previously
+  # returned `s3://` URLs keep working. Set `inbound_only: true` to accept the
+  # public form without emitting it yet (useful when rolling the change out).
+  #
+  # __NOTE__: this changes how an asset is *addressed*, not who may read it. A
+  # published `https://` URL for a private bucket is not fetchable without
+  # credentials — signing such links is the client application's job. Use
+  # `GET /download/asset` to retrieve bytes through the API.
+  #
+  # A rule set whose reverse mapping would be ambiguous (overlapping prefixes) is
+  # rejected at startup rather than applied half-way.
+  #
+  # An internal URL's path is a raw storage key and may hold characters that are
+  # not legal in an `https://` path — a space, most often. Incoming URLs are
+  # always percent-decoded, so the correctly escaped form resolves. Set
+  # `encode_public_paths: true` to *emit* the escaped form as well; it is opt-in
+  # because it changes the exact URL string published for those assets.
+  #
+  url_mapping:
+    mode: "off"
+    rules: []
+    inbound_only: false
+    encode_public_paths: false
 
   # --
   # @raw
@@ -360,7 +438,7 @@ global:
   # Omniverse Nucleus server for indexing, as follows:
   #
   # ```bash
-  # helm install <deployment name> usdsearch-1.4.0.tgz \
+  # helm install <deployment name> usdsearch-1.5.0.tgz \
   #  --set global.accept_eula=true \
   #  --set global.storage_backend_type=nucleus \
   #  --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -411,7 +489,7 @@ global:
   # simplified to:
   #
   # ```bash
-  # helm install <deployment name> usdsearch-1.4.0.tgz \
+  # helm install <deployment name> usdsearch-1.5.0.tgz \
   #   --set global.accept_eula=true \
   #   --set global.storage_backend_type=nucleus \
   #   --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -453,7 +531,6 @@ global:
     #
     service_account_secret: "deepsearch-service-account"
 
-
     # --
     # @raw
     #
@@ -484,7 +561,6 @@ global:
     # ports: https://docs.omniverse.nvidia.com/nucleus/latest/ports_connectivity.html#enterprise-nucleus-server
     deployment_lookup: "external"
 
-
     # -- (bool)
     #
     # On start-up verify that created user has admin access. In case the provided
@@ -501,8 +577,6 @@ global:
     #
     skip_mounts: false
 
-
-
   ################################################################################
   ## S3 storage backend configuration
   ################################################################################
@@ -514,7 +588,7 @@ global:
   # indexing, run the following command:
   #
   #```bash
-  # helm install <deployment name> usdsearch-1.4.0.tgz \
+  # helm install <deployment name> usdsearch-1.5.0.tgz \
   #   --set global.accept_eula=true \
   #   --set global.storage_backend_type=s3 \
   #   --set global.s3.bucket_name=<S3 bucket name> \
@@ -558,7 +632,7 @@ global:
   # simplified to:
   #
   # ```bash
-  # helm install <deployment name> usdsearch-1.4.0.tgz \
+  # helm install <deployment name> usdsearch-1.5.0.tgz \
   #   --set global.accept_eula=true \
   #   --set global.storage_backend_type=s3 \
   #   --set global.s3.bucket_name=<S3 bucket name> \
@@ -661,7 +735,7 @@ global:
   # indexing, run the following command:
   #
   #```bash
-  # helm install <deployment name> usdsearch-1.4.0.tgz \
+  # helm install <deployment name> usdsearch-1.5.0.tgz \
   #   --set global.accept_eula=true \
   #   --set global.storage_backend_type=storage_api \
   #   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -757,7 +831,7 @@ global:
   # simplified to:
   #
   # ```bash
-  # helm install <deployment name> usdsearch-1.4.0.tgz \
+  # helm install <deployment name> usdsearch-1.5.0.tgz \
   #   --set global.accept_eula=true \
   #   --set global.storage_backend_type=storage_api \
   #   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -789,8 +863,12 @@ global:
     # -- (string)
     # @raw
     #
-    # Base URI of the Storage API. This should be the URL of the bucket / blob
-    # store or other entity that is exposed through the Storage API.
+    # Fallback base URI (namespace root) of the Storage API — the URL of the bucket /
+    # blob store or other entity exposed through the Storage API.
+    #
+    # Optional: backends are normally discovered automatically via the Storage API's
+    # ``ListTopLevelAddresses`` call (a single deployment may serve several buckets).
+    # This value is only required as a fallback if the server does not implement that call.
     #
     # Example:
     #  * for an Azure blob store container it could be: ``https://my-account.blob.core.windows.net/my-container``
@@ -799,6 +877,17 @@ global:
     #  * for a local file system it could be something like ``file-storage://fileservice`` (depending on your Storage API configuration)
     #
     base_uri:
+
+    # -- (list)
+    # @raw
+    #
+    # Restrict operation to this subset of top-level addresses (buckets / namespace
+    # roots) discovered via ``ListTopLevelAddresses``. Empty (default) uses every
+    # discovered address. Ignored (with a warning) when ``base_uri`` is set above.
+    #
+    # Example: ``["my-bucket-a", "my-bucket-b"]``
+    #
+    allowed_top_level_addresses: []
 
     # -- (bool)
     # @raw
@@ -833,6 +922,127 @@ global:
       secret_name: storage-api-credentials
       token:
       secret_key: token
+      # For token auth the secret is mounted as a file at <mount_path>/<secret_key> and read
+      # via STORAGE_API_TOKEN_FILE (the client re-reads it on token_refresh_interval).
+      mount_path: /etc/storage-api-credentials
+
+      # -- (int)
+      # @raw
+      #
+      # Interval, in seconds, at which the Storage API client refreshes the bearer
+      # token. For ``token`` auth this is how often the mounted token file is
+      # re-read; for ``openid`` auth it is how often a new token is fetched from the
+      # OpenID token endpoint. Controlled by the ``STORAGE_API_TOKEN_REFRESH_INTERVAL``
+      # environment variable. Leave unset to use the client default (``1800``).
+      token_refresh_interval:
+
+      # -- (object)
+      # @raw
+      #
+      # Optional lightweight "token refresher" for ``token`` auth. When enabled,
+      # a small Deployment runs a user-supplied token-vending **sidecar** that
+      # writes the bearer token to a pod-local file, plus a **syncer** container
+      # that publishes that value into the ``secret_name`` Secret which every
+      # USD Search service already reads. A ``pre-install`` / ``pre-upgrade``
+      # hook Job seeds the Secret with a valid token *before* any service pod
+      # starts, so the first read never sees an empty token. The token then
+      # rotates without restarts (services re-read the mounted file on
+      # ``token_refresh_interval``).
+      #
+      # Requires Kubernetes >= 1.28: the seed Job runs the vendor sidecar as a
+      # native sidecar init container (``restartPolicy: Always``) so the Job can
+      # complete once the token has been published.
+      token_refresher:
+        # Enable the refresher Deployment + seed hook. Only meaningful for
+        # ``type: token``.
+        enabled: false
+
+        # Shared (in-memory) emptyDir directory where the sidecar writes and the
+        # syncer reads the token. The file name is ``secret_key`` (default
+        # ``token``), so the full path is ``<token_dir>/<secret_key>``.
+        token_dir: /var/run/storage-api-token
+
+        # -- (object)
+        # @raw
+        #
+        # The deployment-specific token-vending sidecar, passed through verbatim
+        # as a container spec (``image`` / ``command`` / ``args`` / ``env`` /
+        # ``securityContext`` / …). It MUST write the token to
+        # ``<token_dir>/<secret_key>``. A ``volumeMounts`` entry for the shared
+        # token volume (and a ``name`` if omitted) is injected automatically, so
+        # you don't need to declare it. Example:
+        #
+        # ```yaml
+        # sidecar:
+        #   image: my-registry/token-vendor:1.2.3
+        #   args: ["--out", "/var/run/storage-api-token/token"]
+        # ```
+        sidecar: {}
+
+        syncer:
+          # The syncer / seed containers run
+          # ``python -m deepsearch_utils.token_refresher`` on the bundled
+          # ``usdsearch`` image (nothing extra to mirror), so there is no image
+          # to configure here.
+          #
+          # Seconds between token-file reads. The Secret is patched only when
+          # the token value has changed.
+          sync_interval: 30
+          # Max seconds the seed hook waits for the sidecar to produce the first
+          # token before failing the install / upgrade.
+          seed_timeout: 120
+          # Resource requests / limits for the syncer (and seed) container. The
+          # syncer is a tiny Python loop, so the defaults are deliberately small.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+        rbac:
+          # Create the Role + RoleBinding (``get`` / ``patch`` on ``secret_name``)
+          # for the refresher Deployment, plus the hook-scoped RBAC for the seed
+          # Job.
+          create: true
+
+        serviceAccount:
+          # Create the refresher ServiceAccount.
+          create: true
+          # Name override for the refresher ServiceAccount (defaults to a
+          # chart-derived name).
+          name: ""
+          # -- (object)
+          # @raw
+          #
+          # Annotations added to the refresher ServiceAccount(s) — both the
+          # long-running refresher SA and the seed hook's SA (the vendor sidecar
+          # runs under each). Use this for the cloud workload-identity binding the
+          # token-vending sidecar relies on, e.g. ``eks.amazonaws.com/role-arn``
+          # (AWS IRSA), ``iam.gke.io/gcp-service-account`` (GKE Workload Identity),
+          # or ``azure.workload.identity/client-id``.
+          annotations: {}
+
+        # -- (object)
+        # @raw
+        #
+        # Extra labels added to the refresher pods — both the long-running
+        # refresher Deployment's pod template and the seed hook Job's (the vendor
+        # sidecar runs in each). Use this for label-driven admission or policy,
+        # e.g. ``azure.workload.identity/use: "true"``, an Istio injection
+        # opt-in/out, or NetworkPolicy selectors. These are additive: the chart's
+        # own selector labels and ``app.kubernetes.io/component`` always win, and
+        # since the Deployment's ``selector.matchLabels`` is immutable, extra pod
+        # labels here never change it.
+        podLabels: {}
+
+        # Scheduling for the refresher Deployment (syncer resources live under
+        # ``syncer.resources``; the vendor sidecar carries its own).
+        podAnnotations: {}
+        nodeSelector: {}
+        tolerations: []
+        affinity: {}
       openid:
         token_url:
         grant_type: client_credentials
@@ -880,6 +1090,17 @@ global:
     # @notationType -- yaml
     thumbnail_metadata_fields:
       - thumbnail_url
+
+    # -- (string)
+    # @raw
+    #
+    # How thumbnails are resolved when using the Storage API backend. One of:
+    #
+    # - ``storage_api`` (default): read the thumbnail URL directly from the asset's metadata, per ``thumbnail_metadata_fields`` above.
+    # - ``nucleus``: ignore asset metadata and instead look for a thumbnail at the conventional Nucleus sibling path, ``.thumbs/<width>x<height>/<filename>[.auto].png``, probing candidates via the Storage API.
+    #
+    # Controlled by the ``STORAGE_API_THUMBNAIL_STYLE`` environment variable.
+    thumbnail_style: storage_api
 
   ################################################################################
   ## Search Backend Settings
@@ -1008,6 +1229,28 @@ global:
     # issues arise with a specific OpenSearch version or client.
     serializer: orjson
 
+    # --
+    # @raw
+    #
+    # gzip OpenSearch request/response bodies (``http_compress``).
+    #
+    # Disabled by default: some intermediaries between the services and OpenSearch
+    # (proxy / load balancer / service mesh) mangle the compressed payload, which
+    # surfaces as OpenSearch returning ``not_x_content_exception`` ("Compressor
+    # detection can only be called on some xcontent bytes ...") on write requests
+    # such as ``_update``. Set to ``true`` to re-enable compression.
+    http_compress: false
+
+    # --
+    # @raw
+    #
+    # OpenSearch index ``refresh_interval`` applied when a new index is created:
+    # how often newly written docs are refreshed into searchable segments. A
+    # larger value reduces indexing / segment-merge overhead at the cost of
+    # delaying search visibility of freshly written docs. Applies to newly created
+    # indexes only.
+    refresh_interval: "60s"
+
   ################################################################################
   ## Indexing configuration parameters
   ################################################################################
@@ -1037,7 +1280,6 @@ global:
   exclude_patterns:
   - /.thumbs/
   - .__omni_channel__
-
 
   ################################################################################
   ## Logging configuration
@@ -1090,6 +1332,9 @@ global:
     rendering_job:
       repository: usdsearch-kit-workflows
       tag: ""
+    graph_builder:
+      repository: usdsearch-graph-builder
+      tag: ""
 
   # -- (string)
   # @raw
@@ -1101,7 +1346,7 @@ global:
   # ``global.image.<name>.tag`` overrides take precedence; this field is the
   # shared fallback so all three unified images track the same release by
   # default.
-  appVersion: "1.4.0"
+  appVersion: "1.5.0"
 
   # -- (map)
   # @raw
@@ -1166,7 +1411,6 @@ global:
       helm.sh/hook-weight: "-5"
       helm.sh/resource-policy: keep
 
-
   ################################################################################
   ## Global checks settings
   ################################################################################
@@ -1174,12 +1418,34 @@ global:
   # --
   # @raw
   #
-  # Configuration of helm hooks that are used for testing storage backend
-  # availability and API readiness.
+  # Configuration of the helm hook Jobs that test storage backend availability and
+  # API readiness. Available checks: `storage_backend`, `ags`, `rest_api`,
+  # `embedding`, `explorer_ui`, `rendering_service`.
+  #
+  # Each check can be toggled (`enabled`), given a `backoff_limit`, and have its
+  # hook `annotations` customized (e.g. to change the `helm.sh/hook` phase or
+  # `helm.sh/hook-delete-policy`). The `storage_backend` check additionally accepts
+  # an `affinity` object (not applied by default) to constrain its connection-check
+  # Job pod to a node that can reach the backend, e.g.:
+  #
+  #   global:
+  #     checks:
+  #       storage_backend:
+  #         annotations:
+  #           helm.sh/hook: test
+  #         affinity:
+  #           nodeAffinity:
+  #             requiredDuringSchedulingIgnoredDuringExecution:
+  #               nodeSelectorTerms:
+  #                 - matchExpressions:
+  #                     - key: kubernetes.io/hostname
+  #                       operator: In
+  #                       values: <node name>
   checks:
     storage_backend:
       enabled: true
       backoff_limit: 5
+      affinity: {}
       annotations:
         helm.sh/hook: pre-install,test
         helm.sh/hook-weight: "0"
@@ -1450,74 +1716,212 @@ deepsearch:
       env_prefix: "USDSEARCH_LLM_"
       base_url: "https://inference-api.nvidia.com"
     # Model used for batch metadata generation, on the provider above.
-    metadata_model: "gcp/google/gemini-3.1-pro-preview"
+    # Default from the 2026-08 metadata bake-off (see docs/models-and-config.md).
+    metadata_model: "azure/openai/gpt-5.6-sol"
+    # Extra OpenAI request-body fields merged into every metadata-generation
+    # call, as a JSON object (-> USDSEARCH_VISION_METADATA_EXTRA_BODY on the
+    # plugin worker). Empty by default; the env is only emitted when set. Same
+    # purpose as the validation/parsing extra_body — e.g. disable thinking on a
+    # vLLM-served Qwen: `{"chat_template_kwargs": {"enable_thinking": false}}`.
+    metadata_extra_body: {}
 
-    # Default schema mirrors packages/llm-client/.../metadata/metadata_fields.yaml so
-    # the helm-shipped default matches the package. Edit per deployment as needed.
+    # --
+    # @raw
+    #
+    # Request-size limits for VLM metadata generation. A metadata request sends at
+    # most ``max_images`` uniformly sampled views (first and last view always kept),
+    # shrinks each image so neither edge exceeds ``max_px`` pixels (never upscaled),
+    # and keeps the encoded image payload under ``max_request_bytes`` (resolution
+    # is reduced first, views are dropped only if the set still cannot fit).
+    # The limits are deliberately global rather than per plugin: one
+    # monitor-crawler computes the cache identity for every metadata worker, so
+    # all processes must resolve identical settings (``VLM_MAX_IMAGES``,
+    # ``VLM_IMAGE_MAX_PX``, ``VLM_MAX_REQUEST_BYTES`` on the workers and crawlers).
+    #
+    # ``deepsearch.vision_endpoint.metadata_revision`` (``VLM_METADATA_REVISION``)
+    # is an OPTIONAL output-contract revision and is **empty by default**: the
+    # metadata cache identity is then the asset hash alone, exactly as before
+    # these settings existed, so upgrading never reprocesses unchanged assets on
+    # its own and earlier metadata stays searchable next to newer output. Set any
+    # non-empty value (for example ``metadata-v2-png512``) to opt a deployment in:
+    # the revision and the three limits above then join the cache identity, and
+    # changing any of them makes unchanged assets eligible for reprocessing. Bump
+    # the revision after a model, prompt or schema change when the corpus should
+    # be regenerated, and plan the resulting VLM load on a large corpus first.
+    input:
+      # Maximum number of views sent in one VLM request.
+      max_images: 16
+      # Maximum pixel length of either image edge (shrink-only).
+      max_px: 512
+      # Maximum total encoded image payload per request (8 MiB).
+      max_request_bytes: 8388608
+    # Empty = legacy asset-only cache identity, nothing is reprocessed on upgrade.
+    # Any non-empty value opts in; see the `input` description above.
+    metadata_revision: ""
+
+    # --
+    # @raw
+    #
+    # Configuration of metadata fields extracted by the VLM-based auto-captioning
+    # system, controlled by the ``deepsearch.vision_endpoint.metadata_fields``
+    # parameter. The default mirrors the schema shipped with the package
+    # (``packages/llm-client/llm_client/metadata/metadata_fields.yaml``); edit it
+    # per deployment as needed. Below is the default configuration:
+    #
     metadata_fields:
-    - name: caption
-      description: A concise, specific title (5-12 words) naming the object precisely, e.g. "Counterbalance warehouse forklift" or "Ergonomic mesh office chair".
-      type: str
 
-    - name: description
-      description: One or two factual sentences describing what the asset is, its notable visual features, materials, and typical function. Describe only what is visible; do not invent backstory.
+    - name: caption
+      description: >
+        A concise, specific title (5-12 words) naming the object precisely.
+        Format: "[distinguishing adjectives] [specific object name]".
+        Examples: "Counterbalance warehouse forklift", "Galvanized steel pallet rack",
+        "Articulated 6-axis industrial robot arm", "Weathered red shipping container",
+        "Ergonomic mesh office chair", "Stainless commercial kitchen prep table".
       type: str
 
     - name: object_type
-      description: The single most specific common noun for the object (lowercase), e.g. "forklift", "office chair", "fire extinguisher", "robot gripper". Prefer the precise term over a generic one.
+      description: >
+        The single most specific common noun for the object (lowercase), e.g.
+        "forklift", "pallet rack", "conveyor belt", "office chair", "fire extinguisher",
+        "traffic cone", "robot gripper", "cardboard box", "transformer", "hand drill".
+        Prefer the precise term over a generic one ("sectional sofa", not "furniture").
       type: str
 
-    - name: category
-      description: The single best top-level category (choose exactly one), e.g. furniture, appliance, electronics, lighting, vehicle, robot, machinery, tool, material_handling, container, structure, signage, safety_equipment, sensor, prop, other.
-      type: str
+    # Free-text `category` (no allowed_values list) gives poor results — the model
+    # needs a closed vocabulary to pick from. DISABLED here; re-enable per
+    # deployment via the allowed_values list below (uncomment the whole field), or
+    # by overriding vision_endpoint.metadata_fields in helm values. The list is
+    # corpus-derived for the Isaac/SimReady corpus (see the re-derivation runbook
+    # above); off-list values coerce to null when enabled. Value hints: primitive_shape
+    # = bare geometric primitive (cube, cylinder, plane); part = generic mechanical
+    # component that is not a fastener (rod, peg, spacer, bracket); hardware =
+    # fasteners (nut, bolt, screw, washer); prop = recognizable everyday object
+    # used as set dressing.
+    # - name: category
+    #   description: >
+    #     The single best top-level category as a short lowercase noun, e.g.
+    #     furniture, vehicle, robot, signage, container; use null when no clear
+    #     category applies — a wrong category is worse than none.
+    #   type: str
+    #   nullable: true
+    #   allowed_values: [furniture, appliance, electronics, lighting, vehicle,
+    #     robot, machinery, tool, hardware, part, primitive_shape, equipment,
+    #     medical_equipment, material_handling, container, packaging, structure,
+    #     fixture, signage, safety_equipment, sensor, instrument, weapon, clothing,
+    #     food, nature, terrain, character, decoration, prop]
+
+    - name: queries
+      description: >
+        Short search phrases a person would actually type into a search box to find
+        this asset — aim for 5-10 (at least 3 required; even a bare primitive supports
+        shape/color phrases like "gray cube"), lowercase, ordered most generic first.
+        Start with the plain
+        object name, then common synonyms, then the few most distinctive qualified
+        phrasings: "forklift", "fork truck", "warehouse forklift", "yellow
+        counterbalance forklift". Each phrase 1-4 words, written the way users
+        search — no full sentences, no catalog or engineering jargon, and no generic
+        filler ("3d model", "asset", "object", "prop"). These phrases are matched
+        directly by keyword search.
+      type: list[str]
+      min_items: 3
+      max_items: 10
 
     - name: tags
-      description: 8-15 lowercase keywords a user might search, most→least relevant - object name + synonyms, specific type/variant, visible parts/features, brand or model text, and domain/industry terms. This field drives most retrieval.
+      description: >
+        Lowercase keywords a user might actually search, ordered most→least relevant —
+        aim for 8-15 (at least 3 required). Cover: the object name + synonyms
+        (forklift, lift truck, fork truck); specific type/variant (counterbalance,
+        reach truck, pallet jack); clearly visible parts and part-level features
+        (forks, mast, overhead guard, cab, hydraulics); brand or model text ONLY if
+        clearly legible; and domain/industry terms (warehouse, logistics, material
+        handling). Be thorough, include synonyms, and use the words users type — not
+        catalog or engineering jargon. Never pad with generic filler ("3d model",
+        "asset", "object", "mesh", "prop") or attributes you cannot clearly see; for
+        bare primitives and abstract assets, shape and color terms (cube, box, sphere,
+        gray) count as valid tags.
       type: list[str]
-
-    - name: use_cases
-      description: Pipelines, domains, or applications this asset suits (lowercase, 0-6), e.g. "synthetic data generation", "warehouse simulation", "robotics manipulation", "digital twin", "game environment".
-      type: list[str]
+      min_items: 3
+      max_items: 15
 
     - name: environment
-      description: Typical real-world settings where this asset is found (lowercase, 0-5), e.g. "warehouse", "factory floor", "office", "retail store", "kitchen", "outdoor".
+      description: >
+        Typical real-world settings where this asset is found (lowercase, 0-5), e.g.
+        "warehouse", "factory floor", "loading dock", "office", "retail store",
+        "hospital", "kitchen", "construction site", "outdoor", "urban street",
+        "residential interior", "laboratory".
       type: list[str]
+      max_items: 5
 
     - name: colors
-      description: Dominant colors, most→least prominent (max 5), using simple searchable names (red, blue, gray, beige, ...). Add a modifier only when distinctive (dark_gray, safety_yellow).
+      description: >
+        Dominant colors, most→least prominent (max 5). Simple searchable names:
+        red, orange, yellow, green, blue, purple, pink, brown, black, white, gray,
+        beige, gold, silver. Add a modifier only when distinctive (dark_gray, safety_yellow).
       type: list[str]
+      max_items: 5
 
     - name: materials
-      description: Apparent materials, primary→secondary (max 5), e.g. steel, aluminum, wood, plastic, glass, fabric, leather, rubber, concrete, cardboard.
+      description: >
+        Apparent materials, primary→secondary (max 5). Common terms: steel, aluminum,
+        metal, wood, plastic, glass, fabric, leather, rubber, concrete, stone, ceramic,
+        cardboard, paper, foam, carbon_fiber, chrome, brass, composite. Only materials
+        you can clearly identify at this resolution — when unsure between specific
+        metals, say "metal".
       type: list[str]
+      max_items: 5
 
     - name: style
-      description: The dominant visual/representation style (choose exactly one), e.g. photorealistic, realistic, stylized, cartoon, low_poly, hand_painted, sci_fi, modern, industrial, cad, scanned.
+      description: >
+        The dominant REPRESENTATION style — how the asset is rendered/authored, not
+        its design aesthetic (aesthetic terms like "industrial", "modern", "vintage"
+        belong in tags). realistic covers photorealistic. Choose exactly ONE from
+        the allowed list; use null if truly undeterminable.
       type: str
+      nullable: true
+      allowed_values: [realistic, stylized, low_poly, cad, scanned]
 
     - name: scale
-      description: Approximate real-world size class (choose exactly one) - tiny (fits in a hand), small (desktop), medium (human-scale / furniture), large (vehicle / machine), huge (building / structure), unknown.
+      description: >
+        Approximate real-world size class. Choose exactly ONE:
+        tiny (fits in a hand), small (desktop), medium (human-scale / furniture),
+        large (vehicle / machine), huge (building / structure); use null if the
+        size cannot be judged.
       type: str
+      nullable: true
+      allowed_values: [tiny, small, medium, large, huge]
 
     - name: state
-      description: Apparent condition / finish (choose exactly one) - pristine, new, used, worn, weathered, damaged, dirty, unknown.
+      description: >
+        Apparent condition. Choose exactly ONE — new (clean / like-new), used
+        (visibly in service), worn (heavy wear, weathering, or dirt), damaged
+        (broken or missing parts); use null if condition cannot be judged.
       type: str
+      nullable: true
+      allowed_values: [new, used, worn, damaged]
 
     - name: physical_attributes
-      description: Functional / mechanical traits relevant to simulation and robotics (lowercase, 0-6), from - articulated, has_moving_parts, wheeled, deformable, rigid, stackable, graspable, openable, foldable, transparent, emissive, reflective, mounted, modular.
+      description: >
+        Functional / mechanical traits relevant to simulation and robotics
+        (lowercase, 0-6), only from the allowed list. Rigid is the default —
+        tag only what deviates from a plain static rigid object, and only traits
+        clearly evident in the views.
       type: list[str]
+      max_items: 6
+      allowed_values: [articulated, has_moving_parts, wheeled, deformable,
+        stackable, graspable, openable, foldable, transparent, emissive,
+        reflective, mounted, modular]
 
     - name: visible_text
-      description: Any legible text, labels, brand names, model numbers, signage, or warnings on the asset (verbatim, 0-6 short strings). Empty list if none. A strong, unique search signal.
+      description: >
+        Text on the asset that is CLEARLY LEGIBLE at the provided resolution
+        (verbatim, 0-6 short strings): labels, brand names, model numbers, signage,
+        warnings. If you cannot read every character of a string, omit it entirely —
+        never reconstruct partial text or infer branding from a logo shape or color
+        scheme. Empty list if none. Legible text is a strong, unique search signal
+        (e.g. brand, "EXIT", load ratings, hazard labels); invented text is the
+        worst kind of index pollution.
       type: list[str]
-
-    - name: is_high_quality
-      description: True if the asset looks high quality - complete and properly textured, with clean geometry, plausible materials, and no obviously missing parts. False if it is a bare primitive, placeholder, or visually incomplete.
-      type: bool
-
-    - name: has_issues
-      description: True if there are visible defects - missing/pink textures, UV errors, stretched textures, artifacts, or incomplete geometry. False if it renders cleanly.
-      type: bool
+      max_items: 6
 
     # --
     # @raw
@@ -1534,21 +1938,28 @@ deepsearch:
     # defined in ``deepsearch.vision_endpoint.metadata_fields`` parameter.
     #
     image_prompt: |
-      You are an expert 3D asset cataloguer for USD Search, an asset library used across
-      synthetic data generation, robotics & simulation, industrial / warehouse / logistics,
-      autonomous driving, architecture, retail, digital twins, and games & film.
+      You are an indexing engine for USD Search, a 3D-asset search engine used across
+      robotics & simulation, synthetic data generation, industrial / warehouse /
+      logistics, autonomous driving, digital twins, and games & film.
 
-      Analyze the provided rendered images of a single 3D asset and produce rich, accurate,
-      searchable metadata. Optimize for retrieval: imagine the many different users —
-      a robotics engineer, an SDG pipeline, a warehouse digital-twin team, a game artist —
-      and capture the terms each of them would search for.
+      You are shown one or more rendered views of a SINGLE 3D asset. Nobody reads your
+      output: every word you emit is either a keyword-search term or a filter value.
+      Optimize purely for retrieval — capture EVERY distinctive term a real user might
+      type to find exactly this asset. Imagine a robotics engineer, an SDG pipeline, a
+      warehouse digital-twin team, and a game artist all searching for it, and cover
+      the terms each of them would use. Distinctive breadth, zero filler.
 
       ## How to analyze
-      1. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
-      2. Note its function and which domains/pipelines it suits.
-      3. Read any visible text, branding, labels, or signage.
-      4. Note materials, dominant colors, real-world scale, condition, and any mechanical traits.
-      5. Brainstorm the keywords and synonyms a real user would type to find it.
+      1. The images are multiple views of the same asset. Aggregate evidence across ALL
+         views: a part occluded in one view may be clear in another; text may be legible
+         in only one view. Report what at least one view clearly shows; reconcile
+         contradictions in favor of the clearer view.
+      2. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
+      3. Note its clearly visible parts, function, materials, dominant colors,
+         real-world scale, condition, and mechanical traits.
+      4. Transcribe visible text ONLY if every character is clearly legible in some view.
+      5. Brainstorm the keywords, synonyms, part names, and domain terms each kind of
+         user would type to find it.
 
       ## Output format (JSON object with exactly these fields)
       {metadata_types}
@@ -1558,16 +1969,26 @@ deepsearch:
 
       ## Rules
       - Output ONLY a valid JSON object with every field above — no prose, no markdown.
-      - Describe only what is actually visible. Never invent brands, text, or function.
-      - When a field doesn't apply or can't be determined, use "unknown" for single-value
-        string fields and an empty list `[]` for list fields. Do not guess.
-      - Be specific over generic; prefer precise nouns and industry terms.
-      - Use lowercase for tags, object_type, use_cases, environment, colors, materials,
+      - The renders are low resolution. Describe only what you can clearly resolve:
+        prefer omission over inference. Never invent brands, text, part details, or
+        function; never reconstruct partially legible text or infer branding from a
+        logo shape or color scheme.
+      - When a field can't be determined: use null for category, style, scale, and
+        state (never force a wrong value); "unknown" for object_type; and an empty
+        list `[]` for environment, colors, materials, physical_attributes, and
+        visible_text. Do not guess. caption, queries, and tags must ALWAYS describe
+        what IS visible, at whatever specificity the renders support (for a bare
+        primitive: "gray box-shaped object", tags like cube, box, gray).
+      - Every list is ordered most→least relevant.
+      - Be specific over generic. Never emit filler that matches almost every asset:
+        "3d model", "asset", "object", "mesh", "render", or near-universal phrases.
+      - Use lowercase for queries, tags, object_type, environment, colors, materials,
         physical_attributes (captions and verbatim visible_text keep natural casing).
-      - Pick exactly ONE value for category, style, scale, and state from their allowed lists.
-      - Tags are the most important field: be thorough, include synonyms and domain terms.
-      - Quality flags must be honest — they let users filter out broken assets.
-
+      - Fields with allowed lists (style, scale, state, physical_attributes items —
+        and category where the deployment defines a list) take values ONLY from
+        those lists, verbatim; null beats a wrong pick.
+      - Queries and tags are the most important fields: phrase them exactly the way
+        real users search — thorough, with synonyms, part names, and domain terms.
   # -- (map)
   # @raw
   #
@@ -1899,6 +2320,12 @@ deepsearch:
       #
       # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
       load_asset_as_reference: true
+
+      # -- (bool)
+      # @raw
+      #
+      # When set to ``True`` (default), each asset is auto-framed like the former Kit renderer: the camera is re-centered on the asset's silhouette (top and side views) and zoomed in to fill about 75% of the view. Set to ``False`` to frame by the asset's 3D bounding box only. Requests can still opt out with ``render_settings.adjust_camera_multiplier``.
+      adjust_framing: true
     # -- (map)
     # @raw
     #
@@ -2018,6 +2445,119 @@ deepsearch:
     #
     # __NOTE__: Only the properties from the default prims inside a USD stage
     # are indexed and searchable.
+    #
+    # ### Tuning the kit-worker sidecar
+    #
+    # Graph construction runs Kit in a ``kit-worker`` sidecar next to the plugin
+    # worker. The chart adds that container whenever ``requires_kit_worker`` is
+    # set (the default for this plugin), and everything about it — image,
+    # command, resources, memory watchdog, build timeout, caches — is configured
+    # under ``kit_worker``:
+    #
+    # ```yaml
+    # plugins:
+    #   asset_graph_generation:
+    #     requires_kit_worker: true
+    #     kit_worker:
+    #       resources:
+    #         requests: {cpu: 4, memory: 10Gi}
+    #         limits: {cpu: 8, memory: 20Gi}
+    #       memory_limit_mb: 17000     # soft watchdog, below limits.memory
+    #       timeout_seconds: 3600      # wall clock for one graph build
+    #       client_timeout_margin: 120 # plugin waits this much longer than the builder
+    #       cache:
+    #         enabled: true
+    #         mount_path: /cache
+    #         medium: ""               # "" = node disk, "Memory" = tmpfs
+    #         size_limit: 20Gi
+    #       shm_size: 1Gi
+    #       env: []
+    # ```
+    #
+    # Each value can be set on its own — e.g.
+    # ``--set deepsearch.plugins.asset_graph_generation.kit_worker.resources.limits.memory=32Gi``.
+    # That is the reason ``kit_worker`` is a map and not an entry in
+    # ``sidecar_containers``: Helm merges maps but replaces lists wholesale, so a
+    # list entry cannot be tuned one field at a time. ``sidecar_containers``
+    # remains available for *additional* sidecars; putting a ``kit-worker`` entry
+    # there while ``requires_kit_worker`` is set is rejected at render time
+    # (it would produce two containers with the same name).
+    #
+    # __Out-of-memory kills__ (container exit code 137) are the most common
+    # asset-graph failure. Two things control them:
+    #
+    # * ``resources.limits.memory`` — the hard ceiling. A stage that needs more
+    #   than this gets the container killed by the kernel, which takes the
+    #   in-flight request down with it.
+    # * ``memory_limit_mb`` — a soft watchdog *below* that ceiling. The builder
+    #   kills Kit itself when it is crossed and records
+    #   ``graph_construction_oom`` for that one asset, so the failure is
+    #   attributable and the sidecar keeps serving. Recommended: 80-90% of the
+    #   hard limit.
+    #
+    # Memory demand also scales with ``n_concurrent_queue_workers``, which
+    # becomes the number of Kit processes sharing the sidecar
+    # (``N_PARALLEL_PROCESSES``) — raise concurrency and memory together.
+    #
+    # __Build timeout__: ``timeout_seconds`` bounds a single graph build (default
+    # ``1800``). The plugin's HTTP client automatically gets
+    # ``timeout_seconds + client_timeout_margin``, so a build that runs long
+    # surfaces as the builder's own timeout — carrying a
+    # ``graph_construction_timeout`` status — rather than an opaque client-side
+    # one.
+    #
+    # ### Sidecar / package metadata (opt-in)
+    #
+    # The graph builder can pick up metadata that ships next to a USD file — a
+    # per-asset ``<stem>.json`` sidecar, or a package-level ``.metadata/*.json``
+    # bundle rooted at a manifest file above it — and merge it into the same
+    # ``usd_properties`` bag SimReady custom-layer metadata already lands in. On a
+    # key collision the sidecar value always wins: it is merged in last, after
+    # native USD prim properties and SimReady custom-layer metadata, and later
+    # sources within the catalog itself win over earlier ones. See
+    # ``docs/plans/sidecar-package-metadata.md`` for the full design and
+    # ``services/asset-graph-builder/graph_builder/sidecar_metadata.py`` for the
+    # implementation.
+    #
+    # Unset by default (no-op). Set ``kit_worker.sidecar_metadata_catalog`` to a
+    # full sidecar-metadata YAML document — the same shape as the example SimReady
+    # catalog that ships alongside the module at
+    # ``graph_builder/sidecar_metadata.simready.yaml`` (``package_root_max_depth``
+    # + ``sources: [...]``) — and the chart renders it into a ``ConfigMap``, mounts
+    # it into the ``kit-worker`` sidecar, and points ``SIDECAR_METADATA_CONFIG_PATH``
+    # at it. No custom image required. The example below is that shipped SimReady
+    # catalog verbatim — deliberately minimal, proving the mechanism end-to-end
+    # against ``data/simready_sample/apple_a01_usd_bom`` with a single per-asset
+    # ``<stem>.json`` sidecar source. Package-level files — the package manifest,
+    # ``root_usds.json``, ``packaging.bom.json``, the conformance report — are
+    # intentionally out of scope here (see the header comment in
+    # ``graph_builder/sidecar_metadata.simready.yaml``); a deployment that wants
+    # one adds a ``location: package_root`` source for it using the same
+    # ``flatten`` / ``list_membership`` / ``array_match_flatten`` extract kinds,
+    # no code change required:
+    #
+    # ```yaml
+    # plugins:
+    #   asset_graph_generation:
+    #     kit_worker:
+    #       sidecar_metadata_catalog:
+    #         package_root_max_depth: 6
+    #         sources:
+    #           # Per-asset flat sidecar: <stem>.json next to <stem>.usd, e.g.
+    #           # sm_apple_a01_01.json next to sm_apple_a01_01.usd — author,
+    #           # license, category, qcode, rigid_body_count, asset_extents, mass.
+    #           - name: asset_sidecar
+    #             location: sibling
+    #             filename: "{stem}.json"
+    #             prefix: "sidecar_"
+    #             extract:
+    #               kind: flatten
+    # ```
+    #
+    # A ``SIDECAR_METADATA_CONFIG_PATH`` set directly under ``kit_worker.env``
+    # still works and takes precedence over the chart-mounted path above (env
+    # entries there are appended after the chart-set ones) — useful for pointing
+    # at a catalog baked into a custom ``asset-graph-builder`` image instead.
     #
     # @notationType -- yaml
     asset_graph_generation:
@@ -2243,19 +2783,34 @@ ngsearch:
       # @raw
       #
       # Search service has the possibility to gather telemetry information about
-      # searches executed by the users of the system. This information can
-      # then be used to understand what queries are most frequently executed and also
-      # allow to track down issues if inconsistency appears in the search
-      # results.
+      # searches executed by the users of the system, and about the assets they
+      # download. This information can then be used to understand what queries are
+      # most frequently executed, which assets are being loaded, and also allow to
+      # track down issues if inconsistency appears in the search results.
       #
-      # Telemetry information includes:
+      # Search telemetry information includes:
       #
       #  * Overall duration of request processing
       #  * Time spent waiting for response from the Search backend
       #  * Parsed version of the input query that is then converted to a request to
       #    OpenSearch service
       #
-      # __NOTE__: that no information about the user is stored in the system.
+      # Asset-load telemetry (one event per `/download/asset` request) includes:
+      #
+      #  * The URL of the asset that was requested
+      #  * Whether the call actually downloaded data or only previewed the bundle size
+      #  * Bundle contents — file count, total bytes, and what was skipped or failed
+      #  * A timing breakdown: dependency resolution, size check, collection, and the
+      #    overall request duration
+      #
+      # See [`docs/asset-download.md`](../../docs/asset-download.md) for the full
+      # field list and how to read it.
+      #
+      # __NOTE__: both event types record the identity of the caller — the username
+      # from the bearer token, basic-auth credentials, or API key, or `anonymous`
+      # when the request carries none. If you do not want user identities in your
+      # logs, leave telemetry switched off (`use_search_telemetry=false`, the
+      # default); there is no separate setting for the username field.
       #
       # By default telemetry logging is switched off.  In order to enable telemetry collection, please set the following command line parameters during helm chart deployment:
       # ```bash
@@ -2264,6 +2819,20 @@ ngsearch:
       #     --set ngsearch.microservices.search_rest_api.search_telemetry_stdout=true
       # ```
       # You will then be able to see telemetry information being printed in the logs of the REST API service.
+      #
+      # __NOTE__: telemetry never leaves the cluster USD Search runs in. Each event
+      # is written as a line to the REST API container's log stream and nothing else
+      # — the service does not send it to NVIDIA or to any other external
+      # destination, and the chart deploys no component that would. Until you
+      # collect those logs the events live only as long as the container's log
+      # buffer does, and they are lost on restart or rotation.
+      #
+      # Retaining or analysing them is therefore your responsibility: point
+      # whichever log collector your cluster already runs (Fluent Bit, Fluentd,
+      # Vector, Promtail, and so on) at the REST API pods, and forward the records
+      # to your own destination. That collector is configured separately and is not
+      # part of this chart. Events are emitted as single-line JSON, so most
+      # collectors can parse them without a custom rule.
       #
       #
       use_search_telemetry: false
@@ -2285,6 +2854,9 @@ ngsearch:
       # result visually matches the input query. It compares the query against
       # the result's thumbnail and returns a match decision with confidence
       # score and reasoning.
+      #
+      # Defaults are filter mode, 50 concurrent provider calls per API
+      # process, and one asset view per verdict.
       #
       # To enable validation of search results, set the following parameter to true:
       # ```bash
@@ -2314,6 +2886,18 @@ ngsearch:
       #         max_concurrent_requests: <number of concurrent requests>
       # ```
       #
+      # Against a self-hosted vLLM engine set `max_tries: 2`: the engine closes an
+      # idle keep-alive connection after 5 s, and a verdict burst that starts
+      # about 5 s after the previous one can reuse a connection the server is
+      # closing; with a single try that transient error fails the whole
+      # validated request with a 503 (measured on 3 of 10 requests), with two
+      # tries it is one backoff retry.
+      #
+      # `image_max_px` caps the longest edge of every image sent to the VLM. The
+      # default 0 sends the stored 1024-px thumbnail as is; `image_max_px: 448`
+      # sends the evaluated 448-px view at about a quarter of the prompt tokens
+      # per verdict, and changes the verdict cache identity.
+      #
       # @notationType -- yaml
       validation:
         # --
@@ -2326,10 +2910,121 @@ ngsearch:
         # --
         # @raw
         #
+        # What the server does with verdicts when `validate_results=true`:
+        # `filter` (default) drops explicit non-matches, `rerank` keeps every
+        # hit and reorders by `similarity_score`, `annotate` attaches verdicts
+        # without changing order or membership (the pre-modes behavior).
+        #
+        # @notationType -- yaml
+        mode: "filter"
+        # --
+        # @raw
+        #
+        # How each verdict is produced: `generative` (default) returns a
+        # structured JSON verdict; `logprob` reads P(Yes)/P(No) from the short
+        # one-word judge question's first-token log-probs (provider must return
+        # `top_logprobs`, e.g. self-hosted vLLM). Both use the shared provider +
+        # `model` below; `logprob.*` tunes `logprob`. See docs/vlm-validation.md.
+        #
+        # @notationType -- yaml
+        method: "generative"
+        # --
+        # @raw
+        #
+        # Tuning for `method: logprob` (ignored otherwise).
+        #   cover_min      minimum combined Yes/No probability mass for a verdict
+        #                  to be trusted; below it the judge abstains.
+        #   abstain_as_no  what an abstain means: false (default) = no verdict
+        #                  (fail-open, the hit is neither dropped nor reordered),
+        #                  true = treat as is_match=false (filter mode drops it).
+        #   top_logprobs   how many top tokens to request per position (<=20).
+        #   max_tokens     completion token cap for the one-word judge call.
+        #   domain_context false (default): the judge sends its bare question and
+        #                  no system prompt. true: send the `domain_context` below
+        #                  alone as its system prompt (re-prefilled per verdict;
+        #                  changes the verdict cache identity). `generative`
+        #                  always renders it into its system prompt.
+        #   asset_facts    the facts a text query's judge reads from each request,
+        #                  between the query and the question: any of `path`,
+        #                  `vlm_metadata_caption`. [] (default) judges the rendered
+        #                  views alone; keep it off where file names mislead.
+        #                  Changes the verdict cache identity.
+        #   asset_path_roots  regexes for a path's content root: the path fact
+        #                  keeps what follows the first match, e.g.
+        #                  `/Isaac/[^/]+/Isaac/`. [] = the whole path.
+        #   asset_path_max_chars     the path fact keeps its last N characters.
+        #   asset_caption_max_chars  the caption fact keeps its first N.
+        #   image_text_query  an image query with a text query and one asset
+        #                  view: true (default) asks whether the candidate matches
+        #                  both; false names the text in the image question,
+        #                  which passes unrelated assets more often. Part of the
+        #                  verdict cache identity when true.
+        #
+        # @notationType -- yaml
+        logprob:
+          cover_min: 0.2
+          abstain_as_no: false
+          top_logprobs: 20
+          max_tokens: 6
+          domain_context: false
+          asset_facts: []
+          asset_path_roots: []
+          asset_path_max_chars: 300
+          asset_caption_max_chars: 200
+          image_text_query: true
+        # --
+        # @raw
+        #
         # Maximum number of concurrent requests to the VLM service.
         #
         # @notationType -- yaml
         max_concurrent_requests: 50
+        # --
+        # @raw
+        #
+        # Attempts per verdict call (-> USDSEARCH_VISION_VALIDATION_MAX_TRIES).
+        # 1 (the code default) = no retry: a transient provider error fails the
+        # whole validated request with a retryable 503. 2 = one backoff retry on
+        # transient errors only (permanent 4xx / length errors still give up at
+        # once); needed against a vLLM engine, whose 5 s idle keep-alive races a
+        # verdict burst that starts about 5 s after the previous one. Part of the
+        # verdict cache identity: changing it re-warms the cache.
+        #
+        # @notationType -- yaml
+        max_tries: 1
+        # --
+        # @raw
+        #
+        # Asset views sent to the VLM per verdict (highest-ranked unique views
+        # first). No upper bound; values above 8 log a warning since VLM cost
+        # and latency scale with it.
+        #
+        # @notationType -- yaml
+        max_images_per_validation: 1
+        # --
+        # @raw
+        #
+        # Longest edge in pixels of every image sent to the VLM, query and asset
+        # views alike (-> USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX). Larger images
+        # are shrunk (LANCZOS, aspect kept, never enlarged). 0 (the code default)
+        # sends them at their stored size, e.g. the 1024-px thumbnail. 448 is the
+        # evaluated view: about 250 instead of 1,077 prompt tokens per verdict on
+        # Qwen3.6. Part of the verdict cache identity when > 0: changing it
+        # re-warms the cache. The env is only emitted when non-zero.
+        #
+        # @notationType -- yaml
+        image_max_px: 0
+        # --
+        # @raw
+        #
+        # Extra OpenAI request-body fields merged into every validation call, as
+        # a JSON object (-> USDSEARCH_VISION_VALIDATION_EXTRA_BODY). Empty by
+        # default; the env is only emitted when set. Use it for provider knobs the
+        # OpenAI schema doesn't cover — e.g. disabling thinking on a vLLM-served
+        # Qwen: `{"chat_template_kwargs": {"enable_thinking": false}}`.
+        #
+        # @notationType -- yaml
+        extra_body: {}
         # --
         # @raw
         #
@@ -2355,9 +3050,11 @@ ngsearch:
           env_prefix: "USDSEARCH_LLM_"
           base_url: "https://inference-api.nvidia.com"
         # Model used for per-result validation, on the provider above.
-        model: "gcp/google/gemini-3.5-flash"
+        model: "gcp/google/gemini-3.1-flash-lite"
 
-        # Domain context to use for validation
+        # Domain context for validation. Always rendered into the `generative`
+        # system prompt; sent to the `logprob` judge only with
+        # `logprob.domain_context: true` above.
         domain_context: |
           You are validating search results for a 3D asset search engine used by professional 3D artists and developers.
 
@@ -2489,6 +3186,11 @@ ngsearch:
         # (-> USDSEARCH_LLM_PARSING_MAX_TOKENS, only set when non-empty). Raise
         # this if structured output gets truncated on large field catalogs.
         max_tokens: 1536
+        # Extra OpenAI request-body fields merged into every parser call, as a
+        # JSON object (-> USDSEARCH_LLM_PARSING_EXTRA_BODY). Empty by default; the
+        # env is only emitted when set — same purpose as validation/metadata
+        # extra_body.
+        extra_body: {}
         # Optional SEARCH-LLM-specific OpenAI-compatible endpoint. Leave
         # `base_url` and `api_key` empty to share the connection configured for
         # `validation` / `deepsearch.vision_endpoint`. Set either to override
@@ -2633,16 +3335,6 @@ ngsearch:
               kind: property_numeric
               property: "__polygon_count"
               property_env: USDSEARCH_LLM_PARSING_POLYGON_COUNT_PROPERTY
-          # --- Deployment-specific fields (not enabled by default) -----------------
-          # Filters tied to SimReady-style USD properties — rigid-body physics
-          # (physics_rigid_body), colliders (has_collider), object class
-          # (object_class), mass (physics_mass), density (physics_density) — are
-          # NOT part of the default catalog: they only return results on corpora
-          # indexed with those property conventions. A complete ready-to-use
-          # catalog that includes them ships next to search_fields.yaml as
-          # `search_fields.simready.yaml`; point USDSEARCH_LLM_PARSING_FIELDS_FILEPATH
-          # at it (helm: this `fields` list) or copy the entries you need. See
-          # docs/search-filters.md.
           - name: dimension
             type: number
             operators: [gt, gte, lt, lte]
@@ -2651,6 +3343,10 @@ ngsearch:
               - '"small objects under 1 meter" -> dimension lt 1'
               - '"large props over 3m" -> dimension gt 3'
             map: {kind: bbox}
+          # Physics filters (rigid body, collider, mass, density) are SimReady/Isaac-only
+          # and are NOT in the default catalog. Enable per deployment: use
+          # search_fields.simready.yaml (next to this file) or generate one with the
+          # /usd-property-catalog skill (see docs/search-filters.md).
 
     # -- (map)
     # @raw
@@ -2927,6 +3623,12 @@ rendering-service:
     # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
     load_asset_as_reference: true
 
+    # -- (bool)
+    # @raw
+    #
+    # When set to ``True`` (default), each asset is auto-framed like the former Kit renderer: the camera is re-centered on the asset's silhouette (top and side views) and zoomed in to fill about 75% of the view. Set to ``False`` to frame by the asset's 3D bounding box only. Requests can still opt out with ``render_settings.adjust_camera_multiplier``.
+    adjust_framing: true
+
   resources:
     requests:
       cpu: 10
@@ -2984,7 +3686,7 @@ rendering-service:
 # Using S3proxy functionality is it possible to seamlessly connect to any S3 compatible storage backends (e.g. Dell ObjectScale, DreamObjects, etc.)
 #
 # ```bash
-# helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
+# helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
 #   --namespace <namespace> \
 #   --set global.s3proxy.enabled=true \
 #   --set global.accept_eula=true \
@@ -3005,7 +3707,7 @@ rendering-service:
 # Using S3proxy functionality is it possible to seamlessly connect to Azure Blob Storage.
 #
 # ```bash
-# helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
+# helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
 #   --namespace <namespace> \
 #   --set global.s3proxy.enabled=true \
 #   --set global.accept_eula=true \
@@ -3026,7 +3728,7 @@ rendering-service:
 # Using S3proxy functionality is it possible to seamlessly connect to Google Cloud Storage.
 #
 # ```bash
-# helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
+# helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
 #   --namespace <namespace> \
 #   --set global.s3proxy.enabled=true \
 #   --set global.accept_eula=true \
@@ -3074,7 +3776,7 @@ rendering-service:
 # simplified to:
 
 # ```bash
-# helm install <deployment name> usdsearch-1.4.0.tgz \
+# helm install <deployment name> usdsearch-1.5.0.tgz \
 #   --namespace <namespace> \
 #   --set global.s3proxy.enabled=true \
 #   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \

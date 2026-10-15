@@ -18,6 +18,7 @@ import logging
 import os
 import time
 import warnings
+from collections import defaultdict
 from collections.abc import Iterable, Set
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -51,6 +52,8 @@ from nvidia.omniverse.notifications.consumer.v1beta.event_consumer_pb2_grpc impo
 from nvidia.omniverse.storage.capabilities.v1alpha.capabilities_pb2 import (
     ListServicesRequest,
     ListServicesResponse,
+    ListTopLevelAddressesRequest,
+    ListTopLevelAddressesResponse,
     ServiceEntry,
 )
 from nvidia.omniverse.storage.capabilities.v1alpha.capabilities_pb2_grpc import (
@@ -132,10 +135,15 @@ class StorageAPIStorageClient(StorageClient):
         self._event_consumer_service_stub: Optional[EventConsumerServiceStub] = None
         self._listing_finished = asyncio.Event()
         self._services: Optional[List[ServiceEntry]] = None
+        # Namespace roots served by this Storage API, resolved once at connection time via
+        # ListTopLevelAddresses (with a base_uri fallback). See resolve_root_addresses().
+        self._root_addresses: Optional[List[str]] = None
         self.events_queue: Optional[asyncio.Queue] = None
         self.subscription_task: Optional[asyncio.Task] = None
         self._openid_token: Optional[Dict[str, str]] = None
         self._token_refresh_time: Optional[float] = None
+        self._file_token: Optional[str] = None
+        self._file_token_refresh_time: Optional[float] = None
         self._subscription_reconnect_token: Optional[str] = None
         self._channel: Optional[aio.Channel] = None
         self._notification_service_channel: Optional[aio.Channel] = None
@@ -194,6 +202,17 @@ class StorageAPIStorageClient(StorageClient):
         return self.config.base_uri
 
     @property
+    def telemetry_host(self) -> Optional[str]:
+        """Falls back to ``grpc_endpoint`` when ``base_uri`` is unset (discovery mode).
+
+        ``base_uri`` is ``None`` there by design -- it doubles as the sentinel that keeps
+        path resolution and root discovery in multi-bucket mode (see ``get_path_from_uri`` /
+        ``resolve_root_addresses``) -- so telemetry needs its own fallback rather than
+        changing what ``base_uri`` means.
+        """
+        return self.config.base_uri or self.config.grpc_endpoint
+
+    @property
     def connection_info(self) -> str:
         return self.base_uri
 
@@ -232,6 +251,10 @@ class StorageAPIStorageClient(StorageClient):
         return self._metadata_service_stub
 
     def get_path_from_uri(self, uri: str) -> RemoteFilePath:
+        # get_path_from_uri / get_uri_from_path are inverses anchored on base_uri. Multi-root
+        # awareness deliberately lives only in is_supported_uri (and the subscription filters) —
+        # a bare relative path cannot be re-anchored to the right bucket, so round-tripping a
+        # non-base_uri URI through here would corrupt it.
         if self.base_uri is not None and uri.startswith(self.base_uri):
             return RemoteFilePath(uri[len(self.base_uri) :])
         elif self.base_uri is None:
@@ -248,7 +271,32 @@ class StorageAPIStorageClient(StorageClient):
         return RemoteFileUri(f"{self.base_uri.rstrip('/')}/{path.lstrip('/')}")
 
     def is_supported_uri(self, uri: RemoteFileUri) -> bool:
-        return uri.startswith(self.base_uri) if self.base_uri is not None else True
+        roots = self.root_addresses
+        if not roots:
+            # no roots known (base_uri unset and discovery not run) -> accept any full URI
+            return True
+        # Match on a root boundary (the root itself or a child under root + "/") rather than a bare
+        # string prefix, so a root of "s3://bucket" does not also accept "s3://bucketmeta/..." URIs.
+        return any(root and (uri == root.rstrip("/") or uri.startswith(root.rstrip("/") + "/")) for root in roots)
+
+    async def _close_subscription_generator(self) -> None:
+        """Cancel the active subscription stream without ever blocking forever.
+
+        A gRPC stream that terminated with an error (e.g. a wrong notification endpoint returning
+        UNIMPLEMENTED/404) is already ``done()`` and can never become ``cancelled()``. The previous
+        ``while not cancelled()`` wait therefore spun indefinitely inside the context manager's
+        ``finally``, swallowing the underlying error and turning a hard failure into a hang. Waiting on
+        ``done()`` with a bounded timeout lets the real exception propagate so the caller fails loudly.
+        """
+        gen = self._subscription_generator
+        self._subscription_generator = None
+        if gen is None or gen.done():
+            return
+        gen.cancel()
+        for _ in range(50):  # ~5s ceiling — never block forever
+            if gen.done():
+                break
+            await asyncio.sleep(0.1)
 
     @asynccontextmanager
     async def notification_service_connection_context(
@@ -265,11 +313,7 @@ class StorageAPIStorageClient(StorageClient):
                 finally:
                     self._event_consumer_service_stub = None
                     self._notification_service_channel = None
-                    if self._subscription_generator is not None and not self._subscription_generator.cancelled():
-                        self._subscription_generator.cancel()
-                        while not self._subscription_generator.cancelled():
-                            await asyncio.sleep(0.1)
-                        self._subscription_generator = None
+                    await self._close_subscription_generator()
         else:
             async with aio.insecure_channel(self.notification_service_grpc_endpoint) as channel:
                 self._notification_service_channel = channel
@@ -279,11 +323,7 @@ class StorageAPIStorageClient(StorageClient):
                 finally:
                     self._notification_service_channel = None
                     self._event_consumer_service_stub = None
-                    if self._subscription_generator is not None and not self._subscription_generator.cancelled():
-                        self._subscription_generator.cancel()
-                        while not self._subscription_generator.cancelled():
-                            await asyncio.sleep(0.1)
-                        self._subscription_generator = None
+                    await self._close_subscription_generator()
 
     @asynccontextmanager
     async def connection_context(self, *_, **__) -> AsyncIterator["StorageAPIStorageClient"]:
@@ -339,9 +379,29 @@ class StorageAPIStorageClient(StorageClient):
             raise ValueError("CapabilitiesServiceStub is not initialized")
         return self._capabilities_stub
 
+    def _read_token_file(self) -> str:
+        try:
+            with open(self.config.token_file, "r", encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError as exc:
+            # On a failed re-read, prefer the last-known-good token over an auth outage.
+            if self._file_token is not None:
+                logger.warning(
+                    "Failed to re-read Storage API token file %s: %s; keeping cached token",
+                    self.config.token_file,
+                    exc,
+                )
+                return self._file_token
+            raise
+
     async def _get_token(self) -> str:
         if self.config.token is not None:
             return self.config.token
+        if self.config.token_file is not None:
+            if self._file_token_refresh_time is None or time.time() > self._file_token_refresh_time:
+                self._file_token = self._read_token_file()
+                self._file_token_refresh_time = time.time() + self.config.token_refresh_interval
+            return self._file_token
         if self.config.openid_client_id is not None and self.config.openid_client_secret is not None:
             if self._token_refresh_time is None or time.time() > self._token_refresh_time:
                 client = AsyncOAuth2Client(
@@ -428,6 +488,104 @@ class StorageAPIStorageClient(StorageClient):
         )
         return list_services_response.services
 
+    @staticmethod
+    def _normalize_address_for_matching(address: str) -> str:
+        """Strip a URI scheme and trailing slash so allowlist entries match regardless of either."""
+        return address.split("://", 1)[-1].rstrip("/")
+
+    def _apply_allowed_top_level_addresses(self, addresses: List[str]) -> List[str]:
+        """Filter discovered addresses down to ``config.allowed_top_level_addresses``, if configured."""
+        allowed = self.config.allowed_top_level_addresses
+        if not allowed:
+            return addresses
+
+        normalized_allowed = {self._normalize_address_for_matching(a) for a in allowed}
+        filtered = [a for a in addresses if self._normalize_address_for_matching(a) in normalized_allowed]
+
+        normalized_discovered = {self._normalize_address_for_matching(a) for a in addresses}
+        unmatched = [a for a in allowed if self._normalize_address_for_matching(a) not in normalized_discovered]
+        if unmatched:
+            logger.warning(
+                "allowed_top_level_addresses entries not found among discovered Storage API addresses "
+                "(ignored): %s. Discovered: %s",
+                unmatched,
+                addresses,
+            )
+
+        if not filtered:
+            raise ValueError(
+                f"allowed_top_level_addresses={allowed!r} matched none of the discovered Storage API "
+                f"addresses {addresses!r}; check for typos or a bucket the server no longer serves."
+            )
+
+        return filtered
+
+    async def list_top_level_addresses(self) -> List[str]:
+        """Return the top level resource addresses (namespace roots / buckets) served by the server.
+
+        Thin wrapper over the Storage API ``CapabilitiesService.ListTopLevelAddresses`` RPC, restricted to
+        ``config.allowed_top_level_addresses`` when that is non-empty. A single Storage API deployment may
+        expose several buckets; this discovers them instead of requiring a manually configured ``base_uri``.
+        Callers that need the fallback behaviour should use :meth:`resolve_root_addresses` instead of
+        calling this directly.
+        """
+        response: ListTopLevelAddressesResponse = await self.capabilities_stub.ListTopLevelAddresses(
+            ListTopLevelAddressesRequest(), metadata=await self.get_grpc_request_metadata()
+        )
+        addresses = [self._convert_from_grpc_string(entry.top_level_address) for entry in response.items]
+        return self._apply_allowed_top_level_addresses(addresses)
+
+    async def resolve_root_addresses(self) -> List[str]:
+        """Resolve the set of namespace roots to operate over.
+
+        An explicitly configured ``base_uri`` is authoritative: it scopes the client to that single
+        namespace and discovery is skipped (``allowed_top_level_addresses`` is then irrelevant). Only when
+        ``base_uri`` is unset do we discover the served buckets via ``ListTopLevelAddresses`` (a deployment
+        may serve several), already filtered by ``allowed_top_level_addresses`` if set.
+
+        When ``base_uri`` is unset and discovery is unavailable (server does not implement the call) or
+        returns nothing, an empty set is returned (logged as a WARNING) rather than raising: operations
+        that receive explicit URIs/paths still work, and helpers that genuinely need a root degrade
+        gracefully (e.g. subscriptions fall back to the requested path).
+        """
+        if self.config.base_uri is not None:
+            if self.config.allowed_top_level_addresses:
+                logger.warning(
+                    "allowed_top_level_addresses=%s is ignored because base_uri=%r already scopes the "
+                    "client to a single namespace.",
+                    self.config.allowed_top_level_addresses,
+                    self.config.base_uri,
+                )
+            return [self.config.base_uri]
+
+        try:
+            addresses = await self.list_top_level_addresses()
+        except aio.AioRpcError as e:
+            logger.warning(
+                "Storage API ListTopLevelAddresses unavailable (status=%s) and no base_uri is configured; "
+                "namespace roots left unresolved. Details: %s",
+                e.code(),
+                e,
+            )
+            return []
+
+        if not addresses:
+            logger.warning(
+                "Storage API ListTopLevelAddresses returned no addresses and no base_uri is configured; "
+                "namespace roots left unresolved."
+            )
+            return []
+
+        logger.info("Discovered %d Storage API top level address(es): %s", len(addresses), addresses)
+        return addresses
+
+    @property
+    def root_addresses(self) -> List[str]:
+        """The resolved namespace roots. Defaults to ``[base_uri]`` (when set) until discovery has run."""
+        if self._root_addresses is not None:
+            return self._root_addresses
+        return [self.config.base_uri] if self.config.base_uri is not None else []
+
     def _convert_to_grpc_string(self, uri: RemoteFileUri) -> str:
         if self.config.apply_url_quote:
             return quote_uri(uri)
@@ -453,6 +611,9 @@ class StorageAPIStorageClient(StorageClient):
             if e.code() == StatusCode.NOT_FOUND:
                 logger.info("URI %s is not found: %s", uri, e)
                 return False, None
+            elif e.code() == StatusCode.PERMISSION_DENIED:
+                logger.info("Access to %s denied: %s", uri, e)
+                return False, None
             elif e.code() == StatusCode.ABORTED:
                 logger.warning("Stat request with uri %s is aborted: %s", uri, e)
                 return False, None
@@ -470,6 +631,8 @@ class StorageAPIStorageClient(StorageClient):
         """
         if self._services is None:
             self._services = await self.list_services()
+        if self._root_addresses is None:
+            self._root_addresses = await self.resolve_root_addresses()
 
     async def list_stat_wrapper(self, uri: RemoteFileUri) -> AsyncIterator[ListStatResponse]:
         try:
@@ -547,18 +710,27 @@ class StorageAPIStorageClient(StorageClient):
         processing_fn: Optional[Callable[[PathType], Union[PathType, Awaitable[PathType]]]] = None,
         max_items: Optional[int] = None,
     ) -> AsyncIterator[PathType]:
-        item_count = 0
-        iterators: List[Tuple[AsyncIterator[ListResponse], Optional[RemoteFileUri]]] = []
+        # Each top-level listing gets its own max_items budget (matching the S3 backend's per-path
+        # limit): one budget per explicitly requested path, or one per discovered root when no path is
+        # given. Subfolders inherit their top-level ancestor's budget. Entries are
+        # (iterator, uri, budget_key); subfolders are appended during traversal.
+        iterators: List[Tuple[AsyncIterator[ListResponse], Optional[RemoteFileUri], str]] = []
+        item_counts: Dict[str, int] = defaultdict(int)
 
         if len(uri_list) == 0:
+            # No explicit URIs: enumerate every discovered namespace root (bucket), each with its own budget.
+            grpc_metadata = await self.get_grpc_request_metadata()
             iterators = [
                 (
                     self.file_folder_service_stub.ListStat(
-                        ListStatRequest(folder=FolderAddress(uri=f"{self.base_uri.rstrip('/')}/")),
-                        metadata=await self.get_grpc_request_metadata(),
+                        ListStatRequest(folder=FolderAddress(uri=f"{root.rstrip('/')}/")),
+                        metadata=grpc_metadata,
                     ),
                     None,
+                    root,
                 )
+                for root in self.root_addresses
+                if root
             ]
         else:
             for uri in uri_list:
@@ -571,19 +743,25 @@ class StorageAPIStorageClient(StorageClient):
                 exists, item = await self.check_if_exists(uri)
                 # check if the URL is a folder - if not - return it back
                 if exists:
-                    item_count += 1
+                    item_counts[uri] += 1
                     if processing_fn is None:
                         yield item
                     else:
                         yield await run_callable(processing_fn, item)
                 else:
-                    iterators.append((self.list_stat_wrapper(uri), uri))
-
-        iterators_count = len(iterators)
+                    iterators.append((self.list_stat_wrapper(uri), uri, uri))
 
         # prepare paths
         list_stat_response: ListStatResponse
-        for iterator, uri in iterators:
+        index = 0
+        while index < len(iterators):
+            iterator, uri, budget_key = iterators[index]
+            index += 1
+
+            # this top-level listing has already reached its max_items budget
+            if max_items is not None and item_counts[budget_key] >= max_items:
+                continue
+
             async for list_stat_response in iterator:
                 subfolder_addresses: FolderAddress
                 for subfolder_addresses in getattr(list_stat_response, "subfolder_addresses", []):
@@ -595,12 +773,12 @@ class StorageAPIStorageClient(StorageClient):
                         (
                             self.list_stat_wrapper(subfolder_addresses.uri),
                             subfolder_addresses.uri,
+                            budget_key,
                         )
                     )
 
                 item: ListItem
                 for item in getattr(list_stat_response, "entries", []):
-                    item_count += 1
 
                     if match_patterns(item.resource_address, patterns=ignore_patterns):
                         continue
@@ -618,14 +796,12 @@ class StorageAPIStorageClient(StorageClient):
                             ),
                         )
 
-                    if max_items is not None and item_count >= max_items * iterators_count:
+                    item_counts[budget_key] += 1
+                    if max_items is not None and item_counts[budget_key] >= max_items:
                         break
 
-                if max_items is not None and item_count >= max_items * iterators_count:
+                if max_items is not None and item_counts[budget_key] >= max_items:
                     break
-
-            if max_items is not None and item_count >= max_items * iterators_count:
-                break
 
     async def _list_items_using_enumerate(
         self,
@@ -634,10 +810,14 @@ class StorageAPIStorageClient(StorageClient):
         processing_fn: Optional[Callable[[PathType], Union[PathType, Awaitable[PathType]]]] = None,
         max_items: Optional[int] = None,
     ) -> AsyncIterator[PathType]:
-        item_count = 0
-        iterators: List[Tuple[AsyncIterator[EnumerateResponse], Optional[RemoteFileUri]]] = []
+        # Each enumeration gets its own max_items budget (matching _list_items_using_list and the S3
+        # backend's per-path limit): one budget per explicitly requested URI, or one per discovered root
+        # when no URI is given. Enumerate scopes to its resource_address, so each iterator covers exactly
+        # one root/URI. Entries are (iterator, uri, budget_key).
+        iterators: List[Tuple[AsyncIterator[EnumerateResponse], Optional[RemoteFileUri], str]] = []
         if len(uri_list) == 0:
-            iterators = [(self.list_enumerate_wrapper(self.base_uri), None)]
+            # No explicit URIs: enumerate every discovered namespace root (bucket), each with its own budget.
+            iterators = [(self.list_enumerate_wrapper(root), None, root) for root in self.root_addresses if root]
         else:
             for uri in uri_list:
 
@@ -648,30 +828,33 @@ class StorageAPIStorageClient(StorageClient):
 
                 exists, item = await self.check_if_exists(uri)
                 if exists and item.type == FileTypeMapping.asset:
-                    item_count += 1
+                    # A direct asset hit yields a single item, well within any per-URI budget.
                     if processing_fn is None:
                         yield item
                     else:
                         yield await run_callable(processing_fn, item)
                 else:
-                    iterators.append((self.list_enumerate_wrapper(uri), uri))
+                    iterators.append((self.list_enumerate_wrapper(uri), uri, uri))
 
         # prepare paths
         list_queue: asyncio.Queue[PathType] = asyncio.Queue(maxsize=self.config.list_queue_limit)
         queue_population_finished = asyncio.Event()
 
         async def populate_list_queue() -> None:
-            item_count = 0
-            for iterator, _ in iterators:
+            item_counts: Dict[str, int] = defaultdict(int)
+            for iterator, _, budget_key in iterators:
+                if max_items is not None and item_counts[budget_key] >= max_items:
+                    continue
                 async for enumerate_response in iterator:
                     for item in enumerate_response.items:
                         if match_patterns(item.resource_address, patterns=ignore_patterns):
                             continue
                         await list_queue.put(item)
-                        item_count += 1
-                        if max_items is not None and item_count >= max_items:
-                            queue_population_finished.set()
-                            return
+                        item_counts[budget_key] += 1
+                        if max_items is not None and item_counts[budget_key] >= max_items:
+                            break
+                    if max_items is not None and item_counts[budget_key] >= max_items:
+                        break
 
             queue_population_finished.set()
 
@@ -697,6 +880,42 @@ class StorageAPIStorageClient(StorageClient):
             except asyncio.CancelledError:
                 pass
 
+    def _subscription_roots(self) -> List[str]:
+        """Namespace roots to scope a subscription to.
+
+        An explicitly configured ``base_uri`` is the subscription scope: it is the namespace the
+        operator chose to watch, and the Storage API's notification ``resource_id``s follow it, so we
+        must filter on that exact prefix (not on whatever ``ListTopLevelAddresses`` reports, which may
+        use a different string form). Only when ``base_uri`` is unset do we fan out across every
+        discovered bucket.
+        """
+        if self.config.base_uri is not None:
+            return [self.config.base_uri]
+        return [root for root in self.root_addresses if root]
+
+    def _subscription_resource_ids(self, path: Optional[str] = None) -> List[str]:
+        """Build one folder resource-id per subscription root for a sub-``path``.
+
+        A deployment can serve multiple buckets, so a relative ``path`` cannot be anchored to one URL.
+        We anchor it under every subscription root (see :meth:`_subscription_roots`) and let the server
+        OR the resulting filters together. Storage event subscriptions only accept **folder** values, so
+        every resource_id ends with ``/``.
+
+        When no root is known (base_uri unset and discovery unavailable) we fall back to the requested
+        ``path`` anchored via :meth:`get_uri_from_path` — the pre-discovery behaviour, which lets a
+        client that watches an explicit path keep working against a server without ``ListTopLevelAddresses``.
+        Returns ``[]`` only when neither a root nor a path is available.
+        """
+        roots = [root.rstrip("/") for root in self._subscription_roots() if root]
+        if not roots:
+            if path is None or path in ("", "/"):
+                return []
+            anchored = self.get_uri_from_path(path)
+            return [anchored if anchored.endswith("/") else f"{anchored}/"]
+        if path is None or path in ("", "/"):
+            return [f"{root}/" for root in roots]
+        return [f"{root}/{path.strip('/')}/" for root in roots]
+
     def prepare_subscription_request(
         self,
         path: Optional[str] = None,
@@ -705,18 +924,34 @@ class StorageAPIStorageClient(StorageClient):
     ) -> Iterator[ConsumeNonDurableEventsRequest]:
         """
         Prepare a request to subscribe to notifications.
+
+        One resource filter is emitted per served backend root (filters within a FilterGroup are OR'd
+        by the server). The Storage API requires at least one folder resource filter for storage events,
+        so a subscription cannot be built when no namespace root is known.
+
+        On reconnect (``reconnect_token`` set) the server reuses the existing queue's filters, and per
+        the proto ``filter_groups`` must be omitted unless we are intentionally changing them (which
+        also requires ``previous_filter_groups``). We never change filters mid-stream, so filters are
+        only sent on the initial connect.
         """
         request = ConsumeNonDurableEventsRequest(reconnect_token=self._subscription_reconnect_token)
 
-        storage_resource_filter = ResourceFilter(
-            filter_type=filter_type,
-            resource_id=self.get_uri_from_path(path),
-        )
+        if not self._subscription_reconnect_token:
+            resource_ids = self._subscription_resource_ids(path)
+            if not resource_ids:
+                raise ValueError(
+                    "Cannot subscribe to Storage API events: no namespace root is known. Set base_uri "
+                    "(STORAGE_API_BASE_URI) or ensure ListTopLevelAddresses is available — storage event "
+                    "subscriptions require at least one folder resource_id."
+                )
+            storage_resource_filters = [
+                ResourceFilter(filter_type=filter_type, resource_id=resource_id) for resource_id in resource_ids
+            ]
 
-        for event_type in storage_events:
-            fg = FilterGroup(event_type=event_type)
-            fg.filters.append(storage_resource_filter)
-            request.filter_groups.append(fg)
+            for event_type in storage_events:
+                fg = FilterGroup(event_type=event_type)
+                fg.filters.extend(storage_resource_filters)
+                request.filter_groups.append(fg)
 
         def request_iterator() -> Iterator[ConsumeNonDurableEventsRequest]:
             for _ in range(0, 1):
@@ -730,6 +965,11 @@ class StorageAPIStorageClient(StorageClient):
         """
 
         self._subscription_generator = None
+
+        # Client-side safety net: the server already filters by these prefixes, but if it emits an
+        # event outside the served roots / sub-path we drop it here before a Stat round-trip. Empty
+        # means no roots are known -> accept everything (matches the empty greedy server filter).
+        allowed_prefixes = self._subscription_resource_ids(path)
 
         while True:
             try:
@@ -754,6 +994,14 @@ class StorageAPIStorageClient(StorageClient):
                                     field_value,
                                 ) in event.message.fields.items():
                                     if field_key == "resource_address":
+                                        if allowed_prefixes and not any(
+                                            field_value.string_value.startswith(prefix) for prefix in allowed_prefixes
+                                        ):
+                                            logger.debug(
+                                                "Event outside subscribed roots, skipping: %s",
+                                                field_value.string_value,
+                                            )
+                                            continue
                                         exists, item = await self.check_if_exists(field_value.string_value)
                                         if exists:
                                             item.source = SubscriptionSource.subscription.value
@@ -801,9 +1049,11 @@ class StorageAPIStorageClient(StorageClient):
         if self.config.notification_subscription_enabled:
             self.events_queue = asyncio.Queue()
             self.subscription_task = asyncio.create_task(
+                # Pass the relative sub-path; subscribe_to_notifications anchors it under every served
+                # backend root (multiple buckets are supported), so no single URL is assumed here.
                 self.subscribe_to_notifications(
                     self.events_queue,
-                    path=self.get_uri_from_path(path) if path is not None else None,
+                    path=path,
                 )
             )
 
@@ -830,7 +1080,12 @@ class StorageAPIStorageClient(StorageClient):
                     if self.subscription_task is not None and self.subscription_task.done():
                         raise self.subscription_task.exception()
                     if self.events_queue is not None and not self.events_queue.empty():
-                        yield [self.events_queue.get_nowait()]
+                        event = self.events_queue.get_nowait()
+                        # the subscription task reports failures by enqueuing the exception; surface it
+                        # as a raise rather than yielding it as if it were a PathType item
+                        if isinstance(event, BaseException):
+                            raise event
+                        yield [event]
 
                 n_items += 1
                 logger.debug("Found item %s", item.uri)
@@ -848,7 +1103,11 @@ class StorageAPIStorageClient(StorageClient):
                     if self.subscription_task is not None and self.subscription_task.done():
                         raise self.subscription_task.exception()
                     if self.events_queue is not None:
-                        yield [await self.events_queue.get()]
+                        event = await self.events_queue.get()
+                        # surface an enqueued subscription failure as a raise, not a bogus item
+                        if isinstance(event, BaseException):
+                            raise event
+                        yield [event]
 
             else:
                 if self.config.re_scan_timeout is None or self.config.re_scan_timeout <= 0:
@@ -965,6 +1224,7 @@ class StorageAPIStorageClient(StorageClient):
             self.file_object_service_stub,
             self._convert_to_grpc_string(uri),
             download_preference=self.config.download_preference,
+            metadata=await self.get_grpc_request_metadata(),
         )
 
         return data

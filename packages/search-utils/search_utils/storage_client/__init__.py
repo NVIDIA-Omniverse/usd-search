@@ -104,6 +104,27 @@ class StorageClient(ABC):
     def base_uri(self) -> str:
         pass
 
+    @property
+    def telemetry_host(self) -> Optional[str]:
+        """Storage backend host to attribute telemetry events to.
+
+        Defaults to ``base_uri``. Backends where ``base_uri`` can legitimately be unset
+        (e.g. the Storage API in multi-bucket discovery mode) override this to fall back
+        to another host identifier, so telemetry doesn't lose backend attribution just
+        because no single namespace root is configured.
+        """
+        return self.base_uri
+
+    async def list_top_level_addresses(self) -> List[str]:
+        """List the top level resource addresses (namespace roots) served by this backend.
+
+        A single storage deployment may expose several buckets / namespaces. Backends that
+        can enumerate them (e.g. the Storage API via ``ListTopLevelAddresses``) override this
+        to return the discovered set. The default single-root implementation simply returns
+        the configured ``base_uri``.
+        """
+        return [self.base_uri]
+
     @abstractmethod
     async def authenticate_connection(self, c: Any, token: str, timeout: Optional[float] = None) -> StorageConnection:
         pass

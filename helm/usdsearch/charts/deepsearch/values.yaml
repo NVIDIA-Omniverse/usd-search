@@ -57,98 +57,213 @@ vision_endpoint:
     env_prefix: "USDSEARCH_LLM_"
     base_url: "https://inference-api.nvidia.com"
   # Model used for batch metadata generation, on the provider above.
-  metadata_model: "gcp/google/gemini-3.1-pro-preview"
+  # Default from the 2026-08 metadata bake-off (see docs/models-and-config.md).
+  metadata_model: "azure/openai/gpt-5.6-sol"
+  # Extra OpenAI request-body fields merged into every metadata-generation call,
+  # as a JSON object (-> USDSEARCH_VISION_METADATA_EXTRA_BODY on the plugin
+  # worker). Empty by default; the env is only emitted when set. Same purpose as
+  # the validation/parsing extra_body — e.g. disable thinking on a vLLM-served
+  # Qwen: `{"chat_template_kwargs": {"enable_thinking": false}}`.
+  metadata_extra_body: {}
+
+  # Request-size limits for metadata generation. These values are global by
+  # design: one monitor-crawler computes the cache identity for every metadata
+  # worker, so all processes must resolve identical settings.
+  input:
+    # Maximum number of views sent in one VLM request.
+    max_images: 16
+    # Maximum pixel length of either image edge (shrink-only).
+    max_px: 512
+    # Maximum total encoded image payload per request (8 MiB).
+    max_request_bytes: 8388608
+  # Optional output-contract revision. Empty (default) = legacy asset-only cache
+  # identity: upgrading never reprocesses unchanged assets. Any non-empty value
+  # opts in: the revision and the limits above join the cache identity, and
+  # changing any of them (bump the revision after a model/prompt/schema change)
+  # makes unchanged assets eligible for reprocessing.
+  metadata_revision: ""
 
   #
   # Configuration of metadata fields extracted by the VLM-based auto-captioning system
   #
-  # Default schema mirrors packages/llm-client/.../metadata/metadata_fields.yaml so
-  # the helm-shipped default matches the package. Edit per deployment as needed.
   metadata_fields:
 
   - name: caption
-    description: A concise, specific title (5-12 words) naming the object precisely, e.g. "Counterbalance warehouse forklift" or "Ergonomic mesh office chair".
-    type: str
-
-  - name: description
-    description: One or two factual sentences describing what the asset is, its notable visual features, materials, and typical function. Describe only what is visible; do not invent backstory.
+    description: >
+      A concise, specific title (5-12 words) naming the object precisely.
+      Format: "[distinguishing adjectives] [specific object name]".
+      Examples: "Counterbalance warehouse forklift", "Galvanized steel pallet rack",
+      "Articulated 6-axis industrial robot arm", "Weathered red shipping container",
+      "Ergonomic mesh office chair", "Stainless commercial kitchen prep table".
     type: str
 
   - name: object_type
-    description: The single most specific common noun for the object (lowercase), e.g. "forklift", "office chair", "fire extinguisher", "robot gripper". Prefer the precise term over a generic one.
+    description: >
+      The single most specific common noun for the object (lowercase), e.g.
+      "forklift", "pallet rack", "conveyor belt", "office chair", "fire extinguisher",
+      "traffic cone", "robot gripper", "cardboard box", "transformer", "hand drill".
+      Prefer the precise term over a generic one ("sectional sofa", not "furniture").
     type: str
 
-  - name: category
-    description: The single best top-level category (choose exactly one), e.g. furniture, appliance, electronics, lighting, vehicle, robot, machinery, tool, material_handling, container, structure, signage, safety_equipment, sensor, prop, other.
-    type: str
+  # Free-text `category` (no allowed_values list) gives poor results — the model
+  # needs a closed vocabulary to pick from. DISABLED here; re-enable per
+  # deployment via the allowed_values list below (uncomment the whole field), or
+  # by overriding vision_endpoint.metadata_fields in helm values. The list is
+  # corpus-derived for the Isaac/SimReady corpus (see the re-derivation runbook
+  # above); off-list values coerce to null when enabled. Value hints: primitive_shape
+  # = bare geometric primitive (cube, cylinder, plane); part = generic mechanical
+  # component that is not a fastener (rod, peg, spacer, bracket); hardware =
+  # fasteners (nut, bolt, screw, washer); prop = recognizable everyday object
+  # used as set dressing.
+  # - name: category
+  #   description: >
+  #     The single best top-level category as a short lowercase noun, e.g.
+  #     furniture, vehicle, robot, signage, container; use null when no clear
+  #     category applies — a wrong category is worse than none.
+  #   type: str
+  #   nullable: true
+  #   allowed_values: [furniture, appliance, electronics, lighting, vehicle,
+  #     robot, machinery, tool, hardware, part, primitive_shape, equipment,
+  #     medical_equipment, material_handling, container, packaging, structure,
+  #     fixture, signage, safety_equipment, sensor, instrument, weapon, clothing,
+  #     food, nature, terrain, character, decoration, prop]
+
+  - name: queries
+    description: >
+      Short search phrases a person would actually type into a search box to find
+      this asset — aim for 5-10 (at least 3 required; even a bare primitive supports
+      shape/color phrases like "gray cube"), lowercase, ordered most generic first.
+      Start with the plain
+      object name, then common synonyms, then the few most distinctive qualified
+      phrasings: "forklift", "fork truck", "warehouse forklift", "yellow
+      counterbalance forklift". Each phrase 1-4 words, written the way users
+      search — no full sentences, no catalog or engineering jargon, and no generic
+      filler ("3d model", "asset", "object", "prop"). These phrases are matched
+      directly by keyword search.
+    type: list[str]
+    min_items: 3
+    max_items: 10
 
   - name: tags
-    description: 8-15 lowercase keywords a user might search, most→least relevant - object name + synonyms, specific type/variant, visible parts/features, brand or model text, and domain/industry terms. This field drives most retrieval.
+    description: >
+      Lowercase keywords a user might actually search, ordered most→least relevant —
+      aim for 8-15 (at least 3 required). Cover: the object name + synonyms
+      (forklift, lift truck, fork truck); specific type/variant (counterbalance,
+      reach truck, pallet jack); clearly visible parts and part-level features
+      (forks, mast, overhead guard, cab, hydraulics); brand or model text ONLY if
+      clearly legible; and domain/industry terms (warehouse, logistics, material
+      handling). Be thorough, include synonyms, and use the words users type — not
+      catalog or engineering jargon. Never pad with generic filler ("3d model",
+      "asset", "object", "mesh", "prop") or attributes you cannot clearly see; for
+      bare primitives and abstract assets, shape and color terms (cube, box, sphere,
+      gray) count as valid tags.
     type: list[str]
-
-  - name: use_cases
-    description: Pipelines, domains, or applications this asset suits (lowercase, 0-6), e.g. "synthetic data generation", "warehouse simulation", "robotics manipulation", "digital twin", "game environment".
-    type: list[str]
+    min_items: 3
+    max_items: 15
 
   - name: environment
-    description: Typical real-world settings where this asset is found (lowercase, 0-5), e.g. "warehouse", "factory floor", "office", "retail store", "kitchen", "outdoor".
+    description: >
+      Typical real-world settings where this asset is found (lowercase, 0-5), e.g.
+      "warehouse", "factory floor", "loading dock", "office", "retail store",
+      "hospital", "kitchen", "construction site", "outdoor", "urban street",
+      "residential interior", "laboratory".
     type: list[str]
+    max_items: 5
 
   - name: colors
-    description: Dominant colors, most→least prominent (max 5), using simple searchable names (red, blue, gray, beige, ...). Add a modifier only when distinctive (dark_gray, safety_yellow).
+    description: >
+      Dominant colors, most→least prominent (max 5). Simple searchable names:
+      red, orange, yellow, green, blue, purple, pink, brown, black, white, gray,
+      beige, gold, silver. Add a modifier only when distinctive (dark_gray, safety_yellow).
     type: list[str]
+    max_items: 5
 
   - name: materials
-    description: Apparent materials, primary→secondary (max 5), e.g. steel, aluminum, wood, plastic, glass, fabric, leather, rubber, concrete, cardboard.
+    description: >
+      Apparent materials, primary→secondary (max 5). Common terms: steel, aluminum,
+      metal, wood, plastic, glass, fabric, leather, rubber, concrete, stone, ceramic,
+      cardboard, paper, foam, carbon_fiber, chrome, brass, composite. Only materials
+      you can clearly identify at this resolution — when unsure between specific
+      metals, say "metal".
     type: list[str]
+    max_items: 5
 
   - name: style
-    description: The dominant visual/representation style (choose exactly one), e.g. photorealistic, realistic, stylized, cartoon, low_poly, hand_painted, sci_fi, modern, industrial, cad, scanned.
+    description: >
+      The dominant REPRESENTATION style — how the asset is rendered/authored, not
+      its design aesthetic (aesthetic terms like "industrial", "modern", "vintage"
+      belong in tags). realistic covers photorealistic. Choose exactly ONE from
+      the allowed list; use null if truly undeterminable.
     type: str
+    nullable: true
+    allowed_values: [realistic, stylized, low_poly, cad, scanned]
 
   - name: scale
-    description: Approximate real-world size class (choose exactly one) - tiny (fits in a hand), small (desktop), medium (human-scale / furniture), large (vehicle / machine), huge (building / structure), unknown.
+    description: >
+      Approximate real-world size class. Choose exactly ONE:
+      tiny (fits in a hand), small (desktop), medium (human-scale / furniture),
+      large (vehicle / machine), huge (building / structure); use null if the
+      size cannot be judged.
     type: str
+    nullable: true
+    allowed_values: [tiny, small, medium, large, huge]
 
   - name: state
-    description: Apparent condition / finish (choose exactly one) - pristine, new, used, worn, weathered, damaged, dirty, unknown.
+    description: >
+      Apparent condition. Choose exactly ONE — new (clean / like-new), used
+      (visibly in service), worn (heavy wear, weathering, or dirt), damaged
+      (broken or missing parts); use null if condition cannot be judged.
     type: str
+    nullable: true
+    allowed_values: [new, used, worn, damaged]
 
   - name: physical_attributes
-    description: Functional / mechanical traits relevant to simulation and robotics (lowercase, 0-6), from - articulated, has_moving_parts, wheeled, deformable, rigid, stackable, graspable, openable, foldable, transparent, emissive, reflective, mounted, modular.
+    description: >
+      Functional / mechanical traits relevant to simulation and robotics
+      (lowercase, 0-6), only from the allowed list. Rigid is the default —
+      tag only what deviates from a plain static rigid object, and only traits
+      clearly evident in the views.
     type: list[str]
+    max_items: 6
+    allowed_values: [articulated, has_moving_parts, wheeled, deformable,
+      stackable, graspable, openable, foldable, transparent, emissive,
+      reflective, mounted, modular]
 
   - name: visible_text
-    description: Any legible text, labels, brand names, model numbers, signage, or warnings on the asset (verbatim, 0-6 short strings). Empty list if none. A strong, unique search signal.
+    description: >
+      Text on the asset that is CLEARLY LEGIBLE at the provided resolution
+      (verbatim, 0-6 short strings): labels, brand names, model numbers, signage,
+      warnings. If you cannot read every character of a string, omit it entirely —
+      never reconstruct partial text or infer branding from a logo shape or color
+      scheme. Empty list if none. Legible text is a strong, unique search signal
+      (e.g. brand, "EXIT", load ratings, hazard labels); invented text is the
+      worst kind of index pollution.
     type: list[str]
+    max_items: 6
 
-  - name: is_high_quality
-    description: True if the asset looks high quality - complete and properly textured, with clean geometry, plausible materials, and no obviously missing parts. False if it is a bare primitive, placeholder, or visually incomplete.
-    type: bool
-
-  - name: has_issues
-    description: True if there are visible defects - missing/pink textures, UV errors, stretched textures, artifacts, or incomplete geometry. False if it renders cleanly.
-    type: bool
-
-  #
-  # Image prompt provided to the VLM-based auto-captioning system
-  #
   image_prompt: |
-    You are an expert 3D asset cataloguer for USD Search, an asset library used across
-    synthetic data generation, robotics & simulation, industrial / warehouse / logistics,
-    autonomous driving, architecture, retail, digital twins, and games & film.
+    You are an indexing engine for USD Search, a 3D-asset search engine used across
+    robotics & simulation, synthetic data generation, industrial / warehouse /
+    logistics, autonomous driving, digital twins, and games & film.
 
-    Analyze the provided rendered images of a single 3D asset and produce rich, accurate,
-    searchable metadata. Optimize for retrieval: imagine the many different users —
-    a robotics engineer, an SDG pipeline, a warehouse digital-twin team, a game artist —
-    and capture the terms each of them would search for.
+    You are shown one or more rendered views of a SINGLE 3D asset. Nobody reads your
+    output: every word you emit is either a keyword-search term or a filter value.
+    Optimize purely for retrieval — capture EVERY distinctive term a real user might
+    type to find exactly this asset. Imagine a robotics engineer, an SDG pipeline, a
+    warehouse digital-twin team, and a game artist all searching for it, and cover
+    the terms each of them would use. Distinctive breadth, zero filler.
 
     ## How to analyze
-    1. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
-    2. Note its function and which domains/pipelines it suits.
-    3. Read any visible text, branding, labels, or signage.
-    4. Note materials, dominant colors, real-world scale, condition, and any mechanical traits.
-    5. Brainstorm the keywords and synonyms a real user would type to find it.
+    1. The images are multiple views of the same asset. Aggregate evidence across ALL
+       views: a part occluded in one view may be clear in another; text may be legible
+       in only one view. Report what at least one view clearly shows; reconcile
+       contradictions in favor of the clearer view.
+    2. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
+    3. Note its clearly visible parts, function, materials, dominant colors,
+       real-world scale, condition, and mechanical traits.
+    4. Transcribe visible text ONLY if every character is clearly legible in some view.
+    5. Brainstorm the keywords, synonyms, part names, and domain terms each kind of
+       user would type to find it.
 
     ## Output format (JSON object with exactly these fields)
     {metadata_types}
@@ -158,16 +273,26 @@ vision_endpoint:
 
     ## Rules
     - Output ONLY a valid JSON object with every field above — no prose, no markdown.
-    - Describe only what is actually visible. Never invent brands, text, or function.
-    - When a field doesn't apply or can't be determined, use "unknown" for single-value
-      string fields and an empty list `[]` for list fields. Do not guess.
-    - Be specific over generic; prefer precise nouns and industry terms.
-    - Use lowercase for tags, object_type, use_cases, environment, colors, materials,
+    - The renders are low resolution. Describe only what you can clearly resolve:
+      prefer omission over inference. Never invent brands, text, part details, or
+      function; never reconstruct partially legible text or infer branding from a
+      logo shape or color scheme.
+    - When a field can't be determined: use null for category, style, scale, and
+      state (never force a wrong value); "unknown" for object_type; and an empty
+      list `[]` for environment, colors, materials, physical_attributes, and
+      visible_text. Do not guess. caption, queries, and tags must ALWAYS describe
+      what IS visible, at whatever specificity the renders support (for a bare
+      primitive: "gray box-shaped object", tags like cube, box, gray).
+    - Every list is ordered most→least relevant.
+    - Be specific over generic. Never emit filler that matches almost every asset:
+      "3d model", "asset", "object", "mesh", "render", or near-universal phrases.
+    - Use lowercase for queries, tags, object_type, environment, colors, materials,
       physical_attributes (captions and verbatim visible_text keep natural casing).
-    - Pick exactly ONE value for category, style, scale, and state from their allowed lists.
-    - Tags are the most important field: be thorough, include synonyms and domain terms.
-    - Quality flags must be honest — they let users filter out broken assets.
-
+    - Fields with allowed lists (style, scale, state, physical_attributes items —
+      and category where the deployment defines a list) take values ONLY from
+      those lists, verbatim; null beats a wrong pick.
+    - Queries and tags are the most important fields: phrase them exactly the way
+      real users search — thorough, with synonyms, part names, and domain terms.
 thumbnail_settings:
   relative_location: ".thumbs"
   suffixes:
@@ -289,6 +414,31 @@ microservices:
     # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
     load_asset_as_reference: true
 
+    # -- (bool)
+    # @raw
+    #
+    # When set to ``True`` (default), each asset is auto-framed like the former Kit renderer: the camera is re-centered on the asset's silhouette (top and side views) and zoomed in to fill about 75% of the view. Set to ``False`` to frame by the asset's 3D bounding box only. Requests can still opt out with ``render_settings.adjust_camera_multiplier``.
+    adjust_framing: true
+
+    # ovrtx's compiled-shader (UJITSO) and USD/asset resolver caches, mounted from the
+    # SAME `cache` persistence volume (see top-level `persistence`) via two subPaths
+    # ("shaders" and "usd") in the Job template — they share one sizeLimit, not one
+    # each. Without this, both caches fall back to ephemeral paths inside the
+    # container and are recreated from scratch on every rendering Job pod.
+    usd_cache:
+      # Caps the resolver cache's on-disk footprint (bytes). The shader cache has no
+      # equivalent cap and shares this same volume, so budget the two together against
+      # `persistence`'s size rather than sizing this alone: at the 10Gi
+      # persistence.emptyDir default, 4Gi here (cleanup trips around 3.2Gi, given
+      # cleanup_threshold below) leaves ~6Gi of headroom for shaders before the
+      # kubelet evicts the pod for exceeding the volume's sizeLimit. Raise both
+      # together if either cache needs more room.
+      max_size_bytes: "4294967296"  # 4Gi, under the 10Gi persistence.emptyDir default
+      # Fraction of max_size_bytes that triggers cache eviction.
+      cleanup_threshold: 0.8
+      # How often (seconds) the resolver checks whether cleanup_threshold is exceeded.
+      garbage_collection_interval_seconds: 300
+
     # amount of time pod is kept after completion
     ttlSecondsAfterFinished: 3600
     # deadline for execution (default 2 hours)
@@ -344,12 +494,21 @@ microservices:
       client_batch_timeout: 30
 
       # Maximum number of pending rendering jobs that are allowed before a new
-      # one is created. If the value of this parameter is set below 0 - this
-      # setting is ignored.
+      # one is created. If this parameter is 0 or below, the setting is
+      # ignored (unlimited).
       #
-      # By default the number of pending jobs is set to 0, so that cluster
-      #is not flooded with too many pending rendering jobs.
-      pending_job_limit: 0
+      # NOTE: 0 is *not* a stricter throttle than a positive number - it is
+      # treated as disabled. Dispatching a rendering job always makes the
+      # pending count >= 1, so a literal 0 would never again be satisfied
+      # through normal operation, deadlocking the worker after its very first
+      # dispatch (see packages/deepsearch-utils/deepsearch_utils/farm/_client.py
+      # and services/deepsearch-monitor/monitor/src/monitor_worker.py, which
+      # both treat pending_job_limit <= 0 as disabled for this reason).
+      #
+      # Defaults to 2, so a worker can have at most one extra rendering job
+      # queued up behind the one already in flight - enough to keep the
+      # renderer fed without flooding the cluster with pending jobs.
+      pending_job_limit: 2
 
       # Number of seconds to wait when to retry when rendering service is busy
       #
@@ -433,7 +592,6 @@ microservices:
         # host: ""
         # port: ""
         # schema: "ws"
-
 
     resources:
       requests:
@@ -593,7 +751,6 @@ microservices:
         medium: Memory
         sizeLimit: 256Mi
 
-
     # if you have a GPU available on the Kubernetes cluster and you would like
     # embedding service to use it uncomment the following
     #
@@ -617,7 +774,6 @@ microservices:
     omni_writer: 8013
     monitor_crawler: 8014
 
-
 #
 # Configuration of Redis the following Redis streams:
 #   * Farm Job stream - stores plugin processing requests that require rendering
@@ -629,10 +785,36 @@ microservices:
 # it needs to be re-claimed from the stream by a different worker.
 #
 cache_settings:
+  # How long an item may stay unacknowledged before it is assumed to belong to a
+  # worker that died and is put back at the end of its stream. A worker that is
+  # alive when processing fails re-adds the item immediately instead (see
+  # ``requeue_failed_items``), so these values only need to exceed the longest a
+  # healthy worker can legitimately hold one item - below that, a slow item is
+  # processed twice. They matter for more than retries: an item stays pending until
+  # it is requeued, and the oldest pending item is where trimming of the whole
+  # stream stops.
   farm_job_autoclaim_min_idle_time: "10800000"  # 3 hours (in milliseconds)
-  non_farm_job_autoclaim_min_idle_time: "10800000" # 3 hours (in milliseconds)
+  # 90 minutes: covers the slowest non-render plugin (asset-graph generation allows
+  # 30 min to build a graph and 30 min to store it).
+  non_farm_job_autoclaim_min_idle_time: "5400000" # 90 minutes (in milliseconds)
   results_autoclaim_min_idle_time: "300000" # 5 minutes (in milliseconds)
+  # Attempts allowed for an item before it is dropped from its stream. This is one
+  # budget for both ways an item can fail - the worker raised, or the worker died
+  # holding it - because the attempt count is carried on the queued item itself. A
+  # dropped job is recorded as `failed_retries_exhausted`; a dropped result is
+  # produced again by the next crawl, since the asset's cached hash is only updated
+  # once its result has been written.
+  #
+  # Set either to "-1" to retry forever and never drop anything. That keeps work
+  # that is expensive to recreate - a result already carries finished inference -
+  # but an item that can never succeed then cycles through its stream indefinitely,
+  # so watch `omnideepsearch_stream_items_requeued_total` when using it.
   job_autoclaim_n_retries: "5"
+  results_autoclaim_n_retries: "5"
+  # If "True" - an item whose processing raised is acknowledged and re-added to the
+  # back of its stream straight away. Set to "False" to leave it pending instead, in
+  # which case it is requeued only once it has been idle for the timeout above.
+  requeue_failed_items: "True"
 
 imagePullPolicy: IfNotPresent
 nameOverride: ""
@@ -658,7 +840,6 @@ env:
 # specific job. These plugins can be optionally activated and deactivated by
 # modifying the following configuration and setting the ``active`` parameter of
 # specific plugins to ``false``:
-
 
 plugins:
 
@@ -686,23 +867,41 @@ plugins:
           cpu: 1
           memory: 3Gi
 
+      # Graph construction runs Kit in a `kit-worker` sidecar next to the plugin
+      # worker. The chart adds that container whenever `requires_kit_worker` is
+      # set; everything about it is configured under `kit_worker` below.
+      #
+      # It is deliberately *not* an entry in `sidecar_containers`: Helm merges
+      # maps but replaces lists wholesale, so a list entry cannot be tuned one
+      # field at a time — overriding just the memory limit would drop the image
+      # and command with it. As a map, `--set ...kit_worker.<anything>` works.
+      requires_kit_worker: True
 
-      sidecar_containers:
-      - name: kit-worker
-        # By default the graph-builder sidecar runs the unified `rendering-job`
-        # (Kit) image (see `global.image.rendering_job`) with `MODE=graph-builder`,
-        # which selects the graph-builder code path inside the Kit image.
-        # Override `name`/`tag` here to pin a different image.
+      kit_worker:
+
+        # By default the sidecar runs the kitless graph-builder image
+        # (see `global.image.graph_builder`), a plain-Python USD worker with no
+        # Kit or GPU. Set `name`/`tag` to pin a different image.
         image:
           name: ""
           tag: ""
+
         command:
           - sh
           - -c
           - "python -m uvicorn graph_builder.service:app --host=0.0.0.0"
-        env:
-          - name: MODE
-            value: graph-builder
+
+        securityContext:
+          # fsGroup: 1000
+          runAsUser: 1000
+          runAsNonRoot: true
+          # readOnlyRootFilesystem: true
+
+        # Container resources for the sidecar. OOM-kills of this container (exit
+        # 137) are the most common asset-graph failure, and the ceiling scales
+        # with `n_concurrent_queue_workers` — that value becomes
+        # `N_PARALLEL_PROCESSES`, i.e. how many Kit processes share this one
+        # container. Raise concurrency and memory together, or not at all.
         resources:
           requests:
             cpu: 4
@@ -710,11 +909,59 @@ plugins:
           limits:
             cpu: 8
             memory: 10Gi
-        securityContext:
-          # fsGroup: 1000
-          runAsUser: 1000
-          runAsNonRoot: true
-          # readOnlyRootFilesystem: true
+
+        # Soft memory watchdog for the Kit subprocess, in MB. Set it *below*
+        # `resources.limits.memory` (~80-90% is a reasonable starting point): the
+        # builder then kills Kit itself and reports `graph_construction_oom` for
+        # that asset, instead of the kernel killing the container and taking the
+        # in-flight request's connection with it. Leave unset to keep the kernel
+        # solely in charge (previous behavior).
+        memory_limit_mb:
+
+        # Wall-clock limit for a single graph build, in seconds. Applied to the
+        # Kit subprocess; the plugin's HTTP client gets this plus
+        # `client_timeout_margin` so the builder's own timeout is what surfaces,
+        # with the reason attached, rather than an opaque client-side timeout.
+        timeout_seconds: 1800
+        client_timeout_margin: 120
+
+        # On-disk Kit asset cache (downloaded USD + textures, reused across
+        # builds). Without a volume this lives in the container's writable layer:
+        # lost on every restart and not accounted against ephemeral-storage.
+        cache:
+          enabled: true
+          mount_path: /cache
+          # "" = node disk, "Memory" = tmpfs (counts against the memory limit).
+          medium: ""
+          size_limit: 20Gi
+
+        # /dev/shm for the sidecar. The container default is 64Mi, which is small
+        # for USD/Kit. "" disables the mount.
+        shm_size: 1Gi
+
+        # Extra environment variables, appended after the chart-set ones (so a
+        # name repeated here wins).
+        env: []
+
+        # Sidecar / package metadata catalog (opt-in) — the graph builder can pick
+        # up metadata that ships next to a USD file (a per-asset sidecar, or a
+        # package-level manifest) and merge it into the asset's properties. See
+        # docs/plans/sidecar-package-metadata.md and
+        # services/asset-graph-builder/graph_builder/sidecar_metadata.py for the
+        # design and the merge/precedence rules.
+        #
+        # Empty by default (`{}`) — a no-op, matching `SIDECAR_METADATA_CONFIG_PATH`
+        # being unset. Set this to a full sidecar-metadata YAML document — the same
+        # shape as `graph_builder/sidecar_metadata.simready.yaml` in the
+        # asset-graph-builder image, e.g. `package_root_max_depth` + `sources: [...]`
+        # — and the chart renders it into a ConfigMap, mounts it into the
+        # `kit-worker` sidecar, and points `SIDECAR_METADATA_CONFIG_PATH` at it. No
+        # custom image required.
+        sidecar_metadata_catalog: {}
+
+      # Generic extension point for *additional* sidecars, if a deployment needs
+      # any. The kit-worker is not listed here — see `kit_worker` above.
+      sidecar_containers: []
 
     # -- (map)
     # @raw

@@ -126,6 +126,7 @@ x-common-env: &common-env
   # pattern (StorageAPIStorageClientConfig declares env_prefix="storage_api_").
   STORAGE_API_GRPC_ENDPOINT:
   STORAGE_API_BASE_URI:
+  STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES:
   STORAGE_API_TOKEN:
   STORAGE_API_SSL:
   STORAGE_API_OPENID_CLIENT_ID:
@@ -134,8 +135,25 @@ x-common-env: &common-env
   STORAGE_API_OPENID_SCOPE:
   STORAGE_API_OPENID_GRANT_TYPE:
   ASSERT_ADMIN_USER: false
+  # Public asset URLs (see docs/configuration-map.md). Unset = off = the API
+  # returns the same URLs the crawler indexed. Set USDSEARCH_URL_MAPPING_MODE to
+  # `s3_https` to publish https:// URLs for the configured bucket, or to `rules`
+  # plus a JSON USDSEARCH_URL_MAPPING_RULES list for anything else. Same
+  # null-pass-through pattern as the credentials above.
+  USDSEARCH_URL_MAPPING_MODE:
+  USDSEARCH_URL_MAPPING_RULES:
+  USDSEARCH_URL_MAPPING_INBOUND_ONLY:
   LOGGING_CONFIG: /logging.yml
   PYTHONUNBUFFERED: "1"
+
+# Plugin activation config shared by every service that decides which plugins
+# are active: monitor-crawler (what the crawl enqueues) and info-endpoint
+# (/info/plugins and on-demand /process/asset). Both must read the same file —
+# otherwise info-endpoint falls back to the image default, which disables
+# asset_graph_generation and the VLM metadata plugins.
+x-plugin-config-volume: &plugin-config-volume ./infra/quickstart/plugin.config.yaml:/app/plugin.config.yaml:ro
+x-plugin-config-env: &plugin-config-env
+  PLUGINS_CONFIG_PATH: /app/plugin.config.yaml
 
 x-usdsearch-image: &usdsearch-image
   image: usdsearch:latest
@@ -185,6 +203,18 @@ services:
       # Asset Graph Service
       DEEPSEARCH_BACKEND_ASSET_GRAPH_SERVICE_URL: http://asset-graph-service:8000
       ASSET_GRAPH_SERVICE_ENDPOINT: http://asset-graph-service:8000
+      # Redis-backed caches. Pagination's RRF ranking cache lets pages 2..N of a
+      # hybrid query skip re-running every leg; the image-resolution and VLM
+      # verdict caches share the same instance, separated by key prefix on DB 0.
+      # All three are pure latency optimisations — with Redis absent or down the
+      # API still serves every request, just slower.
+      REDIS_URL: redis://redis:6379
+      # Search result pagination (SearchSettings declares no env_prefix, so these
+      # are bare names). Defaults shown; lower PAGINATION_DEFAULT_WINDOW to 100 to
+      # restore the pre-pagination per-leg fetch volume.
+      PAGINATION_MAX_OFFSET: "10000"
+      PAGINATION_DEFAULT_WINDOW: "1000"
+      PAGINATION_CURSOR_TTL_SECONDS: "900"
       # Auth
       ENABLE_ACCESS_VERIFICATION: "False"
       # CHANGE BEFORE NON-LOCAL USE — admin access key (x-api-key) granting the
@@ -205,6 +235,7 @@ services:
       HYBRID_SEARCH_SCORING_CONFIG_RRF_CONFIG: '{"rank_constant":60,"query_rank_constants":{}}'
       HYBRID_SEARCH_SCORING_CONFIG_HYBRID_TEXT: '{"enabled":true,"weight":1.2,"fields":[{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":true,"analyzer":"standard"},{"field":"modified_by","enabled":true,"weight":5,"match_type":"exact","wildcard":false,"analyzer":"whitespace"},{"field":"name","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.simple","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name.standard","nested":false,"enabled":true,"weight":2,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"usd_properties.key","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.tag","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"tags.value","nested":true,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"path.tree_reversed","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"__VISION_METADATA_FIELDS__","nested":false,"enabled":true,"weight":1,"match_type":"fuzzy","fuzzy_max_expansions":1,"wildcard":true},{"field":"name","nested":false,"enabled":true,"weight":5,"match_type":"exact","analyzer":"keyword","wildcard":false},{"field":"name.standard","nested":false,"enabled":true,"weight":5,"match_type":"exact","analyzer":"keyword","wildcard":false}],"cross_field_operator":"or"}'
       HYBRID_SEARCH_SCORING_CONFIG_VECTOR_FIELDS: '{"siglip2-embedding.embedding":{"enabled":true,"weight":1,"field_name":"siglip2-embedding.embedding","dimension":1536}}'
+      HYBRID_SEARCH_SCORING_CONFIG_NAME_MATCH: '{"enabled":true,"weight":1.0,"min_words":2,"rare_word_hits":1}'
     depends_on:
       opensearch:
         condition: service_healthy
@@ -226,13 +257,14 @@ services:
     container_name: usdsearch-info-endpoint
     command: ["uvicorn", "info_endpoint.src.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
-      <<: *common-env
+      <<: [*common-env, *plugin-config-env]
       REDIS_URL: redis://redis:6379
       # Search backend (uses YAML config file via NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE)
       NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE: /app/settings.yaml
       OTEL_SDK_DISABLED: "true"
     volumes:
       - ./infra/quickstart/settings.yaml:/app/settings.yaml:ro
+      - *plugin-config-volume
     depends_on:
       opensearch:
         condition: service_healthy
@@ -258,6 +290,16 @@ services:
       N_WORKERS: "1"
       ACCEPT_EULA: "Y"
       OTEL_SDK_DISABLED: "true"
+      # Must match the other services: AGS is reachable through the gateway
+      # directly (/asset_graph/*, /dependency_graph*), so it has to speak the
+      # same asset URLs. Unset = off. AGS has no storage client, so mode=s3_https
+      # takes the bucket identity explicitly rather than from a storage config.
+      USDSEARCH_URL_MAPPING_MODE:
+      USDSEARCH_URL_MAPPING_RULES:
+      USDSEARCH_URL_MAPPING_INBOUND_ONLY:
+      USDSEARCH_URL_MAPPING_S3_BUCKET: ${S3_STORAGE_BUCKET_NAME:-omniverse-content-production}
+      USDSEARCH_URL_MAPPING_S3_REGION: ${S3_STORAGE_REGION_NAME:-us-west-2}
+      USDSEARCH_URL_MAPPING_S3_ENDPOINT: ${S3_STORAGE_AWS_ENDPOINT_URL:-}
       LOGGING_CONFIG: /logging.yml
     depends_on:
       neo4j:
@@ -269,21 +311,20 @@ services:
       retries: 20
       start_period: 10s
 
-  # Kit-based USD graph extractor for the asset_graph_generation plugin.
-  # Runs the same Kit image as rendering-job but with MODE=graph-builder
-  # (no rendering, no GPU reservation — just USD parsing + graph emit).
+  # Kitless USD graph extractor for the asset_graph_generation plugin. Built from
+  # the usdsearch image (no rendering, no GPU — just USD parsing + graph emit).
   graph-builder:
     image: usdsearch-graph-builder:latest
     pull_policy: build
     build:
-      context: ./services/rendering-job
-      dockerfile: ../../docker/Dockerfile.kit
-      additional_contexts:
-        graph-builder: ./services/asset-graph-builder
+      context: .
+      dockerfile: docker/Dockerfile.usdsearch
+      args:
+        OMNI_USD_STOCK_URL: ${OMNI_USD_STOCK_URL:-https://d4i3qtqj3r0z5.cloudfront.net/openusd@0.25.11-9-manylinux_2_35_x86_64-dynamic-release-py312.no_imaging.7z}
     container_name: usdsearch-graph-builder
     restart: unless-stopped
+    command: ["uvicorn", "graph_builder.service:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
-      MODE: graph-builder
       ACCEPT_EULA: "Y"
       LOGGING_CONFIG: /logging.yml
       # Null-pass-through: omits the var from the container when unset on
@@ -358,14 +399,13 @@ services:
     command: ["python", "-m", "monitor.src.monitor_crawler"]
     volumes:
       - ./infra/quickstart/settings.yaml:/app/settings.yaml:ro
-      - ./infra/quickstart/plugin.config.yaml:/app/plugin.config.yaml:ro
+      - *plugin-config-volume
     environment:
-      <<: *common-env
+      <<: [*common-env, *plugin-config-env]
       REDIS_URL: redis://redis:6379
       REDIS_STREAM_URL: redis://redis:6379
       REDIS_STREAM_NAME: deepsearch-crawler
       NGSEARCH_STORAGE_SEARCH_BACKEND_SETTINGS_FILE: /app/settings.yaml
-      PLUGINS_CONFIG_PATH: /app/plugin.config.yaml
       OTEL_SDK_DISABLED: "true"
     depends_on:
       redis:

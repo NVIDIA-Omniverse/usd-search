@@ -15,7 +15,7 @@
 
 services:
   minio:
-    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    image: gitlab-master.nvidia.com:5005/omniverse/deeptag/usdsearch/minio@sha256:52dfd5c0bbd38d3219f2058c7af216d9f9a27a994b7b5baad09bbd38866015ff
     ports:
       - "9000:9000"
     environment:
@@ -30,7 +30,7 @@ services:
       start_period: 10s
 
   createbuckets:
-    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    image: gitlab-master.nvidia.com:5005/omniverse/deeptag/usdsearch/mc@sha256:bdfae21c72b19fae5a005c56dddba25a873d75fac3dda60f55aea7e417382cbe
     environment:
       AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
       AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID

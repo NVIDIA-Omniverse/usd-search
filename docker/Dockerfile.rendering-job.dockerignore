@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# BuildKit uses this in place of the root .dockerignore for the rendering-job
+# image, whose context is the repo root (for the shared workspace uv.lock).
+# The root ignore excludes services/rendering-job and services/**/data because
+# the unified usdsearch image does not need them; this build does.
+
+.git/
+.gitmodules
+
+**/.venv/
+**/.env
+
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+**/*.egg-info/
+packages/**/dist/
+services/**/dist/
+packages/**/build/
+services/**/build/
+**/.eggs/
+
+**/coverage/
+**/htmlcov/
+**/.coverage
+**/coverage.xml
+**/*.badge.svg
+
+.idea/
+.vscode/
+**/*.swp
+**/*.swo
+
+.uv-cache/
+**/node_modules/
+
+docs/
+notebooks/
+scripts/
+hooks/
+
+helm/
+ci/helm/
+tests/helm/
+
+_old/
+
+# Other services ship their own images and are not copied by this Dockerfile.
+services/explorer/
+services/siglip2-triton/
+services/asset-graph-builder/
+
+# Tests run from a bind mount at runtime, not baked into the image.
+**/tests/
+
+# Renderer scratch output that must never enter the build context.
+services/rendering-job/shadercache/
+services/rendering-job/nv_shadercache/
+services/rendering-job/test-sample.png

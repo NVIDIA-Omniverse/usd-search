@@ -15,21 +15,24 @@
 # limitations under the License.
 
 # Build the Docker images produced by the CI `build` stage and optionally
-# push them to a registry. Mirrors the three image build jobs defined in
-# .gitlab-ci.yml: build-usdsearch, build-rendering-job, build-siglip2-triton.
+# push them to a registry. Mirrors the image build jobs defined in
+# .gitlab-ci.yml: build-usdsearch, build-rendering-job, build-graph-builder,
+# build-siglip2-triton.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")"/.. && pwd)"
 
-DEFAULT_REGISTRY="nvcr.io/omniverse/deeptag-internal"
-ALL_IMAGES=("usdsearch" "usdsearch-kit-workflows" "siglip2-triton")
+DEFAULT_REGISTRY="nvcr.io/m3sujtetvf5w/usdsearch"
+DEFAULT_OMNI_USD_STOCK_URL="https://d4i3qtqj3r0z5.cloudfront.net/openusd@0.25.11-9-manylinux_2_35_x86_64-dynamic-release-py312.no_imaging.7z"
+ALL_IMAGES=("usdsearch" "usdsearch-kit-workflows" "usdsearch-graph-builder" "siglip2-triton")
 
 usage() {
   cat <<'EOF'
 Build the Docker images produced by the CI `build` stage and optionally
-push them to a registry. Mirrors the three image build jobs defined in
-.gitlab-ci.yml: build-usdsearch, build-rendering-job, build-siglip2-triton.
+push them to a registry. Mirrors the image build jobs defined in
+.gitlab-ci.yml: build-usdsearch, build-rendering-job, build-graph-builder,
+build-siglip2-triton.
 
 Usage:
   scripts/build-ci-images.sh [<tag>] [--push] [--registry <host/namespace>]
@@ -45,13 +48,19 @@ Flags:
                        Without --push, images are only tagged locally as
                        <name>:<tag>.
   --registry <r>       Target registry, defaults to
-                       nvcr.io/omniverse/deeptag-internal. Only used with
+                       nvcr.io/m3sujtetvf5w/usdsearch. Only used with
                        --push.
   --image <name>       Restrict to one image; repeat to build several.
                        Valid names: usdsearch, usdsearch-kit-workflows,
-                       siglip2-triton. Default: all three.
+                       usdsearch-graph-builder, siglip2-triton. Default: all
+                       four.
   --no-cache           Pass --no-cache to docker build.
   -h, --help           Show this help text.
+
+Environment:
+  OMNI_USD_STOCK_URL   Overrides the packman-resolver USD archive baked into
+                       usdsearch-graph-builder. Defaults to the same public
+                       CDN archive CI uses.
 
 Examples:
   scripts/build-ci-images.sh                # uses VERSION.md + git short hash
@@ -196,9 +205,16 @@ build_usdsearch() {
 build_usdsearch_kit_workflows() {
   build_image \
     "usdsearch-kit-workflows" \
-    "$REPO_ROOT/docker/Dockerfile.kit" \
-    "$REPO_ROOT/services/rendering-job" \
-    --build-context "graph-builder=$REPO_ROOT/services/asset-graph-builder"
+    "$REPO_ROOT/docker/Dockerfile.rendering-job" \
+    "$REPO_ROOT"
+}
+
+build_usdsearch_graph_builder() {
+  build_image \
+    "usdsearch-graph-builder" \
+    "$REPO_ROOT/docker/Dockerfile.usdsearch" \
+    "$REPO_ROOT" \
+    --build-arg "OMNI_USD_STOCK_URL=${OMNI_USD_STOCK_URL:-$DEFAULT_OMNI_USD_STOCK_URL}"
 }
 
 build_siglip2_triton() {
@@ -214,6 +230,7 @@ for img in "${SELECTED_IMAGES[@]}"; do
   case "$img" in
     usdsearch)               build_usdsearch ;;
     usdsearch-kit-workflows) build_usdsearch_kit_workflows ;;
+    usdsearch-graph-builder) build_usdsearch_graph_builder ;;
     siglip2-triton)          build_siglip2_triton ;;
   esac
 done
@@ -226,6 +243,12 @@ if $PUSH; then
   for ref in "${PENDING_PUSHES[@]}"; do
     echo "+ docker push $ref"
     docker push "$ref"
+  done
+
+  echo
+  echo "Pushed tags:"
+  for ref in "${PENDING_PUSHES[@]}"; do
+    echo "  $ref"
   done
 fi
 

@@ -13,7 +13,7 @@ to map the generic verbs onto Codex's runtime.
 
 | Skill | Path | What it does |
 |---|---|---|
-| `/search` | `skills/search/SKILL.md` | Text / image / hybrid search against `/search_hybrid` + `/images`, with `is_match` validation, the per-hit VLM validator, and thumbnail inspection via `codex exec --image`. Persists results to `./search-results/<slug>/`. |
+| `/search` | `skills/search/SKILL.md` | Text / image / hybrid search against `/search_hybrid` + `/images`, with `is_match` validation, the per-hit VLM validator, and thumbnail inspection with the runtime's native image viewer. Persists results to `./search-results/<slug>/`. |
 | `/quickstart` | `skills/quickstart/SKILL.md` | First-time entry point. Picks one of three backend lanes (NVIDIA-hosted, your own URL, local deployment), sets `USD_SEARCH_API_URL`, then hands off to `/search` with a seed query. |
 | `/inspect-asset` | `skills/inspect-asset/SKILL.md` | Deep-dive a single asset: thumbnails from multiple angles, indexing status, USD scene-graph (prims, polygons, MPU), dependencies, and a full report. |
 | `/search-in-scene` | `skills/search-in-scene/SKILL.md` | Spatial / scene-graph queries against the Asset Graph Service: proximity, bounding-box, prim enumeration and filtering, dependency graphs. |
@@ -52,10 +52,10 @@ like this:
   running its Docker, Compose, GPU, NVIDIA runtime, or Kubernetes
   checks; the sandbox can hide the Docker daemon, GPU devices, and
   host kube context, producing false negatives.
-- **"Inspect / view the thumbnails visually"** → run
-  `codex exec --image <path>` — the recursive-model pattern shown in
-  `skills/search/SKILL.md`. Don't try to inline image bytes into a
-  prompt.
+- **"Inspect / view the thumbnails visually"** → use Codex's native
+  `view_image` tool on each local image path in the main agent. Do not launch a
+  recursive `codex exec --image` subprocess, and don't try to inline image
+  bytes into a prompt.
 - **"Ask the user (a structured question)"** → ask a normal clarifying
   prompt. Codex has no picker widget or arrow-key selection. Treat
   `Header`, `Options`, `picker`, and `one-click` language in skills as

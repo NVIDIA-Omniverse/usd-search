@@ -34,8 +34,9 @@ allowed-tools: Bash, Read
 ## What this skill does
 
 Deep inspection of one 3D asset addressed by a URL
-(`s3://bucket/key`, `omniverse://server/path`, or a local filesystem
-path when running in local-FS mode). Produces a single comprehensive
+(`s3://bucket/key`, `omniverse://server/path`, an `https://` URL if the
+deployment publishes those, or a local filesystem path when running in
+local-FS mode). Produces a single comprehensive
 report covering visual, structural, geometric, semantic, and indexing
 dimensions of the asset.
 
@@ -97,8 +98,10 @@ fi
 
 ### 1. Identify the asset
 
-- URL provided: use it directly (`s3://...`, `omniverse://...`, or a
-  local filesystem path returned by local-FS mode).
+- URL provided: use it directly (`s3://...`, `omniverse://...`, `https://...`,
+  or a local filesystem path returned by local-FS mode). Never rewrite the
+  scheme by hand — pass back exactly the URL the API or the user gave you; an
+  instance that publishes `https://` asset URLs accepts both forms everywhere.
 - Name or description provided: run `/search` first, then inspect the
   best matching URL from `./search-results/<slug>/manifest.json`.
 

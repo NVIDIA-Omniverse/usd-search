@@ -17,10 +17,9 @@
 from typing import Any, Dict, Optional, Tuple
 
 from deepsearch_utils.ds_plugin_utils import DSPluginStatus
-
-# local/proprietary modules
 from llm_client import MetadataGeneration
 
+# local/proprietary modules
 from search_utils.storage_client import StorageClient
 
 from .base_plugin import BasePlugin
@@ -61,9 +60,6 @@ class ThumbnailToVisionMetadata(ImageToVisionMetadata, ThumbnailToEmbedding, Bas
         self.thumbnail_resolutions = [256]
         self.thumbnail_final_size = 256
         self._metadata_generation: Optional[MetadataGeneration] = None
-
-    def asset_state_hash(self, hash_value: str) -> str:
-        return BasePlugin.asset_state_hash(self, hash_value)
 
     @property
     def config(self) -> ThumbnailToVisionMetadataConfig:

@@ -15,6 +15,7 @@
 
 # standard modules
 import asyncio
+import json
 import logging
 import time
 from enum import Enum
@@ -41,15 +42,91 @@ from .models import GenericPluginErrorItem, PluginProcessingResult
 
 logger = logging.getLogger(__name__)
 
+# Lucene caps a single indexed term (keyword field) at 32766 bytes of UTF-8. The
+# OpenSearch mapping indexes `usd_properties.value` as a keyword, so a value whose
+# UTF-8 encoding exceeds this rejects the *entire* document write with an
+# illegal_argument_exception ("immense term"). Such properties (e.g. a comma-joined
+# list of every robot joint path) are skipped rather than truncated.
+_MAX_USD_PROPERTY_VALUE_BYTES = 32766
+
+#: Response header the graph builder uses to report per-phase build timings
+#: (Kit startup, stage open, traversal). Kept out of the response body because
+#: the success body is the graph document, forwarded verbatim to AGS.
+GRAPH_BUILD_TIMINGS_HEADER = "X-Graph-Build-Timings"
+
 tracer = trace.get_tracer(__name__)
 
 MAX_OS_FLOAT_VALUE = 3.4028234663852886e38
 
 
 class AGSPluginStatus(str, Enum):
+    """Per-asset outcome recorded for the asset-graph plugin.
+
+    The build path used to collapse every failure into ``graph_construction_failed``,
+    which made a crawl's failure rate impossible to act on — "5% failed" says
+    nothing about whether to raise the memory limit, fix credentials, or ignore a
+    handful of broken assets. The graph builder now returns a ``reason`` with every
+    failure (``graph_builder.failures.GraphBuildReason``) and it is mapped here.
+
+    ``graph_construction_failed`` is kept as the catch-all for unmapped or missing
+    reasons, so anything already matching on it still sees the unclassified tail.
+    """
+
     success = "success"
     graph_construction_failed = "graph_construction_failed"
     graph_storage_failed = "graph_storage_failed"
+    # Kit exceeded the builder's memory watchdog, or was OOM-killed by the kernel.
+    graph_construction_oom = "graph_construction_oom"
+    # The build exceeded the configured timeout.
+    graph_construction_timeout = "graph_construction_timeout"
+    # The stage could not be opened (malformed layer, unresolvable sublayer, ...).
+    graph_construction_open_layer_failed = "graph_construction_open_layer_failed"
+    # The storage backend reports the asset does not exist.
+    graph_construction_asset_not_found = "graph_construction_asset_not_found"
+    # The storage backend rejected the credentials, or could not be reached.
+    graph_construction_access_denied = "graph_construction_access_denied"
+    # Kit exited non-zero without classifying the failure itself.
+    graph_construction_kit_crashed = "graph_construction_kit_crashed"
+    # The kit-worker sidecar was unreachable or restarted mid-request.
+    graph_construction_service_unavailable = "graph_construction_service_unavailable"
+
+
+#: ``GraphBuildReason`` (graph-builder wire value) -> per-asset status. Kept as a
+#: plain mapping rather than importing the builder's enum: the plugin ships in the
+#: usdsearch image and the builder in the Kit image, and they are versioned apart.
+GRAPH_BUILD_REASON_STATUSES: Dict[str, AGSPluginStatus] = {
+    "oom": AGSPluginStatus.graph_construction_oom,
+    "timeout": AGSPluginStatus.graph_construction_timeout,
+    "open_layer_failed": AGSPluginStatus.graph_construction_open_layer_failed,
+    "asset_not_found": AGSPluginStatus.graph_construction_asset_not_found,
+    "access_denied": AGSPluginStatus.graph_construction_access_denied,
+    "kit_crashed": AGSPluginStatus.graph_construction_kit_crashed,
+    "client_disconnected": AGSPluginStatus.graph_construction_service_unavailable,
+    "internal_error": AGSPluginStatus.graph_construction_failed,
+}
+
+
+def _is_phase_label(phase: Any) -> bool:
+    """Whether ``phase`` is safe to use as a metric label value.
+
+    Phase names come from the graph builder, which is versioned apart from this
+    plugin, and each distinct one becomes its own time series. New phases are
+    expected; an unbounded set (a phase named after a prim, say) is not — so
+    accept only identifier-shaped names and let the span carry the rest.
+    """
+    return isinstance(phase, str) and phase.isidentifier()
+
+
+class GraphConstructionError(Exception):
+    """A graph build that failed with a known reason.
+
+    Raised by :meth:`AssetGraphGeneration.get_graph` so ``preprocess`` can record
+    the specific status instead of the catch-all.
+    """
+
+    def __init__(self, message: str, status: AGSPluginStatus = AGSPluginStatus.graph_construction_failed) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class AGSPluginBatchItem(TypedDict):
@@ -68,6 +145,12 @@ class AGSPluginConfig(BasePluginConfig):
     )
     kit_worker_url: str = Field(default="http://localhost:8000", alias="kit_worker_service_endpoint")
     get_graph_timeout: float = 60 * 30  # 30 minutes
+    # Wall clock the *builder* gets for one build, sent with every request so the
+    # effective timeout is decided in one place (the chart derives both this and
+    # `get_graph_timeout` from `kit_worker.timeout_seconds`). Left unset, the
+    # builder falls back to its own `KIT_TIMEOUT_SECONDS` default — which is what
+    # a deployment predating this field does.
+    build_timeout: Optional[int] = None
     store_graph_timeout: float = 60 * 30  # 30 minutes
     use_embedding_client: bool = False
     model_config = SettingsConfigDict(env_prefix="ags_plugin_")
@@ -140,7 +223,8 @@ class AssetGraphGeneration(BasePlugin):
             }
         if isinstance(storage_client, StorageAPIStorageClient):
             auth_kwargs = dict(
-                storage_api_url=storage_client.config.grpc_endpoint,
+                # Kit-bound form: omni.client reads TLS off the endpoint string, not `ssl`.
+                storage_api_url=storage_client.config.kit_storage_api_url,
             )
             if storage_client.config.token is not None:
                 auth_kwargs["storage_api_token"] = storage_client.config.token
@@ -164,24 +248,123 @@ class AssetGraphGeneration(BasePlugin):
 
     async def get_graph(self, url: str, storage_client: StorageClient):
         auth_kwargs = self.get_authentication_parameters(url=url, storage_client=storage_client)
-        body = {"url": url}
+        body: Dict[str, Any] = {"url": url}
+        # The builder accepts a per-request timeout and caps it server-side. Sending
+        # it keeps the client's own `get_graph_timeout` provably longer than the
+        # build it is waiting on, so a slow build ends as the builder's 408 (which
+        # carries a reason) rather than an opaque client-side timeout.
+        if self.config.build_timeout:
+            body["timeout_seconds"] = int(self.config.build_timeout)
         body.update(**auth_kwargs)
 
         logger.debug("Requesting graph for %s", body)
 
+        # Note: no `raise_for_status=True`. It raises on the status line alone and
+        # never reads the body — which is exactly where the graph builder puts the
+        # `reason` for the failure. Handle the status explicitly instead, the same
+        # way `store_graph` does.
         async with aiohttp.ClientSession(
-            raise_for_status=True,
             timeout=aiohttp.ClientTimeout(total=self.config.get_graph_timeout),
         ) as session:
             async with session.post(f"{self.kit_worker_url}/construct_graph/", json=body) as resp:
+                # Record where the build spent its time on whichever span is
+                # current — `preprocess` runs this inside its per-asset
+                # `get_graph` span, so the phase breakdown lands on the span that
+                # already measures the call, on both the success and failure path.
+                self._record_build_timings(resp.headers.get(GRAPH_BUILD_TIMINGS_HEADER), url)
+                if resp.status >= 400:
+                    raise self._graph_construction_error(await self._read_error_body(resp), resp.status)
                 return await resp.json()
+
+    def _record_build_timings(self, header_value: Optional[str], url: str) -> None:
+        """Attach the builder's phase timings to the current span and to metrics.
+
+        Kit startup, stage open and traversal happen in a subprocess of another
+        service, so these numbers cannot be derived here — the builder measures
+        them and hands them over on a response header. Chiefly this answers "how
+        much of a build is Kit cold start", which is what decides whether warming
+        Kit up is worth doing.
+
+        Both destinations earn their keep: the span keeps per-asset attribution
+        ("*this* asset spent 22 minutes in traverse"), while the metrics give the
+        distribution over a whole crawl without depending on trace sampling.
+        """
+        if not header_value:
+            return
+        try:
+            timings = json.loads(header_value)
+        except ValueError:
+            logger.warning("Malformed %s header for %s", GRAPH_BUILD_TIMINGS_HEADER, url)
+            return
+
+        span = trace.get_current_span()
+        if timings.get("kit_startup_ms") is not None:
+            span.set_attribute("graph_build.kit_startup_ms", timings["kit_startup_ms"])
+            self._observe_phase("kit_startup", timings["kit_startup_ms"])
+        if timings.get("total_ms") is not None:
+            span.set_attribute("graph_build.total_ms", timings["total_ms"])
+            self._observe_phase("total", timings["total_ms"])
+        if timings.get("died_in"):
+            span.set_attribute("graph_build.died_in", timings["died_in"])
+            if self.phase_metrics is not None and _is_phase_label(timings["died_in"]):
+                self.phase_metrics.count_failure_phase(timings["died_in"])
+        for phase, duration_ms in (timings.get("phases") or {}).items():
+            span.set_attribute(f"graph_build.phase.{phase}_ms", duration_ms)
+            self._observe_phase(phase, duration_ms)
+
+        logger.debug("Graph build timings for %s: %s", url, timings)
+
+    def _observe_phase(self, phase: str, duration_ms: Any) -> None:
+        """Record one phase duration, in seconds, if a metrics sink is attached."""
+        if self.phase_metrics is None or not _is_phase_label(phase):
+            return
+        try:
+            self.phase_metrics.observe_phase(phase, float(duration_ms) / 1000)
+        except (TypeError, ValueError):
+            logger.warning("Non-numeric duration for build phase %r: %r", phase, duration_ms)
+
+    @staticmethod
+    async def _read_error_body(resp: aiohttp.ClientResponse) -> Dict[str, Any]:
+        """Best-effort decode of a graph-builder error body."""
+        try:
+            body = await resp.json()
+        except Exception:  # noqa: BLE001 — a non-JSON error body must not mask the failure
+            body = None
+        if isinstance(body, dict):
+            return body
+        try:
+            return {"detail": (await resp.text()).strip()}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @staticmethod
+    def _graph_construction_error(body: Dict[str, Any], http_status: int) -> GraphConstructionError:
+        """Map a graph-builder error body onto a per-asset status."""
+        reason = body.get("reason")
+        status = GRAPH_BUILD_REASON_STATUSES.get(reason, AGSPluginStatus.graph_construction_failed)
+        if reason is not None and status is AGSPluginStatus.graph_construction_failed:
+            # A builder newer than this plugin, or a genuinely unclassified failure.
+            logger.warning("Unrecognized graph construction reason %r; recording as %s", reason, status.value)
+        detail = body.get("detail") or "graph construction failed"
+        return GraphConstructionError(f"{http_status}: {detail}", status=status)
 
     async def store_graph(self, graph):
         async with aiohttp.ClientSession(
-            raise_for_status=True,
             timeout=aiohttp.ClientTimeout(total=self.config.store_graph_timeout, sock_read=None),
         ) as session:
             async with session.post(f"{self.graph_service_url}/asset_graph/", json=graph) as resp:
+                if resp.status >= 400:
+                    # AGS returns the validation detail (e.g. which prim fields failed on a 422)
+                    # in the response body. Fold it into the raised error so callers see *why*
+                    # the write was rejected, not just the bare "422, message='Unprocessable Entity'".
+                    body = (await resp.text()).strip()
+                    raise aiohttp.ClientResponseError(
+                        resp.request_info,
+                        resp.history,
+                        status=resp.status,
+                        message=f"{resp.reason}: {body}" if body else resp.reason,
+                        headers=resp.headers,
+                    )
                 return await resp.json()
 
     async def wait_for_kit_worker(self) -> None:
@@ -211,8 +394,9 @@ class AssetGraphGeneration(BasePlugin):
             indices: list[str] = []
             error_indices: Dict[str, AGSPluginErrorItem] = {}
 
+            unavailable_count = 0
+
             for index, path in enumerate(data):
-                # TODO: Add error handling
                 try:
                     with tracer.start_as_current_span("asset_graph_generation.wait_for_kit_worker"):
                         await self.wait_for_kit_worker()
@@ -224,7 +408,30 @@ class AssetGraphGeneration(BasePlugin):
                     batch_data.append(AGSPluginBatchItem(graph=graph, path=path["omni_path"]))
                     self.logger.debug("Graph for %s: %s", path["omni_path"], graph)
                 except aiohttp.client_exceptions.ClientConnectionError as exc:
-                    raise ConnectionError("AGS Kit unavailable") from exc
+                    # A kit-worker OOM kill drops the connection mid-request. This
+                    # used to raise straight out of the loop, failing the *whole*
+                    # batch — including assets that had already built fine and ones
+                    # never attempted — which is why the observed failure rate was
+                    # both opaque and inflated. Record it per asset and carry on;
+                    # `wait_for_kit_worker` blocks until the sidecar is back.
+                    unavailable_count += 1
+                    self.logger.warning(
+                        "Kit worker unavailable while processing %s (%s)",
+                        path["omni_path"],
+                        exc,
+                    )
+                    error_indices[index] = AGSPluginErrorItem(
+                        status=AGSPluginStatus.graph_construction_service_unavailable,
+                        path=path["omni_path"],
+                        error_message=f"AGS Kit unavailable: {exc}",
+                    )
+                except GraphConstructionError as exc:
+                    self.logger.error("Processing %s failed (%s): %s", path["omni_path"], exc.status.value, exc)
+                    error_indices[index] = AGSPluginErrorItem(
+                        status=exc.status,
+                        path=path["omni_path"],
+                        error_message=str(exc),
+                    )
                 except Exception as exc:
                     self.logger.error("Processing %s failed", path["omni_path"], exc_info=exc)
                     error_indices[index] = AGSPluginErrorItem(
@@ -232,6 +439,12 @@ class AssetGraphGeneration(BasePlugin):
                         path=path["omni_path"],
                         error_message=str(exc),
                     )
+
+            # Every asset failing to connect means the sidecar is down rather than
+            # the assets being bad. Escalate so the batch is retried instead of
+            # burning through the corpus marking everything failed.
+            if data and unavailable_count == len(data):
+                raise ConnectionError("AGS Kit unavailable")
 
             span.set_attribute("batch_data_length", len(batch_data))
             span.set_attribute("error_indices_length", len(error_indices))
@@ -394,17 +607,33 @@ class AssetGraphGeneration(BasePlugin):
         return None, "string"
 
     @staticmethod
-    def _format_property_for_os(name: str, value: str) -> Dict[str, Union[str, float, None]]:
+    def _format_property_for_os(name: str, value: Any) -> Optional[Dict[str, Union[str, float, None]]]:
         """
         Format a single property for OpenSearch storage with numeric type support.
 
         Args:
             name: Property name
-            value: Property value (string)
+            value: Property value. Usually a string, but USD custom-layer metadata
+                (e.g. SimReady) can carry bools/ints/floats that survive the JSON
+                round-trip as native types, so it is coerced to ``str`` here — the
+                OpenSearch ``value``/``value_sayt`` keyword fields require a string.
 
         Returns:
-            Dict with name, value, and optional numeric fields
+            Dict with name, value, and optional numeric fields, or ``None`` if the value
+            exceeds the max keyword-term byte length and the property must be skipped.
         """
+        value = str(value)
+        value_bytes = len(value.encode("utf-8"))
+        if value_bytes > _MAX_USD_PROPERTY_VALUE_BYTES:
+            logger.warning(
+                "Skipping USD property %r: value is %d bytes, exceeds the %d-byte OpenSearch "
+                "keyword-term limit (would reject the whole document); property dropped.",
+                name,
+                value_bytes,
+                _MAX_USD_PROPERTY_VALUE_BYTES,
+            )
+            return None
+
         numeric_value, value_type = AssetGraphGeneration._detect_numeric_value(value)
 
         property_doc = {
@@ -426,7 +655,11 @@ class AssetGraphGeneration(BasePlugin):
         dimensions = self._extract_dimensions_from_default_prim(graph)
 
         os_content = {
-            "usd_properties": [self._format_property_for_os(k, v) for k, v in properties.items()],
+            "usd_properties": [
+                formatted
+                for k, v in properties.items()
+                if (formatted := self._format_property_for_os(k, v)) is not None
+            ],
             "usd_dimensions": dimensions,
         }
         logger.debug("OS content for %s: %s", graph["scene_url"], os_content)

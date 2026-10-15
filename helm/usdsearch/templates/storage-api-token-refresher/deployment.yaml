@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{- if include "deepsearch-global.storageApiTokenRefresherEnabled" . }}
+{{- $auth := .Values.global.storage_api.authentication }}
+{{- $tr := $auth.token_refresher }}
+{{- $tokenFile := printf "%s/%s" $tr.token_dir $auth.secret_key }}
+{{- $syncerImage := include "deepsearch-global.usdsearchImage" . }}
+{{- /* User labels are merged UNDER the chart's own labels: selector.matchLabels
+       is immutable on an existing Deployment, so podLabels must never be able to
+       shadow a selector label (and merging avoids emitting a duplicate key). */}}
+{{- $podLabels := merge (dict "app.kubernetes.io/component" "storage-api-token-refresher") (fromYaml (include "deepsearch-global.selectorLabels" .)) $tr.podLabels }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "deepsearch-global.storageApiTokenRefresherName" . }}
+  labels:
+    {{- include "deepsearch-global.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage-api-token-refresher
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "deepsearch-global.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: storage-api-token-refresher
+  template:
+    metadata:
+      labels:
+        {{- toYaml $podLabels | nindent 8 }}
+      {{- with $tr.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "deepsearch-global.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "deepsearch-global.storageApiTokenRefresherServiceAccountName" . }}
+      containers:
+        {{- include "deepsearch-global.storageApiTokenVendorContainer" (dict "ctx" . "native" false) | nindent 8 }}
+        - name: token-syncer
+          image: {{ $syncerImage | quote }}
+          imagePullPolicy: {{ include "deepsearch-global.imagePullPolicy" . }}
+          command: ["python", "-m", "deepsearch_utils.token_refresher"]
+          env:
+            - name: MODE
+              value: "loop"
+            - name: TOKEN_FILE
+              value: {{ $tokenFile | quote }}
+            - name: SECRET_NAME
+              value: {{ $auth.secret_name | quote }}
+            - name: SECRET_KEY
+              value: {{ $auth.secret_key | quote }}
+            - name: REFRESHED_AT_KEY
+              value: {{ include "deepsearch-global.storageApiTokenRefreshedAtKey" . | quote }}
+            - name: SYNC_INTERVAL
+              value: {{ $tr.syncer.sync_interval | quote }}
+          volumeMounts:
+            - name: storage-api-token-file
+              mountPath: {{ $tr.token_dir }}
+          {{- with $tr.syncer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: storage-api-token-file
+          emptyDir:
+            medium: Memory
+      {{- with $tr.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $tr.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $tr.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -55,6 +55,8 @@ class FarmResponse(TypedDict):
 class ServerResponses(str, Enum):
     load_error = "load_error"
     rendering_error = "rendering_error"
+    empty_scene = "empty_scene"
+    timeout = "timeout"
     empty = ""
 
 

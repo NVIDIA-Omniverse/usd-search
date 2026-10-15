@@ -33,10 +33,14 @@ spec:
       {{- include "asset-graph-service.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        # A subPath mount is never refreshed in place, so without this the pod
+        # keeps the logging config it started with until something else restarts
+        # it. Hashing the rendered ConfigMap rolls the pods when it changes.
+        checksum/logging-config: {{ include (print $.Template.BasePath "/logging_config.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "asset-graph-service.selectorLabels" . | nindent 8 }}
     spec:
@@ -78,6 +82,16 @@ spec:
               value: {{ .Values.sentry_dsn | default .Values.global.sentry_dsn | default "" }}
             - name: N_WORKERS
               value: {{ .Values.graphdb.n_workers | default 20 | quote }}
+            # base_logging reads $LOGGING_CONFIG, defaulting to /logging.yml —
+            # the copy baked into the image. Without this the ConfigMap mounted
+            # below is present in the pod and never opened, so `loggingConfig`
+            # silently does nothing.
+            - name: LOGGING_CONFIG
+              value: /app/logging.yml
+            # Not read by the service — only by the admin tools, which use it to
+            # re-index an asset after repairing its graph node.
+            - name: INFO_ENDPOINT_URL
+              value: {{ .Values.infoEndpointURL | default (printf "http://%s-deepsearch-info-endpoint:8000" .Release.Name) | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT }}
             - name: OTEL_SDK_DISABLED
@@ -86,6 +100,7 @@ spec:
               value: "{{ .Values.global.tracing.OTEL_TRACES_EXPORTER }}"
             - name: LOG_REQUESTS
               value: {{ .Values.telemetry.log_requests | quote }}
+            {{- include "deepsearch-global.urlMappingEnv" . | nindent 12 }}
             - name: LOG_HEADERS
               value: {{ .Values.telemetry.log_headers | quote }}
           {{- with .Values.env }}

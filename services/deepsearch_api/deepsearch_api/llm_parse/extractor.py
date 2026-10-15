@@ -17,8 +17,10 @@
 
 Reuses llm-client's text-only ``ainvoke`` + LangChain
 ``with_structured_output`` (the same path the VLM validator uses) so the LLM is
-constrained to emit a valid ``SearchIR``. Adds retry-with-backoff, a per-call
-timeout, and an in-process LRU cache on the raw query string.
+constrained to emit a valid ``ConstrainedSearchIR`` — the enum-narrowed IR, so
+the model cannot name a field this deployment does not have. Adds
+retry-with-backoff, a per-call timeout, and an in-process LRU cache on the raw
+query string.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import logging
+import time
 from collections import OrderedDict
 from string import Template
 from typing import Optional
@@ -42,7 +45,7 @@ from pydantic import ValidationError
 from .config import LLMParseSettings
 from .fields import build_field_catalog
 from .grounding import build_property_grounding
-from .models import SearchIR
+from .models import ConstrainedSearchIR
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ class LLMParseExtractionError(RuntimeError):
 
 
 class LLMParseExtractor:
-    """Extract a ``SearchIR`` from a free-text query via the query-parsing LLM.
+    """Extract a ``ConstrainedSearchIR`` from a free-text query via the query-parsing LLM.
 
     The system prompt is loaded from a file (``settings.prompt_filepath``) using
     ``$catalog`` / ``$today`` placeholders, so it is editable without touching code.
@@ -67,8 +70,9 @@ class LLMParseExtractor:
             max_tokens=settings.max_tokens,
             temperature=settings.temperature,
             reasoning_effort=settings.reasoning_effort,
+            extra_body=settings.extra_body,
         )
-        self._vlm.with_structured_output(SearchIR)
+        self._vlm.with_structured_output(ConstrainedSearchIR)
         self._catalog = build_field_catalog()
         # Optional corpus-property grounding for the generic usd_property field.
         # Built once at startup (the catalog file is static for the process);
@@ -76,7 +80,10 @@ class LLMParseExtractor:
         self._properties = build_property_grounding(settings.property_catalog_filepath)
         with open(settings.prompt_filepath, "r") as f:
             self._prompt_template = Template(f.read())
-        self._cache: "OrderedDict[str, SearchIR]" = OrderedDict()
+        self._cache: "OrderedDict[str, ConstrainedSearchIR]" = OrderedDict()
+        self._ready_cache: Optional[bool] = None
+        self._ready_checked_at: float = 0.0
+        self._probe_lock = asyncio.Lock()
 
     @staticmethod
     def _build_connection(settings: LLMParseSettings) -> Optional[LLMConnectionConfig]:
@@ -97,8 +104,22 @@ class LLMParseExtractor:
         return LLMConnectionConfig(**overrides)
 
     async def aping(self) -> bool:
-        """Reachability probe for the query-parsing LLM (used at startup to gate the feature)."""
+        """Reachability probe for the query-parsing LLM."""
         return await self._vlm.aping(timeout=self.settings.timeout_seconds)
+
+    async def is_ready(self) -> bool:
+        """TTL-cached ``aping()`` result, refreshed every ``probe_ttl_seconds``."""
+        now = time.monotonic()
+        if self._ready_cache is not None and now - self._ready_checked_at < self.settings.probe_ttl_seconds:
+            return self._ready_cache
+
+        async with self._probe_lock:
+            now = time.monotonic()
+            if self._ready_cache is not None and now - self._ready_checked_at < self.settings.probe_ttl_seconds:
+                return self._ready_cache
+            self._ready_cache = await self.aping()
+            self._ready_checked_at = time.monotonic()  # after the probe, not before
+            return self._ready_cache
 
     def _system_prompt(self) -> str:
         # safe_substitute leaves the JSON examples' braces untouched (only
@@ -111,19 +132,19 @@ class LLMParseExtractor:
             today=datetime.date.today().isoformat(),
         )
 
-    def _cache_get(self, key: str) -> Optional[SearchIR]:
+    def _cache_get(self, key: str) -> Optional[ConstrainedSearchIR]:
         if key in self._cache:
             self._cache.move_to_end(key)
             return self._cache[key]
         return None
 
-    def _cache_put(self, key: str, value: SearchIR) -> None:
+    def _cache_put(self, key: str, value: ConstrainedSearchIR) -> None:
         self._cache[key] = value
         self._cache.move_to_end(key)
         while len(self._cache) > self.settings.cache_size:
             self._cache.popitem(last=False)
 
-    async def extract(self, query: str) -> SearchIR:
+    async def extract(self, query: str) -> ConstrainedSearchIR:
         """Return the structured IR for ``query``, or raise LLMParseExtractionError."""
         cache_key = query.strip().lower()
         cached = self._cache_get(cache_key)
@@ -141,8 +162,10 @@ class LLMParseExtractor:
                     self._vlm.ainvoke(prompt=query, system_prompt=system_prompt, base64_images=None),
                     timeout=self.settings.timeout_seconds,
                 )
-                ir = result if isinstance(result, SearchIR) else SearchIR.model_validate(result)
+                ir = result if isinstance(result, ConstrainedSearchIR) else ConstrainedSearchIR.model_validate(result)
                 self._cache_put(cache_key, ir)
+                self._ready_cache = True  # a real success un-sticks a stale "unreachable" reading
+                self._ready_checked_at = time.monotonic()
                 return ir
             except asyncio.TimeoutError as exc:  # builtins.TimeoutError on Python >= 3.11
                 last_exc = exc

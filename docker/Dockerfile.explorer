@@ -40,3 +40,13 @@
 # chart) and the existing deployment convention, so the image is a drop-in.
 FROM bitnamilegacy/nginx:1.27.2
 COPY services/explorer/dist /app
+# Runtime index registry: the entrypoint wrapper renders /app/runtime-config.js
+# from EXPLORER_SERVER_MAPPING / EXPLORER_DEFAULT_SERVER before nginx starts
+# (schema in services/explorer/public/runtime-config.js), so the index list is
+# plain container env — no rebuild, no bind mount. --chown lets the non-root
+# runtime user (1001) overwrite the placeholder. Redeclaring CMD is required:
+# setting ENTRYPOINT resets the base image's CMD.
+COPY --chown=1001:0 services/explorer/dist/runtime-config.js /app/runtime-config.js
+COPY --chmod=755 docker/explorer-entrypoint.sh /opt/explorer-entrypoint.sh
+ENTRYPOINT ["/opt/explorer-entrypoint.sh"]
+CMD ["/opt/bitnami/scripts/nginx/run.sh"]

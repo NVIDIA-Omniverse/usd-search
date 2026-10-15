@@ -1234,6 +1234,10 @@ class NestedMetaCacheDict:
                 storage_keys.extend(keys)
                 counter += len(keys)
                 async with lock:
+                    # Without a refresh, docs written within the index's refresh_interval aren't
+                    # searchable yet and their freshly stored images would be deleted as orphans.
+                    async with self.async_context() as es:
+                        await es.indices.refresh(index=self.index_name)
                     search_res = await asyncio.gather(
                         *[
                             wrapper(

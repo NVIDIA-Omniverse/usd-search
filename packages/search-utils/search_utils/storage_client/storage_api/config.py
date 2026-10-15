@@ -13,13 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import Field
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings.main import SettingsConfigDict
 
 from search_utils.storage_client import StorageClientConfig
+
+logger = logging.getLogger(__name__)
 
 STORAGE_CREATED = "omni.storage.created"
 STORAGE_DELETED = "omni.storage.deleted"
@@ -46,9 +49,32 @@ class ThumbnailStyle(str, Enum):
 class StorageAPIStorageClientConfig(StorageClientConfig):
     grpc_endpoint: str = Field(default="localhost:50051", description="GRPC endpoint for the Storage API")
     token: Optional[str] = Field(default=None, description="Token for the Storage API")
+    token_file: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a file containing the bearer token for the Storage API. When set, the "
+            "token is read from this file and re-read every `token_refresh_interval` seconds."
+        ),
+    )
     ssl: Optional[bool] = Field(default=False, description="Use SSL for Storage API")
     headers: Optional[dict] = Field(default=None, description="Metadata for Storage API")
-    base_uri: Optional[str] = Field(default=None, description="Base URI for the Storage API")
+    base_uri: Optional[str] = Field(
+        default=None,
+        description=(
+            "Base URI (namespace root) for the Storage API. Optional and authoritative: when set, the "
+            "client is scoped to this single namespace. When unset (or blank), backends are discovered "
+            "via ListTopLevelAddresses (a deployment may serve several buckets); if the server does not "
+            "implement that call, base_uri must be provided."
+        ),
+    )
+    allowed_top_level_addresses: List[str] = Field(
+        default=[],
+        description=(
+            "Restrict operation to this subset of discovered top-level addresses (buckets / namespace "
+            "roots). Empty (default) uses every address ListTopLevelAddresses reports. Ignored (with a "
+            "warning) when base_uri is set."
+        ),
+    )
     upload_preference: Optional[str] = Field(default=None, description="Upload preference for the Storage API")
     download_preference: Optional[str] = Field(default=None, description="Download preference for the Storage API")
     re_scan_timeout: Optional[float] = 86400  # in seconds (equivalent to 1 day)
@@ -92,3 +118,49 @@ class StorageAPIStorageClientConfig(StorageClientConfig):
     )
 
     model_config = SettingsConfigDict(env_prefix="storage_api_")
+
+    @field_validator("grpc_endpoint", "notification_service_grpc_endpoint")
+    @classmethod
+    def _bare_grpc_target(cls, v: Optional[str], info: ValidationInfo) -> Optional[str]:
+        """gRPC targets must be a bare `host:port`.
+
+        grpc-python does not accept an `http://` / `https://` target: the channel is created
+        without complaint and then never connects, so a scheme here shows up as a hang rather
+        than an error. TLS is selected by `ssl`, not by the endpoint string.
+        """
+        if v is not None and "://" in v:
+            raise ValueError(
+                f"{info.field_name} must be a bare 'host:port' without a scheme (got {v!r}); "
+                "grpc-python never connects to a scheme-prefixed target. Use `ssl` to select TLS."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _warn_plaintext_on_443(self) -> "StorageAPIStorageClientConfig":
+        """Flag the one endpoint form no `kit_storage_api_url` spelling can rescue."""
+        if not self.ssl and self.grpc_endpoint.rsplit(":", 1)[-1] == "443":
+            logger.warning(
+                "Storage API ssl is off but grpc_endpoint %r is on port 443: omni.client keeps "
+                "port 443 on TLS whatever the scheme, so the Kit workers (asset-graph builder, "
+                "rendering) cannot reach this deployment. Serve plaintext on another port, or "
+                "enable ssl.",
+                self.grpc_endpoint,
+            )
+        return self
+
+    @property
+    def kit_storage_api_url(self) -> str:
+        """`grpc_endpoint` in the form Kit needs, for the services that hand it to `omni.client`.
+
+        Kit (the graph-builder and rendering-job workers) registers the Storage API through
+        `omni.client.register_storage_direct`, which never sees `ssl`: it infers TLS from the
+        endpoint string alone. A bare `host:port` means TLS for every host except `localhost` /
+        `127.0.0.1` and port 80, so a plaintext deployment fails the handshake. An explicit
+        `http://` scheme says plaintext -- except on port 443, which omni.client keeps secure
+        regardless, so a plaintext server there is still out of reach from Kit (hence the
+        warning from `_warn_plaintext_on_443`).
+
+        grpc-python needs a bare target, so `grpc_endpoint` stays scheme-less (enforced by
+        `_bare_grpc_target`) and only this Kit-bound copy carries the scheme.
+        """
+        return self.grpc_endpoint if self.ssl else f"http://{self.grpc_endpoint}"

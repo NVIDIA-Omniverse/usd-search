@@ -25,6 +25,7 @@ shared one. Env prefix ``USDSEARCH_LLM_PARSING_``.
 """
 
 import os
+from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +63,15 @@ class LLMParseSettings(BaseSettings):
         "keys/values present in the corpus (-> $properties in the prompt). Empty disables grounding.",
     )
     reasoning_effort: str = Field(default="none")
+    extra_body: Optional[dict] = Field(
+        default=None,
+        description="Extra OpenAI request-body fields passed through to the endpoint. "
+        "Needed e.g. when base_url points at a self-hosted vLLM Qwen, where "
+        "reasoning_effort alone does not disable thinking and the model burns the "
+        "completion budget: set to "
+        '{"chat_template_kwargs": {"enable_thinking": false}}. '
+        "Env: USDSEARCH_LLM_PARSING_EXTRA_BODY (JSON).",
+    )
     max_tokens: int = Field(default=4096)
     temperature: float = Field(default=0.0)
     timeout_seconds: float = Field(
@@ -71,6 +81,10 @@ class LLMParseSettings(BaseSettings):
     max_tries: int = Field(
         default=2,
         description="Max attempts for transient LLM errors (1 = no retry).",
+    )
+    probe_ttl_seconds: float = Field(
+        default=120.0,
+        description="How long a cached reachability-probe result is trusted before re-probing.",
     )
     cache_size: int = Field(
         default=256,

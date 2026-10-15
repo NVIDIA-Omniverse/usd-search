@@ -111,9 +111,11 @@ class CacheClientRedis(CacheClient):
                 RedisStreamConfig(
                     name=f"{self.config.stream_name_prefix}_results",
                     autoclaim_min_idle_time=self.config.results_autoclaim_min_idle_time,
+                    max_attempts=self.config.results_autoclaim_n_retries,
                     consumer_group=self.config.results_consumer_group,
                     **stream_common_kwargs,
-                )
+                ),
+                retry_limit_reached_callback=self.results_retry_limit_reached_callback,
             ),
         )
         if not self._skip_worker_streams_initialization:
@@ -130,7 +132,7 @@ class CacheClientRedis(CacheClient):
                     RedisStreamConfig(
                         name=f"{self.config.stream_name_prefix}_{plugin.plugin_name}_jobs",
                         autoclaim_min_idle_time=autoclaim_min_idle_time,
-                        autoclaim_n_retries=self.config.job_autoclaim_n_retries,
+                        max_attempts=self.config.job_autoclaim_n_retries,
                         consumer_group=self.config.consumer_group,
                         **stream_common_kwargs,
                     ),
@@ -167,6 +169,66 @@ class CacheClientRedis(CacheClient):
                 uri=item["uri"],
                 hash_value=item.get("hash_value"),
             )
+
+    async def results_retry_limit_reached_callback(self, item_list: List[bytes]) -> None:
+        """Report results that could not be written to the search backend.
+
+        The failure is recorded in the status history of the plugin that owns the
+        result (see :class:`AssetData`). ``path_to_hash`` deliberately is not: that is
+        what tells the crawler an asset is done, and a dropped result never reached
+        the search backend, so the next crawl has to produce it again.
+
+        Args:
+            item_list (List[bytes]): serialized results that exhausted their attempts.
+        """
+        for serialized_item in item_list:
+            uri: Optional[str] = None
+            owning_plugins: List[str] = []
+            hash_value: Optional[str] = None
+            try:
+                item: ResultItem = self._deserialize_item_or_list(serialized_item)
+                uri = item.get("uri")
+                hash_value = item.get("hash_value")
+                owning_plugins = list((item.get("asset_data") or {}).get("plugins", {}))
+            except Exception:  # a result we cannot even parse still has to be reported
+                logger.exception("Dropped a result from the results stream that could not be deserialized")
+
+            logger.error(
+                "Result for '%s' was dropped from the results stream after %d failed attempts. "
+                "The asset stays unindexed until it is crawled again.",
+                uri,
+                self.config.results_autoclaim_n_retries,
+            )
+
+            if uri is None:
+                continue
+
+            if len(owning_plugins) != 1:
+                # The producer enqueues one result per plugin, so anything else means
+                # that invariant changed and this report is going to the wrong place -
+                # or nowhere. Record what can be recorded, and say so.
+                logger.warning(
+                    "Result for '%s' names %d owning plugins (%s) - exactly one was expected",
+                    uri,
+                    len(owning_plugins),
+                    owning_plugins,
+                )
+
+            for plugin_name in owning_plugins:
+                try:
+                    await self.add_asset_status(
+                        plugin_name=plugin_name,
+                        uri=uri,
+                        hash_value=hash_value,
+                        status=GenericPluginStatus.failed_retries_exhausted,
+                        exception=(
+                            "Result dropped: maximum number of attempts to write it to the search backend "
+                            f"reached [{self.config.results_autoclaim_n_retries}]"
+                        ),
+                    )
+                except Exception:
+                    # reporting must never get in the way of dropping the item
+                    logger.exception("Could not record the dropped result of '%s' for plugin '%s'", uri, plugin_name)
 
     def check_all_plugins_initialization(self) -> None:
         for plugin_name in Plugins.get_plugin_names():

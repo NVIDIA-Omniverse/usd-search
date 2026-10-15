@@ -167,7 +167,15 @@ def build_catalog_doc(stats: Dict[str, Any], source: str, max_values: int, min_n
 # --- generated search_fields stanzas --------------------------------------
 
 
-def _stanza(name: str, key: str, vtype: str, asset_count: int, top_values: List[Tuple[str, int]]) -> Dict[str, Any]:
+def _stanza(
+    name: str,
+    key: str,
+    vtype: str,
+    asset_count: int,
+    top_values: List[Tuple[str, int]],
+    label: Optional[str] = None,
+    group: Optional[str] = None,
+) -> Dict[str, Any]:
     if vtype == "number":
         kind, ops = "property_numeric", ["gt", "gte", "lt", "lte", "eq"]
         ex = [f'"{name} over 10" -> {name} gt 10']
@@ -181,7 +189,7 @@ def _stanza(name: str, key: str, vtype: str, asset_count: int, top_values: List[
     enum_hint = ""
     if vtype == "string" and top_values:
         enum_hint = " Common values: " + ", ".join(repr(v) for v, _ in top_values[:8]) + "."
-    return {
+    out = {
         "name": name,
         "type": vtype,
         "operators": ops,
@@ -189,6 +197,14 @@ def _stanza(name: str, key: str, vtype: str, asset_count: int, top_values: List[
         "examples": ex,
         "map": {"kind": kind, "property": key},
     }
+    # Optional UI-only presentation hints (flat sibling keys the backend serves
+    # through GET /llm_parse/fields; the Explorer rail groups/labels controls by
+    # them). Only emitted when the target declares them.
+    if label:
+        out["label"] = label
+    if group:
+        out["group"] = group
+    return out
 
 
 def build_generated_fields(
@@ -241,6 +257,13 @@ def run_audit(
                 "note": t.get("note", ""),
                 "present": bool(matched),
                 "matched": matched,
+                # Optional per-target field hints, passed through to the
+                # generated stanza: UI label/group, and a type override for when
+                # value inference would misclassify (e.g. a numeric-looking
+                # version string that should stay a categorical filter).
+                "label": t.get("label", ""),
+                "group": t.get("group", ""),
+                "type": t.get("type", ""),
             }
         )
 
@@ -312,7 +335,12 @@ def build_target_fields(stats: Dict[str, Any], results: List[Dict[str, Any]], re
         if name in used:
             name = f"{name}_{zlib.crc32(key.encode()) % 1000:03d}"
         used.add(name)
-        out.append(_stanza(name, key, infer_type(vals, min_numeric_frac), count, vals))
+        vtype = r.get("type") or infer_type(vals, min_numeric_frac)
+        if vtype not in ("number", "boolean", "string"):
+            raise ValueError(
+                f"target '{r['concept']}': type override must be number/boolean/string, got '{vtype}'"
+            )
+        out.append(_stanza(name, key, vtype, count, vals, label=r.get("label") or None, group=r.get("group") or None))
     return out
 
 
@@ -335,6 +363,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--source", default="", help="provenance string (e.g. API URL) recorded in the catalog")
     ap.add_argument("--audit", help="targets YAML for the present/absent gap report")
     ap.add_argument("--samples", help="JSON {property_key: [urls]} of pre-fetched sample assets")
+    ap.add_argument(
+        "--base",
+        help="base search_fields YAML whose (non-property) fields are prepended when emitting a "
+        "complete catalog (see --emit-catalog)",
+    )
+    ap.add_argument(
+        "--emit-catalog",
+        metavar="NAME",
+        help="with --audit and --base: write search_fields.NAME.yaml — a complete, deploy-ready "
+        "catalog of the base fields plus the resolved target stanzas (real corpus keys, "
+        "label/group hints baked in). Point USDSEARCH_LLM_PARSING_FIELDS_FILEPATH at it.",
+    )
     ap.add_argument("--top-n-fields", type=int, default=DEFAULTS["top_n_fields"])
     ap.add_argument("--max-values", type=int, default=DEFAULTS["max_values"])
     ap.add_argument("--max-categorical-card", type=int, default=DEFAULTS["max_categorical_card"])
@@ -342,9 +382,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--reserved", default="", help="extra reserved field names, comma-separated")
     args = ap.parse_args(argv)
 
+    # Validate the arg combination BEFORE reading stats: with the default
+    # `--stats -` a bad invocation must error, not hang waiting on stdin.
+    if args.emit_catalog and not (args.base and args.audit):
+        ap.error("--emit-catalog requires both --base and --audit")
+
     stats = load_stats(args.stats)
     os.makedirs(args.out_dir, exist_ok=True)
     reserved = set(DEFAULT_RESERVED) | {x.strip() for x in args.reserved.split(",") if x.strip()}
+
+    # Base catalog for --emit-catalog: its field names are reserved so a resolved
+    # target can never shadow a base field.
+    base_fields: List[Dict[str, Any]] = []
+    if args.base:
+        base_fields = yaml.safe_load(open(args.base, "r"))["fields"]
+        reserved |= {f["name"] for f in base_fields}
 
     catalog = build_catalog_doc(stats, args.source or args.stats, args.max_values, args.min_numeric_frac)
     with open(os.path.join(args.out_dir, "usd_property_catalog.yaml"), "w") as f:
@@ -386,7 +438,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             json.dump(matched, f, indent=2)
         # Ready-to-merge filter stanzas for the present targets (coverage-independent,
         # so e.g. collision type makes it in even though it's a thin slice).
-        target_fields = build_target_fields(stats, results, reserved, args.min_numeric_frac)
+        # In --emit-catalog mode the targets ARE the curated catalog, so they only
+        # need to avoid the base fields' names (a target may legitimately reuse a
+        # built-in name like physics_mass); standalone p0 stanzas are meant to be
+        # merged into a shipped catalog and keep reserving the built-ins.
+        target_reserved = (
+            {f["name"] for f in base_fields} | {x.strip() for x in args.reserved.split(",") if x.strip()}
+            if args.emit_catalog
+            else reserved
+        )
+        target_fields = build_target_fields(stats, results, target_reserved, args.min_numeric_frac)
         with open(os.path.join(args.out_dir, "search_fields.p0.yaml"), "w") as f:
             f.write(
                 _dump_yaml(
@@ -398,6 +459,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         summary["audit_present"] = sorted(r["concept"] for r in results if r["present"])
         summary["audit_absent"] = sorted(r["concept"] for r in results if not r["present"])
         summary["target_fields"] = [f["name"] for f in target_fields]
+
+        # Complete deploy-ready catalog: base (corpus-agnostic) fields + the
+        # resolved target stanzas. This is the file a deployment points
+        # USDSEARCH_LLM_PARSING_FIELDS_FILEPATH at; regenerate it whenever the
+        # corpus (index) changes so property keys never go stale.
+        if args.emit_catalog:
+            catalog_path = os.path.join(args.out_dir, f"search_fields.{args.emit_catalog}.yaml")
+            with open(catalog_path, "w") as f:
+                f.write(
+                    _dump_yaml(
+                        {"fields": base_fields + target_fields},
+                        f"# GENERATED complete filter catalog ('{args.emit_catalog}'): base fields\n"
+                        f"# from {os.path.basename(args.base)} plus target concepts resolved against\n"
+                        f"# the corpus stats ({args.source or args.stats}). Regenerate per index —\n"
+                        "# do not hand-edit property keys.\n",
+                    )
+                )
+            summary["emitted_catalog"] = catalog_path
 
     print(json.dumps(summary, indent=2))
     return 0

@@ -29,6 +29,7 @@ from search_utils.storage_client.nucleus.config import NucleusStorageConfig
 from search_utils.storage_client.s3.config import S3StorageClientConfig
 
 from .ls import ls
+from .migrate_url_spellings import migrate as migrate_url_spellings_main
 from .reindex import main as reindex_main
 
 T = TypeVar("T")
@@ -122,6 +123,7 @@ class AdminTools:
 
     def cache(
         self,
+        *,
         redis_url: Optional[str] = None,
         stream_name_prefix: Optional[str] = None,
         cache_plugin_prefix: Optional[str] = None,
@@ -216,6 +218,48 @@ class AdminTools:
             refresh_tags=refresh_tags,
             refresh_plugins=refresh_plugins,
         )
+
+    def migrate_url_spellings(
+        self,
+        apply: bool = False,
+        reindex: bool = False,
+        endpoint_url: Optional[str] = None,
+        limit: int = 0,
+        verbose: bool = False,
+    ) -> None:
+        """Repair asset-graph nodes keyed by a percent-encoded URL.
+
+        Graphs built before `graph_url` can hold an :Asset keyed by an encoded URL
+        while storage holds the raw object key, so downloads drop the layer and
+        reverse-dependency lookups come back empty. Renames those nodes, merging
+        into the existing node where one already holds the decoded URL.
+
+        Reads the graph credentials from the environment (db_uri, db_username,
+        db_password, optional db_name), so it must run in the asset-graph-service
+        pod; it refuses to start anywhere else. Back up first — it rewrites primary
+        keys.
+
+        Args:
+            apply: Write the changes. Reports only when false.
+            reindex: Resubmit every migrated asset for asset-graph processing.
+            endpoint_url: Info endpoint for --reindex. Defaults to INFO_ENDPOINT_URL,
+                then to http://localhost:8000.
+            limit: Stop after N nodes. All of them when 0.
+            verbose: Log every node rather than a sample of ten.
+        """
+        code = asyncio.run(
+            migrate_url_spellings_main(
+                apply=apply,
+                reindex=reindex,
+                endpoint_url=endpoint_url,
+                limit=limit,
+                verbose=verbose,
+            )
+        )
+        # Fire prints a returned value and still exits 0, so a refusal has to be
+        # raised to reach the caller as a status an operator can branch on.
+        if code:
+            raise SystemExit(code)
 
 
 if __name__ == "__main__":

@@ -30,7 +30,7 @@
 #   # With GPU plugins:
 #   LOCAL_FS_DATA_DIR=/path/to/my-assets \
 #     docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml \
-#       -f docker-compose.local-fs.yml up --build
+#       -f docker-compose.local-fs.yml -f docker-compose.local-fs.gpu.yml up --build
 #
 # Environment variables:
 #   LOCAL_FS_DATA_DIR  — (required) host path to your assets directory
@@ -77,7 +77,9 @@ services:
       # which is: ${LOCAL_FS_DATA_DIR}/path/file on the host
       - ${LOCAL_FS_DATA_DIR:?}:/data/${LOCAL_FS_BUCKET:-usdsearch-local}:rw
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost:80/ 2>/dev/null"]
+      # The image ships bash + java only (no wget/curl), so probe the port
+      # with bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/80"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -160,17 +162,3 @@ services:
     depends_on:
       s3proxy:
         condition: service_healthy
-
-  # ─── GPU plugin worker overrides (active only when gpu-plugins overlay is also used) ─
-
-  rendering-job:
-    environment:
-      - S3_STORAGE_AWS_ENDPOINT_URL=http://s3proxy:80
-
-  monitor-worker-thumbnail-generation:
-    environment:
-      <<: *local-fs-env
-
-  monitor-worker-rendering-to-embedding:
-    environment:
-      <<: *local-fs-env

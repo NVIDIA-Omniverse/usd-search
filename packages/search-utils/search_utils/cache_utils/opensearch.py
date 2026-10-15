@@ -15,11 +15,13 @@
 
 # standard modules
 import hashlib
+import logging
 import os
 from typing import Any, Callable, Dict, Optional, TypedDict, Union
 
 # third party modules
 from opensearchpy import AsyncOpenSearch, OpenSearch, helpers
+from opensearchpy.exceptions import RequestError
 from pydantic_settings.main import BaseSettings, SettingsConfigDict
 from typing_extensions import NotRequired
 
@@ -38,6 +40,8 @@ from search_utils.misc_utils import (
 )
 
 from .config import IndexConfig, SupportedStorageFields
+
+logger = logging.getLogger(__name__)
 
 BINARY_DATA = str2bool(os.getenv("EMBEDDING_BINARY_DATA", "True"))
 
@@ -68,6 +72,7 @@ class NestedMetaOSCacheDict(NestedMetaCacheDict, OSCacheDict):
         binary_data: bool = BINARY_DATA,
         version: str = "5.0",
         number_of_shards: int = int(os.getenv("NUMBER_OF_SHARDS", "20")),
+        refresh_interval: Optional[str] = None,
         es_observability: observability_utils.SearchBackendObservability = observability_utils.SearchBackendObservability(),
         os_backend_settings: OSBackendSettings = OSBackendSettings(),
         index_config: Optional[IndexConfig] = None,
@@ -75,6 +80,11 @@ class NestedMetaOSCacheDict(NestedMetaCacheDict, OSCacheDict):
     ):
         if index_config is None:
             index_config = IndexConfig()
+
+        # Resolved at instantiation (not import) time so ``OS_REFRESH_INTERVAL`` set by
+        # callers/tests before creating the backend is honored regardless of import order.
+        if refresh_interval is None:
+            refresh_interval = os.getenv("OS_REFRESH_INTERVAL", "60s")
 
         self._index_config = index_config
 
@@ -115,7 +125,20 @@ class NestedMetaOSCacheDict(NestedMetaCacheDict, OSCacheDict):
                 "parameters": {"ef_construction": 2048, "ef_search": 2048, "m": 64},
             },
         }
-        settings = {"index": {"number_of_shards": number_of_shards, "knn": True}}
+        settings = {
+            "index": {
+                "number_of_shards": number_of_shards,
+                "knn": True,
+                # Disable k-NN derived source (OpenSearch 3.0+): keep vectors in _source
+                # rather than reconstructing them from the k-NN index.
+                "knn.derived_source.enabled": False,
+                # Refresh newly written docs into searchable segments at most every
+                # ``refresh_interval`` (default 60s, vs the 1s OpenSearch default) to
+                # reduce indexing/segment-merge overhead. Configurable via
+                # ``OS_REFRESH_INTERVAL`` (Helm ``search_backend_config.refresh_interval``).
+                "refresh_interval": refresh_interval,
+            }
+        }
 
         if float(version) >= 4.0:
             settings.update(
@@ -290,12 +313,16 @@ class NestedMetaOSCacheDict(NestedMetaCacheDict, OSCacheDict):
         es: OpenSearch
         with self.context() as es:
             if es.exists(index=self.index_name, id=key_hashed):
-                es.update(
-                    index=self.index_name,
-                    id=key_hashed,
-                    body={"doc": meta},
-                    params=dict(retry_on_conflict=self._os_backend_settings.retry_on_conflict),
-                )
+                try:
+                    es.update(
+                        index=self.index_name,
+                        id=key_hashed,
+                        body={"doc": meta},
+                        params=dict(retry_on_conflict=self._os_backend_settings.retry_on_conflict),
+                    )
+                except RequestError:
+                    self._log_update_meta_failure(key=key, key_hash=key_hashed, meta=meta)
+                    raise
             else:
                 self.__setitem__(key, {}, meta)
 
@@ -311,14 +338,37 @@ class NestedMetaOSCacheDict(NestedMetaCacheDict, OSCacheDict):
         async with self.async_context() as es:
             _key = key_hash or self.get_hash(key)
             if await es.exists(index=self.index_name, id=_key):
-                await es.update(
-                    index=self.index_name,
-                    id=_key,
-                    body={"doc": meta},
-                    params=dict(retry_on_conflict=self._os_backend_settings.retry_on_conflict),
-                )
+                try:
+                    await es.update(
+                        index=self.index_name,
+                        id=_key,
+                        body={"doc": meta},
+                        params=dict(retry_on_conflict=self._os_backend_settings.retry_on_conflict),
+                    )
+                except RequestError:
+                    self._log_update_meta_failure(key=key, key_hash=_key, meta=meta)
+                    raise
             else:
                 await self.async_setitem(key=key, key_hash=key_hash, values={}, meta=meta)
+
+    def _log_update_meta_failure(self, key: Optional[str], key_hash: str, meta: Optional[dict]) -> None:
+        """Log the exact _update payload OpenSearch rejected so the offending body can be inspected.
+
+        Helpful when OpenSearch returns ``not_x_content_exception`` (a 400 raised before field
+        mapping, indicating the request body reaching the server was not recognizable JSON /
+        compressed content).
+        """
+        try:
+            body_preview = repr({"doc": meta})[:4000]
+        except Exception:  # pragma: no cover - defensive, repr should not raise
+            body_preview = "<unreprable>"
+        logger.error(
+            "_update rejected by OpenSearch for index=%s key=%s key_hash=%s; body={'doc': meta} preview=%s",
+            self.index_name,
+            key,
+            key_hash,
+            body_preview,
+        )
 
     def postprocess_search_results(self, r: dict, return_dict: bool = False, only_key: bool = False) -> dict:
         """Postprocess search results coming from ES engine.

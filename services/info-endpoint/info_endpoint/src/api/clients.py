@@ -50,7 +50,14 @@ def get_active_plugins() -> List[BasePlugin]:
     Returns:
         List[BasePlugin]: List of active plugins
     """
-    return Plugins.get_active_plugins(config_path=DeepSearchMonitorConfig().plugins_config_path)
+    config_path = DeepSearchMonitorConfig().plugins_config_path
+    active_plugins = Plugins.get_active_plugins(config_path=config_path)
+    logger.info(
+        "Plugins configuration path: %s; active plugins: %s",
+        config_path,
+        sorted(plugin.plugin_name for plugin in active_plugins),
+    )
+    return active_plugins
 
 
 def get_storage_client() -> StorageClient:

@@ -1,18 +1,18 @@
 # USD Search API
 
-![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.4.0](https://img.shields.io/badge/AppVersion-1.4.0-informational?style=flat-square)
+![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.5.0](https://img.shields.io/badge/AppVersion-1.5.0-informational?style=flat-square)
 
 **Homepage:** <https://github.com/NVIDIA-omniverse/usd-search>
 
 # Requirements
 | Repository | Name | Version |
 |------------|------|---------|
-| https://helm.neo4j.com/neo4j | neo4j | 2026.1.4 |
-| https://opensearch-project.github.io/helm-charts/ | opensearch | 3.3.2 |
+| https://helm.neo4j.com/neo4j | neo4j | 2026.9.0 |
+| https://opensearch-project.github.io/helm-charts/ | opensearch | 3.8.0 |
 | https://opensearch-project.github.io/helm-charts/ | opensearch-dashboards | 3.5.0 |
 | oci://registry-1.docker.io/bitnamicharts | deepsearch-explorer(nginx) | 22.5.3 |
 | oci://registry-1.docker.io/bitnamicharts | api-gateway(nginx) | 22.5.3 |
-| oci://registry-1.docker.io/bitnamicharts | redis | 25.3.2 |
+| oci://registry-1.docker.io/bitnamicharts | redis | 28.2.3 |
 
 # Overview
 
@@ -48,7 +48,9 @@ The document describes how USD Search API helm chart could be configured and ins
 	- [Omniverse Storage APIs](#omniverse-storage-apis)
 		- [SSL support](#ssl-support)
 		- [Authentication](#authentication)
+		- [Thumbnail retrieval](#thumbnail-retrieval)
 		- [Alternative installation options](#alternative-installation-options-3)
+		- [Additional parameters: re-scan frequency](#additional-parameters-re-scan-frequency-1)
 	- [API endpoint access](#api-endpoint-access)
 	- [Monitoring](#monitoring)
 - [Post-installation](#post-installation)
@@ -82,6 +84,7 @@ The document describes how USD Search API helm chart could be configured and ins
 	- [USD properties search](#usd-properties-search)
 	- [VLM-based automatic captioning and tagging](#vlm-based-automatic-captioning-and-tagging)
 		- [LLM/VLM provider](#llmvlm-provider)
+		- [Input budget and cache identity](#input-budget-and-cache-identity)
 		- [Customization](#customization)
 			- [Image prompt configuration](#image-prompt-configuration)
 			- [Metadata fields configuration](#metadata-fields-configuration)
@@ -92,7 +95,7 @@ The document describes how USD Search API helm chart could be configured and ins
 		- [OpenSearch authentication](#opensearch-authentication)
 	- [OTEL Telemetry and Traces collection](#otel-telemetry-and-traces-collection)
 		- [Trace collection](#trace-collection)
-		- [Search telemetry collection](#search-telemetry-collection)
+		- [Search and asset-load telemetry collection](#search-and-asset-load-telemetry-collection)
 	- [Values](#values)
 		- [Global settings](#global-settings)
 	- [Embedding service settings](#embedding-service-settings)
@@ -147,10 +150,17 @@ Generate your NGC helm and container registry API Key prior to fetch helm chart.
 Fetch the latest helm chart from the registry
 
 ```bash
-helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.4.0.tgz \
+helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.5.0.tgz \
 	--username='$oauthtoken' \
 	--password=<YOUR API KEY>
 ```
+
+> **Faster eval/prod cluster setup:** if you don't already have a Kubernetes
+> cluster, NGC also publishes MicroK8s bare-metal quickstart scripts and a
+> Terraform module for standing one up on AWS, under the same
+> `nvidia/usdsearch` NGC resources referenced above. This chart's own
+> instructions below assume a cluster already exists and don't cover
+> provisioning one.
 
 # Deployment
 
@@ -162,7 +172,7 @@ To deploy the USD Search Helm chart and connect it to an AWS S3 bucket for
 indexing, run the following command:
 
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=s3 \
   --set global.s3.bucket_name=<S3 bucket name> \
@@ -206,7 +216,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=s3 \
   --set global.s3.bucket_name=<S3 bucket name> \
@@ -240,7 +250,7 @@ For more details on configuring different storage backends, refer to the officia
 Using S3proxy functionality is it possible to seamlessly connect to any S3 compatible storage backends (e.g. Dell ObjectScale, DreamObjects, etc.)
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
+helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -261,7 +271,7 @@ helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
 Using S3proxy functionality is it possible to seamlessly connect to Azure Blob Storage.
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
+helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -282,7 +292,7 @@ helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
 Using S3proxy functionality is it possible to seamlessly connect to Google Cloud Storage.
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.4.0.tgz --install \
+helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -326,7 +336,7 @@ kubectl create secret docker-registry nvcr.io \
 With the above secrets created, the helm chart installation command can be
 simplified to:
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
@@ -370,7 +380,7 @@ is possible to deploy the USD Search Helm chart and connect it to an
 Omniverse Nucleus server for indexing, as follows:
 
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
  --set global.accept_eula=true \
  --set global.storage_backend_type=nucleus \
  --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -421,7 +431,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=nucleus \
   --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -489,7 +499,7 @@ To deploy the USD Search Helm chart and connect it to an Omniverse Storage API f
 indexing, run the following command:
 
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=storage_api \
   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -585,7 +595,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.4.0.tgz \
+helm install <deployment name> usdsearch-1.5.0.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=storage_api \
   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -597,6 +607,28 @@ helm install <deployment name> usdsearch-1.4.0.tgz \
   --set global.storage_api.authentication.token=<Storage API token> \
   --set api-gateway.image.pullSecrets={nvcr.io} \
   --set global.imagePullSecrets={nvcr.io}
+```
+
+### Additional parameters: re-scan frequency
+
+USD Search performs a full re-scan of the Storage API backend daily to detect new data while minimizing load. You can adjust the re-scan frequency by adding the following argument to the installation or upgrade command:
+
+```bash
+  --set global.storage_api.re_scan_timeout=<re scan timeout time in seconds>
+```
+
+Setting this parameter to ``-1`` (or any other non-positive value) disables periodic re-scans, so the backend is scanned only once at startup.
+
+**NOTE**: This parameter only applies when ``global.storage_api.notification_subscription_enabled`` is ``false`` (the default). When notification subscription is enabled, changes are picked up from the Storage API notification stream instead and no periodic re-scan is performed, so the value is ignored.
+
+**NOTE**: Setting this parameter too low may cause processing queues to grow faster than your USD Search instance can handle. It is recommended to monitor the processing queues in Grafana and adjust the parameter to prevent excessive queue growth.
+
+### Additional parameters: thumbnail style
+
+By default (``storage_api``), thumbnails are resolved by reading the thumbnail URL directly from the asset metadata field(s) named in ``global.storage_api.thumbnail_metadata_fields``. To instead resolve thumbnails from the conventional Nucleus ``.thumbs/<width>x<height>/<filename>[.auto].png`` sibling path, set:
+
+```bash
+  --set global.storage_api.thumbnail_style=nucleus
 ```
 
 ## API endpoint access
@@ -1277,6 +1309,119 @@ indexed.
 __NOTE__: Only the properties from the default prims inside a USD stage
 are indexed and searchable.
 
+### Tuning the kit-worker sidecar
+
+Graph construction runs Kit in a ``kit-worker`` sidecar next to the plugin
+worker. The chart adds that container whenever ``requires_kit_worker`` is
+set (the default for this plugin), and everything about it — image,
+command, resources, memory watchdog, build timeout, caches — is configured
+under ``kit_worker``:
+
+```yaml
+plugins:
+  asset_graph_generation:
+    requires_kit_worker: true
+    kit_worker:
+      resources:
+        requests: {cpu: 4, memory: 10Gi}
+        limits: {cpu: 8, memory: 20Gi}
+      memory_limit_mb: 17000     # soft watchdog, below limits.memory
+      timeout_seconds: 3600      # wall clock for one graph build
+      client_timeout_margin: 120 # plugin waits this much longer than the builder
+      cache:
+        enabled: true
+        mount_path: /cache
+        medium: ""               # "" = node disk, "Memory" = tmpfs
+        size_limit: 20Gi
+      shm_size: 1Gi
+      env: []
+```
+
+Each value can be set on its own — e.g.
+``--set deepsearch.plugins.asset_graph_generation.kit_worker.resources.limits.memory=32Gi``.
+That is the reason ``kit_worker`` is a map and not an entry in
+``sidecar_containers``: Helm merges maps but replaces lists wholesale, so a
+list entry cannot be tuned one field at a time. ``sidecar_containers``
+remains available for *additional* sidecars; putting a ``kit-worker`` entry
+there while ``requires_kit_worker`` is set is rejected at render time
+(it would produce two containers with the same name).
+
+__Out-of-memory kills__ (container exit code 137) are the most common
+asset-graph failure. Two things control them:
+
+* ``resources.limits.memory`` — the hard ceiling. A stage that needs more
+  than this gets the container killed by the kernel, which takes the
+  in-flight request down with it.
+* ``memory_limit_mb`` — a soft watchdog *below* that ceiling. The builder
+  kills Kit itself when it is crossed and records
+  ``graph_construction_oom`` for that one asset, so the failure is
+  attributable and the sidecar keeps serving. Recommended: 80-90% of the
+  hard limit.
+
+Memory demand also scales with ``n_concurrent_queue_workers``, which
+becomes the number of Kit processes sharing the sidecar
+(``N_PARALLEL_PROCESSES``) — raise concurrency and memory together.
+
+__Build timeout__: ``timeout_seconds`` bounds a single graph build (default
+``1800``). The plugin's HTTP client automatically gets
+``timeout_seconds + client_timeout_margin``, so a build that runs long
+surfaces as the builder's own timeout — carrying a
+``graph_construction_timeout`` status — rather than an opaque client-side
+one.
+
+### Sidecar / package metadata (opt-in)
+
+The graph builder can pick up metadata that ships next to a USD file — a
+per-asset ``<stem>.json`` sidecar, or a package-level ``.metadata/*.json``
+bundle rooted at a manifest file above it — and merge it into the same
+``usd_properties`` bag SimReady custom-layer metadata already lands in. On a
+key collision the sidecar value always wins: it is merged in last, after
+native USD prim properties and SimReady custom-layer metadata, and later
+sources within the catalog itself win over earlier ones. See
+``docs/plans/sidecar-package-metadata.md`` for the full design and
+``services/asset-graph-builder/graph_builder/sidecar_metadata.py`` for the
+implementation.
+
+Unset by default (no-op). Set ``kit_worker.sidecar_metadata_catalog`` to a
+full sidecar-metadata YAML document — the same shape as the example SimReady
+catalog that ships alongside the module at
+``graph_builder/sidecar_metadata.simready.yaml`` (``package_root_max_depth``
++ ``sources: [...]``) — and the chart renders it into a ``ConfigMap``, mounts
+it into the ``kit-worker`` sidecar, and points ``SIDECAR_METADATA_CONFIG_PATH``
+at it. No custom image required. The example below is that shipped SimReady
+catalog verbatim — deliberately minimal, proving the mechanism end-to-end
+against ``data/simready_sample/apple_a01_usd_bom`` with a single per-asset
+``<stem>.json`` sidecar source. Package-level files — the package manifest,
+``root_usds.json``, ``packaging.bom.json``, the conformance report — are
+intentionally out of scope here (see the header comment in
+``graph_builder/sidecar_metadata.simready.yaml``); a deployment that wants
+one adds a ``location: package_root`` source for it using the same
+``flatten`` / ``list_membership`` / ``array_match_flatten`` extract kinds,
+no code change required:
+
+```yaml
+plugins:
+  asset_graph_generation:
+    kit_worker:
+      sidecar_metadata_catalog:
+        package_root_max_depth: 6
+        sources:
+          # Per-asset flat sidecar: <stem>.json next to <stem>.usd, e.g.
+          # sm_apple_a01_01.json next to sm_apple_a01_01.usd — author,
+          # license, category, qcode, rigid_body_count, asset_extents, mass.
+          - name: asset_sidecar
+            location: sibling
+            filename: "{stem}.json"
+            prefix: "sidecar_"
+            extract:
+              kind: flatten
+```
+
+A ``SIDECAR_METADATA_CONFIG_PATH`` set directly under ``kit_worker.env``
+still works and takes precedence over the chart-mounted path above (env
+entries there are appended after the chart-set ones) — useful for pointing
+at a catalog baked into a custom ``asset-graph-builder`` image instead.
+
 ## VLM-based automatic captioning and tagging
 
 ### LLM/VLM provider
@@ -1314,6 +1459,37 @@ base_url: https://inference-api.nvidia.com
 env_prefix: USDSEARCH_LLM_
 ```
 
+### Input budget and cache identity
+
+Request-size limits for VLM metadata generation. A metadata request sends at
+most ``max_images`` uniformly sampled views (first and last view always kept),
+shrinks each image so neither edge exceeds ``max_px`` pixels (never upscaled),
+and keeps the encoded image payload under ``max_request_bytes`` (resolution
+is reduced first, views are dropped only if the set still cannot fit).
+The limits are deliberately global rather than per plugin: one
+monitor-crawler computes the cache identity for every metadata worker, so
+all processes must resolve identical settings (``VLM_MAX_IMAGES``,
+``VLM_IMAGE_MAX_PX``, ``VLM_MAX_REQUEST_BYTES`` on the workers and crawlers).
+
+``deepsearch.vision_endpoint.metadata_revision`` (``VLM_METADATA_REVISION``)
+is an OPTIONAL output-contract revision and is **empty by default**: the
+metadata cache identity is then the asset hash alone, exactly as before
+these settings existed, so upgrading never reprocesses unchanged assets on
+its own and earlier metadata stays searchable next to newer output. Set any
+non-empty value (for example ``metadata-v2-png512``) to opt a deployment in:
+the revision and the three limits above then join the cache identity, and
+changing any of them makes unchanged assets eligible for reprocessing. Bump
+the revision after a model, prompt or schema change when the corpus should
+be regenerated, and plan the resulting VLM load on a large corpus first.
+
+Default request limits (`metadata_revision` defaults to empty):
+
+```yaml
+max_images: 16
+max_px: 512
+max_request_bytes: 8388608
+```
+
 ### Customization
 
 It is possible to customize the type of information extracted by the VLM-based auto-captioning system. There are two ways how this can be achieved:
@@ -1337,21 +1513,28 @@ and ``{metadata_definitions}``. Those get populated with the respective values
 defined in ``deepsearch.vision_endpoint.metadata_fields`` parameter.
 
 ```text
-You are an expert 3D asset cataloguer for USD Search, an asset library used across
-synthetic data generation, robotics & simulation, industrial / warehouse / logistics,
-autonomous driving, architecture, retail, digital twins, and games & film.
+You are an indexing engine for USD Search, a 3D-asset search engine used across
+robotics & simulation, synthetic data generation, industrial / warehouse /
+logistics, autonomous driving, digital twins, and games & film.
 
-Analyze the provided rendered images of a single 3D asset and produce rich, accurate,
-searchable metadata. Optimize for retrieval: imagine the many different users —
-a robotics engineer, an SDG pipeline, a warehouse digital-twin team, a game artist —
-and capture the terms each of them would search for.
+You are shown one or more rendered views of a SINGLE 3D asset. Nobody reads your
+output: every word you emit is either a keyword-search term or a filter value.
+Optimize purely for retrieval — capture EVERY distinctive term a real user might
+type to find exactly this asset. Imagine a robotics engineer, an SDG pipeline, a
+warehouse digital-twin team, and a game artist all searching for it, and cover
+the terms each of them would use. Distinctive breadth, zero filler.
 
 ## How to analyze
-1. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
-2. Note its function and which domains/pipelines it suits.
-3. Read any visible text, branding, labels, or signage.
-4. Note materials, dominant colors, real-world scale, condition, and any mechanical traits.
-5. Brainstorm the keywords and synonyms a real user would type to find it.
+1. The images are multiple views of the same asset. Aggregate evidence across ALL
+   views: a part occluded in one view may be clear in another; text may be legible
+   in only one view. Report what at least one view clearly shows; reconcile
+   contradictions in favor of the clearer view.
+2. Identify the object as specifically as possible (not "vehicle" but "counterbalance forklift").
+3. Note its clearly visible parts, function, materials, dominant colors,
+   real-world scale, condition, and mechanical traits.
+4. Transcribe visible text ONLY if every character is clearly legible in some view.
+5. Brainstorm the keywords, synonyms, part names, and domain terms each kind of
+   user would type to find it.
 
 ## Output format (JSON object with exactly these fields)
 {metadata_types}
@@ -1361,19 +1544,130 @@ and capture the terms each of them would search for.
 
 ## Rules
 - Output ONLY a valid JSON object with every field above — no prose, no markdown.
-- Describe only what is actually visible. Never invent brands, text, or function.
-- When a field doesn't apply or can't be determined, use "unknown" for single-value
-  string fields and an empty list `[]` for list fields. Do not guess.
-- Be specific over generic; prefer precise nouns and industry terms.
-- Use lowercase for tags, object_type, use_cases, environment, colors, materials,
+- The renders are low resolution. Describe only what you can clearly resolve:
+  prefer omission over inference. Never invent brands, text, part details, or
+  function; never reconstruct partially legible text or infer branding from a
+  logo shape or color scheme.
+- When a field can't be determined: use null for category, style, scale, and
+  state (never force a wrong value); "unknown" for object_type; and an empty
+  list `[]` for environment, colors, materials, physical_attributes, and
+  visible_text. Do not guess. caption, queries, and tags must ALWAYS describe
+  what IS visible, at whatever specificity the renders support (for a bare
+  primitive: "gray box-shaped object", tags like cube, box, gray).
+- Every list is ordered most→least relevant.
+- Be specific over generic. Never emit filler that matches almost every asset:
+  "3d model", "asset", "object", "mesh", "render", or near-universal phrases.
+- Use lowercase for queries, tags, object_type, environment, colors, materials,
   physical_attributes (captions and verbatim visible_text keep natural casing).
-- Pick exactly ONE value for category, style, scale, and state from their allowed lists.
-- Tags are the most important field: be thorough, include synonyms and domain terms.
-- Quality flags must be honest — they let users filter out broken assets.
+- Fields with allowed lists (style, scale, state, physical_attributes items —
+  and category where the deployment defines a list) take values ONLY from
+  those lists, verbatim; null beats a wrong pick.
+- Queries and tags are the most important fields: phrase them exactly the way
+  real users search — thorough, with synonyms, part names, and domain terms.
 
 ```
 
 #### Metadata fields configuration
+
+Configuration of metadata fields extracted by the VLM-based auto-captioning
+system, controlled by the ``deepsearch.vision_endpoint.metadata_fields``
+parameter. The default mirrors the schema shipped with the package
+(``packages/llm-client/llm_client/metadata/metadata_fields.yaml``); edit it
+per deployment as needed. Below is the default configuration:
+
+```yaml
+- description: |
+    A concise, specific title (5-12 words) naming the object precisely. Format: "[distinguishing adjectives] [specific object name]". Examples: "Counterbalance warehouse forklift", "Galvanized steel pallet rack", "Articulated 6-axis industrial robot arm", "Weathered red shipping container", "Ergonomic mesh office chair", "Stainless commercial kitchen prep table".
+  name: caption
+  type: str
+- description: |
+    The single most specific common noun for the object (lowercase), e.g. "forklift", "pallet rack", "conveyor belt", "office chair", "fire extinguisher", "traffic cone", "robot gripper", "cardboard box", "transformer", "hand drill". Prefer the precise term over a generic one ("sectional sofa", not "furniture").
+  name: object_type
+  type: str
+- description: |
+    Short search phrases a person would actually type into a search box to find this asset — aim for 5-10 (at least 3 required; even a bare primitive supports shape/color phrases like "gray cube"), lowercase, ordered most generic first. Start with the plain object name, then common synonyms, then the few most distinctive qualified phrasings: "forklift", "fork truck", "warehouse forklift", "yellow counterbalance forklift". Each phrase 1-4 words, written the way users search — no full sentences, no catalog or engineering jargon, and no generic filler ("3d model", "asset", "object", "prop"). These phrases are matched directly by keyword search.
+  max_items: 10
+  min_items: 3
+  name: queries
+  type: list[str]
+- description: |
+    Lowercase keywords a user might actually search, ordered most→least relevant — aim for 8-15 (at least 3 required). Cover: the object name + synonyms (forklift, lift truck, fork truck); specific type/variant (counterbalance, reach truck, pallet jack); clearly visible parts and part-level features (forks, mast, overhead guard, cab, hydraulics); brand or model text ONLY if clearly legible; and domain/industry terms (warehouse, logistics, material handling). Be thorough, include synonyms, and use the words users type — not catalog or engineering jargon. Never pad with generic filler ("3d model", "asset", "object", "mesh", "prop") or attributes you cannot clearly see; for bare primitives and abstract assets, shape and color terms (cube, box, sphere, gray) count as valid tags.
+  max_items: 15
+  min_items: 3
+  name: tags
+  type: list[str]
+- description: |
+    Typical real-world settings where this asset is found (lowercase, 0-5), e.g. "warehouse", "factory floor", "loading dock", "office", "retail store", "hospital", "kitchen", "construction site", "outdoor", "urban street", "residential interior", "laboratory".
+  max_items: 5
+  name: environment
+  type: list[str]
+- description: |
+    Dominant colors, most→least prominent (max 5). Simple searchable names: red, orange, yellow, green, blue, purple, pink, brown, black, white, gray, beige, gold, silver. Add a modifier only when distinctive (dark_gray, safety_yellow).
+  max_items: 5
+  name: colors
+  type: list[str]
+- description: |
+    Apparent materials, primary→secondary (max 5). Common terms: steel, aluminum, metal, wood, plastic, glass, fabric, leather, rubber, concrete, stone, ceramic, cardboard, paper, foam, carbon_fiber, chrome, brass, composite. Only materials you can clearly identify at this resolution — when unsure between specific metals, say "metal".
+  max_items: 5
+  name: materials
+  type: list[str]
+- allowed_values:
+    - realistic
+    - stylized
+    - low_poly
+    - cad
+    - scanned
+  description: |
+    The dominant REPRESENTATION style — how the asset is rendered/authored, not its design aesthetic (aesthetic terms like "industrial", "modern", "vintage" belong in tags). realistic covers photorealistic. Choose exactly ONE from the allowed list; use null if truly undeterminable.
+  name: style
+  nullable: true
+  type: str
+- allowed_values:
+    - tiny
+    - small
+    - medium
+    - large
+    - huge
+  description: |
+    Approximate real-world size class. Choose exactly ONE: tiny (fits in a hand), small (desktop), medium (human-scale / furniture), large (vehicle / machine), huge (building / structure); use null if the size cannot be judged.
+  name: scale
+  nullable: true
+  type: str
+- allowed_values:
+    - new
+    - used
+    - worn
+    - damaged
+  description: |
+    Apparent condition. Choose exactly ONE — new (clean / like-new), used (visibly in service), worn (heavy wear, weathering, or dirt), damaged (broken or missing parts); use null if condition cannot be judged.
+  name: state
+  nullable: true
+  type: str
+- allowed_values:
+    - articulated
+    - has_moving_parts
+    - wheeled
+    - deformable
+    - stackable
+    - graspable
+    - openable
+    - foldable
+    - transparent
+    - emissive
+    - reflective
+    - mounted
+    - modular
+  description: |
+    Functional / mechanical traits relevant to simulation and robotics (lowercase, 0-6), only from the allowed list. Rigid is the default — tag only what deviates from a plain static rigid object, and only traits clearly evident in the views.
+  max_items: 6
+  name: physical_attributes
+  type: list[str]
+- description: |
+    Text on the asset that is CLEARLY LEGIBLE at the provided resolution (verbatim, 0-6 short strings): labels, brand names, model numbers, signage, warnings. If you cannot read every character of a string, omit it entirely — never reconstruct partial text or infer branding from a logo shape or color scheme. Empty list if none. Legible text is a strong, unique search signal (e.g. brand, "EXIT", load ratings, hazard labels); invented text is the worst kind of index pollution.
+  max_items: 6
+  name: visible_text
+  type: list[str]
+```
 
 ## VLM-based verification of results with respect to input query
 
@@ -1381,6 +1675,9 @@ VLM validation uses a Vision Language Model to verify that each search
 result visually matches the input query. It compares the query against
 the result's thumbnail and returns a match decision with confidence
 score and reasoning.
+
+Defaults are filter mode, 50 concurrent provider calls per API
+process, and one asset view per verdict.
 
 To enable validation of search results, set the following parameter to true:
 ```bash
@@ -1409,6 +1706,18 @@ ngsearch:
       validation:
         max_concurrent_requests: <number of concurrent requests>
 ```
+
+Against a self-hosted vLLM engine set `max_tries: 2`: the engine closes an
+idle keep-alive connection after 5 s, and a verdict burst that starts
+about 5 s after the previous one can reuse a connection the server is
+closing; with a single try that transient error fails the whole
+validated request with a 503 (measured on 3 of 10 requests), with two
+tries it is one backoff retry.
+
+`image_max_px` caps the longest edge of every image sent to the VLM. The
+default 0 sends the stored 1024-px thumbnail as is; `image_max_px: 448`
+sends the evaluated 448-px view at about a quarter of the prompt tokens
+per verdict, and changes the verdict cache identity.
 
 ### LLM/VLM provider
 
@@ -1493,22 +1802,37 @@ services. In order to do so, please set `OTEL_SDK_DISABLED` to "false" and `OTEL
   --set global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318
 ```
 
-### Search telemetry collection
+### Search and asset-load telemetry collection
 
 Search service has the possibility to gather telemetry information about
-searches executed by the users of the system. This information can
-then be used to understand what queries are most frequently executed and also
-allow to track down issues if inconsistency appears in the search
-results.
+searches executed by the users of the system, and about the assets they
+download. This information can then be used to understand what queries are
+most frequently executed, which assets are being loaded, and also allow to
+track down issues if inconsistency appears in the search results.
 
-Telemetry information includes:
+Search telemetry information includes:
 
  * Overall duration of request processing
  * Time spent waiting for response from the Search backend
  * Parsed version of the input query that is then converted to a request to
    OpenSearch service
 
-__NOTE__: that no information about the user is stored in the system.
+Asset-load telemetry (one event per `/download/asset` request) includes:
+
+ * The URL of the asset that was requested
+ * Whether the call actually downloaded data or only previewed the bundle size
+ * Bundle contents — file count, total bytes, and what was skipped or failed
+ * A timing breakdown: dependency resolution, size check, collection, and the
+   overall request duration
+
+See [`docs/asset-download.md`](../../docs/asset-download.md) for the full
+field list and how to read it.
+
+__NOTE__: both event types record the identity of the caller — the username
+from the bearer token, basic-auth credentials, or API key, or `anonymous`
+when the request carries none. If you do not want user identities in your
+logs, leave telemetry switched off (`use_search_telemetry=false`, the
+default); there is no separate setting for the username field.
 
 By default telemetry logging is switched off.  In order to enable telemetry collection, please set the following command line parameters during helm chart deployment:
 ```bash
@@ -1517,6 +1841,20 @@ By default telemetry logging is switched off.  In order to enable telemetry coll
     --set ngsearch.microservices.search_rest_api.search_telemetry_stdout=true
 ```
 You will then be able to see telemetry information being printed in the logs of the REST API service.
+
+__NOTE__: telemetry never leaves the cluster USD Search runs in. Each event
+is written as a line to the REST API container's log stream and nothing else
+— the service does not send it to NVIDIA or to any other external
+destination, and the chart deploys no component that would. Until you
+collect those logs the events live only as long as the container's log
+buffer does, and they are lost on restart or rotation.
+
+Retaining or analysing them is therefore your responsibility: point
+whichever log collector your cluster already runs (Fluent Bit, Fluentd,
+Vector, Promtail, and so on) at the REST API pods, and forward the records
+to your own destination. That collector is configured separately and is not
+part of this chart. Events are emitted as single-line JSON, so most
+collectors can parse them without a custom rule.
 
 ## Values
 
@@ -1554,7 +1892,7 @@ string
 			<td>
 				<div style="width: 300px;">
 <pre lang="json">
-"1.4.0"
+"1.5.0"
 </pre>
 </div>
 			</td>
@@ -1646,6 +1984,9 @@ siglip2_triton:
     tag: ""
 rendering_job:
     repository: usdsearch-kit-workflows
+    tag: ""
+graph_builder:
+    repository: usdsearch-graph-builder
     tag: ""
 
 </pre>
@@ -1824,6 +2165,69 @@ Set the desired storage backend type. Supported options are the following:
  * s3 - AWS S3 bucket storage
  * nucleus - Omniverse Nucleus Server
  * storage_api - Omniverse Storage API (beta functionality). Please refer to [Omniverse Storage API](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/omniverse/collections/storage_apis) for more information.
+</td>
+		</tr>
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">global.url_mapping</div></td>
+			<td><div style="white-space: nowrap;">
+map
+</div></td>
+			<td>
+				<div style="width: 300px;">
+<pre lang="json">
+{
+  "encode_public_paths": false,
+  "inbound_only": false,
+  "mode": "off",
+  "rules": []
+}
+</pre>
+</div>
+			</td>
+			<td>
+
+Public asset URLs. By default the API speaks the same URLs the crawler
+indexed (e.g. `s3://bucket/key`). Set this to publish a different form —
+typically `https://` for an S3-backed deployment — while everything
+internally (the search index, the asset graph, storage access) keeps using
+the original one.
+
+Modes:
+
+ * `off` (default) — no translation; responses are byte-identical to before.
+ * `s3_https` — derive the mapping from the configured S3 bucket, i.e.
+   `s3://<bucket>/` becomes `https://<bucket>.s3.<region>.amazonaws.com/`
+   (or `<aws_endpoint_url>/<bucket>/` for a custom endpoint). No rules to write.
+ * `rules` — spell the prefixes out yourself, for a CDN, a Nucleus web
+   gateway, or several storage roots:
+
+```yaml
+  url_mapping:
+    mode: rules
+    rules:
+      - internal: "s3://my-assets/"
+        public: "https://assets.example.com/"
+      - internal: "omniverse://nucleus.internal/"
+        public: "https://viewer.example.com/omni/"
+```
+
+Requests accept **either** form at all times, so clients holding previously
+returned `s3://` URLs keep working. Set `inbound_only: true` to accept the
+public form without emitting it yet (useful when rolling the change out).
+
+__NOTE__: this changes how an asset is *addressed*, not who may read it. A
+published `https://` URL for a private bucket is not fetchable without
+credentials — signing such links is the client application's job. Use
+`GET /download/asset` to retrieve bytes through the API.
+
+A rule set whose reverse mapping would be ambiguous (overlapping prefixes) is
+rejected at startup rather than applied half-way.
+
+An internal URL's path is a raw storage key and may hold characters that are
+not legal in an `https://` path — a space, most often. Incoming URLs are
+always percent-decoded, so the correctly escaped form resolves. Set
+`encode_public_paths: true` to *emit* the escaped form as well; it is opt-in
+because it changes the exact URL string published for those assets.
 </td>
 		</tr>
 </table>
@@ -2171,6 +2575,24 @@ The following thumbnail file formats are supported: all formats supported by the
 
 __NOTE__: These settings apply only to the **Nucleus** and **S3** storage backends. When using the **Storage API** backend, thumbnails are not resolved from the filesystem. Instead, the thumbnail URL is read directly from the asset metadata. The metadata field (or fields) that hold the thumbnail URL are controlled by the ``global.storage_api.thumbnail_metadata_fields`` setting. Please refer to the [Thumbnail retrieval](#thumbnail-retrieval) section for more information.
 </td>
+		</tr>
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">deployPrometheusRules</div></td>
+			<td><div style="white-space: nowrap;">
+bool
+</div></td>
+			<td>
+				<div style="width: 300px;">
+<pre lang="json">
+false
+</pre>
+</div>
+			</td>
+			<td>
+
+PrometheusRule alerts for the indexing pipeline (items dropped from a stream
+after exhausting their retries, and a stream whose oldest unacknowledged entry
+blocks trimming) can be deployed as part of this helm chart.</td>
 		</tr>
 		<tr>
 			<td><div style="width: 150px; overflow-wrap: break-word;">maintenance</div></td>

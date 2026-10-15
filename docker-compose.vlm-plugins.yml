@@ -31,8 +31,16 @@
 #   generation, validation) reuses it; there is no per-provider or per-role key
 #   to set. Optional overrides:
 #     USDSEARCH_LLM_BASE_URL            (defaults to the shipped OpenAI-compatible endpoint)
-#     USDSEARCH_VISION_METADATA_MODEL   (default gcp/google/gemini-3.1-pro-preview)
-#     USDSEARCH_VISION_VALIDATION_MODEL (default gcp/google/gemini-3.5-flash)
+#     USDSEARCH_LLM_DEFAULT_HEADERS     (JSON object of extra request headers)
+#     USDSEARCH_VISION_METADATA_MODEL   (default azure/openai/gpt-5.6-sol)
+#     USDSEARCH_VISION_VALIDATION_MODEL (default gcp/google/gemini-3.1-flash-lite)
+#     VLM_IMAGE_MAX_PX                  (default 512)
+#     VLM_MAX_IMAGES                    (default 16)
+#     VLM_MAX_REQUEST_BYTES             (default 8388608 / 8 MiB)
+#     VLM_METADATA_REVISION             (default empty = legacy asset-only cache
+#                                        identity, nothing reprocessed on upgrade;
+#                                        set/bump a value to opt in and reprocess
+#                                        unchanged assets)
 
 # Shared LLM connection — null-pass-through (`KEY:` with no value): forwards the
 # var from the host if set, omits it from the container otherwise. Read once by
@@ -41,6 +49,16 @@
 x-vlm-provider-env: &vlm-provider-env
   USDSEARCH_LLM_API_KEY:
   USDSEARCH_LLM_BASE_URL:
+  USDSEARCH_LLM_DEFAULT_HEADERS:
+
+# Output-affecting metadata settings. These explicit defaults are shared by the
+# monitor-crawler and every VLM metadata worker: the crawler includes them in
+# its asset-state hash, so the two sides must never resolve different values.
+x-vlm-output-env: &vlm-output-env
+  VLM_IMAGE_MAX_PX: ${VLM_IMAGE_MAX_PX:-512}
+  VLM_MAX_IMAGES: ${VLM_MAX_IMAGES:-16}
+  VLM_MAX_REQUEST_BYTES: ${VLM_MAX_REQUEST_BYTES:-8388608}
+  VLM_METADATA_REVISION: ${VLM_METADATA_REVISION:-}
 
 x-vlm-worker-env: &vlm-worker-env
   # Storage backend — overridable from the host shell (kept in sync with the
@@ -62,6 +80,7 @@ x-vlm-worker-env: &vlm-worker-env
   # kept in sync with x-common-env so VLM workers reach the same gRPC endpoint.
   STORAGE_API_GRPC_ENDPOINT:
   STORAGE_API_BASE_URI:
+  STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES:
   STORAGE_API_TOKEN:
   STORAGE_API_SSL:
   STORAGE_API_OPENID_CLIENT_ID:
@@ -73,30 +92,78 @@ x-vlm-worker-env: &vlm-worker-env
   PYTHONUNBUFFERED: "1"
   REDIS_URL: redis://redis:6379
   OTEL_SDK_DISABLED: "true"
-  # Per-role model override (optional; default gcp/google/gemini-3.1-pro-preview).
+  # Per-role model override (optional; default azure/openai/gpt-5.6-sol).
   USDSEARCH_VISION_METADATA_MODEL:
-  <<: *vlm-provider-env
+  # Optional provider-specific request-body knobs as a JSON string (null
+  # pass-through), e.g. '{"chat_template_kwargs":{"enable_thinking":false}}' to
+  # stop a vLLM-served Qwen from emitting empty thinking-only completions.
+  USDSEARCH_VISION_METADATA_EXTRA_BODY:
+  <<: [*vlm-provider-env, *vlm-output-env]
 
 services:
+  # The crawler constructs the cache key before dispatching a job, so it must
+  # resolve the same output-affecting settings as the metadata workers.
+  monitor-crawler:
+    environment:
+      <<: *vlm-output-env
+
   # ─── DeepSearch API: enable VLM validation ──────────────────────────────
   # Flips the base compose's validation-disabled default and supplies the same
   # shared LLM connection the metadata workers use, so the
   # `/vlm_validate/...` endpoints can call out to the VLM. The validation config
   # (`services/deepsearch_api/.../validation/config.py`) reads the
   # `USDSEARCH_VISION_VALIDATION_*` env vars below (model defaults to
-  # gcp/google/gemini-3.5-flash).
+  # gcp/google/gemini-3.1-flash-lite).
   deepsearch-api:
     environment:
       <<: *vlm-provider-env
       USDSEARCH_VISION_VALIDATION_ENABLED: "true"
-      USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT: ${USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT:-30}
+      USDSEARCH_VISION_VALIDATION_MODE: ${USDSEARCH_VISION_VALIDATION_MODE:-filter}
+      USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT: ${USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT:-50}
+      # Attempts per verdict call; 2 against a vLLM engine (5 s idle keep-alive
+      # races a burst that starts ~5 s after the previous one -> 503 with 1).
+      USDSEARCH_VISION_VALIDATION_MAX_TRIES: ${USDSEARCH_VISION_VALIDATION_MAX_TRIES:-1}
+      USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION: ${USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION:-1}
+      # Longest edge (px) of images sent to the VLM; 0 = stored size, 448 = the
+      # evaluated view (~4x fewer prompt tokens; part of the verdict cache identity).
+      USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX: ${USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX:-0}
       USDSEARCH_VISION_VALIDATION_MODEL:
+      # Verdict method (generative | logprob), null pass-through: forwarded only
+      # when set on the host, otherwise the code default applies (see
+      # docs/vlm-validation.md, "Validation methods").
+      USDSEARCH_VISION_VALIDATION_METHOD:
+      # Opt-in: send a configured domain context (..._DOMAIN_CONTEXT_FILEPATH) as
+      # the log-prob judge system prompt. Off = the bare, evaluated judge question.
+      USDSEARCH_VISION_VALIDATION_LOGPROB_DOMAIN_CONTEXT: ${USDSEARCH_VISION_VALIDATION_LOGPROB_DOMAIN_CONTEXT:-false}
+      # Opt-in: an image + text query with one asset view asks whether the
+      # candidate matches both (off = the text named in the image question).
+      USDSEARCH_VISION_VALIDATION_LOGPROB_IMAGE_TEXT_QUERY: ${USDSEARCH_VISION_VALIDATION_LOGPROB_IMAGE_TEXT_QUERY:-true}
+      # Optional provider-specific request-body knobs as a JSON string (null
+      # pass-through), e.g. '{"chat_template_kwargs":{"enable_thinking":false}}'
+      # for a vLLM-served Qwen that would otherwise return empty verdicts.
+      USDSEARCH_VISION_VALIDATION_EXTRA_BODY:
+      # Persistent verdict cache (Redis L2): reuses the shared redis service on a
+      # dedicated logical DB (DB 6 — see docs/development.md DB map) so identical
+      # validations skip the VLM round-trip and survive restarts. Without
+      # REDIS_URL the validator falls back to its in-process L1 cache only.
+      # (base compose already declares `depends_on: redis` for this service.)
+      REDIS_URL: redis://redis:6379
+      # Optional cache tuning (null pass-through — forwarded only if set on the host):
+      #   *_CACHE_ENABLED      master switch (default true; cache still needs REDIS_URL)
+      #   *_CACHE_TTL_SECONDS  per-entry TTL (default: unset = no expiry)
+      #   *_CACHE_MAX_ENTRIES  approximate LRU cap (default 1,000,000 ≈ 2 GB)
+      USDSEARCH_VISION_VALIDATION_CACHE_ENABLED:
+      USDSEARCH_VISION_VALIDATION_CACHE_TTL_SECONDS:
+      USDSEARCH_VISION_VALIDATION_CACHE_MAX_ENTRIES:
       # LLM query parsing (`/llm_parse/*`) on the same
       # shared connection. Model defaults to llm_parse/config.py's value; the
       # null pass-through forwards USDSEARCH_LLM_PARSING_MODEL from the host if
       # set and omits it otherwise.
       USDSEARCH_LLM_PARSING_ENABLED: "true"
       USDSEARCH_LLM_PARSING_MODEL:
+      # Optional provider-specific request-body knobs as a JSON string (null
+      # pass-through), same purpose as the validation/metadata extra_body above.
+      USDSEARCH_LLM_PARSING_EXTRA_BODY:
       # Optional corpus grounding for the parser's `usd_property` filter: point
       # at a `usd_property_catalog.yaml` (see docs/usd-property-catalog.md) and
       # bind-mount the file via a local overlay. Null pass-through as above.

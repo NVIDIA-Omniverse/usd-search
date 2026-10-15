@@ -1,0 +1,199 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1400 940" font-family="ui-sans-serif, -apple-system, 'Segoe UI', sans-serif">
+  <title>USD Search — architecture</title>
+  <desc>Storage backends feed the USD Search indexing services, which drive rendering, embedding, and asset-graph extraction. Results are written to OpenSearch, Neo4j, and Redis and served to clients through the REST API. An external VLM service is an optional component.</desc>
+
+  <defs>
+    <style>
+    .bg          { fill: #F7F8FA; }
+    .panel       { fill: #FFFFFF; stroke: #D5DAE0; stroke-width: 1.5; }
+    .panel-soft  { fill: #FBFCFD; stroke: #E2E6EC; stroke-width: 1.2; }
+    .panel-core  { fill: #0F1A2E; stroke: #0F1A2E; }
+    .accent      { fill: #76B900; }
+    .accent-soft { fill: #76B900; opacity: 0.12; }
+    .ink         { fill: #1B2838; }
+    .ink-mute    { fill: #5A6776; }
+    .ink-faint   { fill: #8995A4; }
+    .stroke-mid  { stroke: #6E7B8C; stroke-width: 1.6; fill: none; }
+    .mono        { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+    .h1          { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+    .h2          { font-size: 17px; font-weight: 700; }
+    .h3          { font-size: 14px; font-weight: 600; }
+    .h3b         { font-size: 15px; font-weight: 600; }
+    .body        { font-size: 13px; }
+    .small       { font-size: 11.5px; }
+    .tiny        { font-size: 10.5px; }
+    .label       { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+</style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6E7B8C"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="940"/>
+
+  <text class="h1 ink" x="40" y="42">USD Search · architecture</text>
+  <text class="small ink-mute" x="40" y="64">Microservices, data stores, and the storage backends they index.</text>
+
+  <!-- ============ Query input ============ -->
+  <text class="label ink-faint" x="40" y="110">Query input</text>
+  <rect class="panel" x="40" y="120" width="260" height="148" rx="8"/>
+  <text class="h3b ink" x="62" y="148">Generic user</text>
+  <text class="small ink-mute" x="62" y="167">browser · agent · script</text>
+  <rect class="panel-soft" x="62" y="180" width="216" height="36" rx="6"/>
+  <text class="small ink" x="78" y="203">Custom web application</text>
+  <rect class="panel-soft" x="62" y="222" width="216" height="36" rx="6"/>
+  <text class="small ink" x="78" y="245">Third-party app / service</text>
+
+  <!-- ============ Storage backend ============ -->
+  <text class="label ink-faint" x="700" y="110">Storage backend</text>
+  <rect class="panel" x="700" y="120" width="660" height="88" rx="8"/>
+  <rect class="panel-soft" x="716" y="140" width="152" height="52" rx="6"/>
+  <text class="small ink" x="792" y="162" text-anchor="middle">AWS S3</text>
+  <text class="tiny ink-mute" x="792" y="180" text-anchor="middle">or S3-compatible</text>
+  <rect class="panel-soft" x="876" y="140" width="152" height="52" rx="6"/>
+  <text class="small ink" x="952" y="162" text-anchor="middle">Azure Blob</text>
+  <text class="tiny ink-mute" x="952" y="180" text-anchor="middle">via s3proxy</text>
+  <rect class="panel-soft" x="1036" y="140" width="152" height="52" rx="6"/>
+  <text class="small ink" x="1112" y="162" text-anchor="middle">Google Cloud</text>
+  <text class="tiny ink-mute" x="1112" y="180" text-anchor="middle">via s3proxy</text>
+  <rect class="panel-soft" x="1196" y="140" width="152" height="52" rx="6"/>
+  <text class="small ink" x="1272" y="162" text-anchor="middle">Nucleus</text>
+  <text class="tiny ink-mute" x="1272" y="180" text-anchor="middle">or Storage API</text>
+
+  <!-- ============ USD Search container ============ -->
+  <text class="label ink-faint" x="40" y="300">USD Search</text>
+  <rect class="panel-soft" x="40" y="312" width="1320" height="458" rx="10"/>
+
+  <!-- Search service -->
+  <rect class="panel-core" x="72" y="364" width="268" height="136" rx="10"/>
+  <rect class="accent" x="72" y="364" width="268" height="4" rx="2"/>
+  <text class="small" x="94" y="392" fill="#9BB07A">Search service</text>
+  <text class="mono" x="94" y="426" font-size="20" font-weight="700" fill="#FFFFFF">REST API</text>
+  <text class="tiny mono" x="94" y="452" fill="#9BB07A">/search_hybrid · /images</text>
+  <text class="tiny" x="94" y="474" fill="#9BB07A">hybrid ranking · filters · validation</text>
+
+  <!-- Indexing services -->
+  <rect class="panel" x="392" y="340" width="948" height="236" rx="10"/>
+  <text class="h3b ink" x="414" y="370">Indexing services</text>
+
+  <text class="label ink-faint" x="414" y="396">Metadata indexing</text>
+  <circle class="accent" cx="418" cy="412" r="2.5"/>
+  <text class="small ink" x="430" y="416">USD Search crawler</text>
+  <circle class="accent" cx="418" cy="434" r="2.5"/>
+  <text class="small ink" x="430" y="438">Metadata indexing service</text>
+  <circle class="accent" cx="418" cy="456" r="2.5"/>
+  <text class="small ink" x="430" y="460">Tags crawler service</text>
+  <circle class="accent" cx="418" cy="478" r="2.5"/>
+  <text class="small ink" x="430" y="482">USD Search monitor</text>
+
+  <text class="label ink-faint" x="880" y="396">Scheduling &amp; I/O</text>
+  <circle class="accent" cx="884" cy="412" r="2.5"/>
+  <text class="small ink" x="896" y="416">Rendering tasks scheduler</text>
+  <circle class="accent" cx="884" cy="434" r="2.5"/>
+  <text class="small ink" x="896" y="438">Non-rendering tasks scheduler</text>
+  <circle class="accent" cx="884" cy="456" r="2.5"/>
+  <text class="small ink" x="896" y="460">Writer service</text>
+  <circle class="accent" cx="884" cy="478" r="2.5"/>
+  <text class="small ink" x="896" y="482">Storage service</text>
+
+  <text class="label ink-faint" x="414" y="516">Asset Graph Search (AGS)</text>
+  <circle class="accent" cx="418" cy="536" r="2.5"/>
+  <text class="small ink" x="430" y="540">Asset Graph service</text>
+  <circle class="accent" cx="884" cy="536" r="2.5"/>
+  <text class="small ink" x="896" y="540">Asset Graph builder</text>
+  <text class="tiny ink-mute" x="414" y="564">prim hierarchy · dependency, spatial, and property queries</text>
+
+  <!-- Embedding service -->
+  <rect class="panel" x="72" y="616" width="268" height="132" rx="10"/>
+  <text class="h3b ink" x="94" y="646">Embedding service</text>
+  <text class="mono ink" x="94" y="674" font-size="16" font-weight="700">SigLIP2</text>
+  <circle class="accent" cx="98" cy="698" r="2.5"/>
+  <text class="small ink-mute" x="110" y="702">scalable · CPU or GPU</text>
+  <circle class="accent" cx="98" cy="720" r="2.5"/>
+  <text class="small ink-mute" x="110" y="724">text + image embeddings</text>
+
+  <!-- Rendering service -->
+  <rect class="panel" x="392" y="616" width="440" height="132" rx="10"/>
+  <text class="h3b ink" x="414" y="646">Rendering service</text>
+  <text class="mono ink" x="414" y="674" font-size="16" font-weight="700">OVRTX-based rendering</text>
+  <circle class="accent" cx="418" cy="698" r="2.5"/>
+  <text class="small ink-mute" x="430" y="702">GPU required · internal to the cluster</text>
+  <circle class="accent" cx="418" cy="720" r="2.5"/>
+  <text class="small ink-mute" x="430" y="724">preview thumbnails from fixed orientations + cameras</text>
+
+  <!-- Scaling note -->
+  <rect class="panel-soft" x="872" y="616" width="400" height="132" rx="10"/>
+  <rect class="accent" x="872" y="616" width="4" height="132" rx="2"/>
+  <text class="h3 ink" x="896" y="646">Scaling</text>
+  <text class="small ink-mute" x="896" y="672">Search, indexing, embedding, and AGS</text>
+  <text class="small ink-mute" x="896" y="690">are stateless and scale horizontally.</text>
+  <text class="small ink-mute" x="896" y="714">OpenSearch, Redis, and Neo4j are</text>
+  <text class="small ink-mute" x="896" y="732">stateful; OpenSearch scales by replicas.</text>
+
+  <!-- ============ Data stores &amp; external ============ -->
+  <text class="label ink-faint" x="70" y="798">Data stores &amp; external services</text>
+
+  <rect class="panel" x="40" y="810" width="300" height="98" rx="10"/>
+  <text class="h3b ink" x="62" y="842">OpenSearch</text>
+  <text class="small ink-mute" x="62" y="864">search backend</text>
+  <text class="tiny ink-faint" x="62" y="886">vectors · metadata · captions + tags</text>
+
+  <rect class="panel" x="370" y="810" width="300" height="98" rx="10"/>
+  <text class="h3b ink" x="392" y="842">Neo4j</text>
+  <text class="small ink-mute" x="392" y="864">graph database</text>
+  <text class="tiny ink-faint" x="392" y="886">scene + dependency graphs</text>
+
+  <rect class="panel" x="700" y="810" width="280" height="98" rx="10"/>
+  <text class="h3b ink" x="722" y="842">Redis</text>
+  <text class="small ink-mute" x="722" y="864">fast in-memory cache</text>
+  <text class="tiny ink-faint" x="722" y="886">indexing state · streams</text>
+
+  <rect class="panel" x="1010" y="810" width="350" height="98" rx="10"/>
+  <rect class="accent-soft" x="1274" y="824" width="70" height="18" rx="9"/>
+  <text class="tiny accent" x="1309" y="837" text-anchor="middle" font-weight="700">OPTIONAL</text>
+  <text class="h3b ink" x="1032" y="842">External VLM service</text>
+  <text class="small ink-mute" x="1032" y="864">any OpenAI-compatible endpoint</text>
+  <text class="tiny ink-faint" x="1032" y="886">captions · tags · result validation</text>
+
+  <!-- ============ Flows ============ -->
+  <!-- query input -> REST API -->
+  <path d="M 170 268 L 170 364" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="182" y="306">API request</text>
+
+  <!-- storage -> indexing -->
+  <path d="M 866 208 L 866 340" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="878" y="258">read data</text>
+  <text class="tiny ink-faint" x="878" y="276">listen to updates</text>
+
+  <!-- indexing -> embedding -->
+  <path d="M 392 546 L 300 546 L 300 616" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="388" y="534" text-anchor="end">embed asset images</text>
+
+  <!-- indexing -> rendering -->
+  <path d="M 612 576 L 612 616" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="624" y="600">get renderings of USD files</text>
+
+  <!-- REST API -> embedding -->
+  <path d="M 150 500 L 150 616" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="162" y="562">embed query</text>
+
+  <!-- embedding -> OpenSearch -->
+  <path d="M 130 748 L 130 810" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="142" y="782">store vectors</text>
+
+  <!-- REST API -> OpenSearch -->
+  <path d="M 72 440 L 54 440 L 54 810" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="66" y="764">query</text>
+
+  <!-- indexing -> Neo4j -->
+  <path d="M 392 560 L 380 560 L 380 810" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="392" y="782">store scene graphs</text>
+
+  <!-- indexing -> Redis -->
+  <path d="M 852 576 L 852 810" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="864" y="782">store / retrieve asset metadata</text>
+
+  <!-- indexing -> external VLM -->
+  <path d="M 1306 576 L 1306 810" class="stroke-mid" marker-end="url(#arrow)"/>
+  <text class="tiny ink-faint" x="1294" y="782" text-anchor="end">generate descriptions / tags</text>
+</svg>

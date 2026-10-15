@@ -27,6 +27,8 @@ from typing import (
     Tuple,
 )
 
+from prometheus_client import Counter
+from pydantic import field_validator
 from pydantic_settings.main import SettingsConfigDict
 from redis.asyncio import Redis, ResponseError
 
@@ -41,9 +43,40 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
+#: Stream entry field holding the number of failed processing attempts.
+ATTEMPTS_FIELD = b"attempts"
+
+#: Entries taken out of a consumer's hands, by ``trigger`` (the consumer raised, or
+#: it left the entry unacknowledged long enough to be reclaimed) and ``outcome`` (the
+#: entry went back into the queue, or it ran out of attempts and was dropped).
+REQUEUED_ITEMS = Counter(
+    "omnideepsearch_stream_items_requeued_total",
+    "Items acknowledged and re-added to the back of the stream for another attempt",
+    labelnames=["stream", "trigger", "outcome"],
+)
+
 
 class StreamCorruptionError(Exception):
     pass
+
+
+def get_entry_attempts(fields: Dict[bytes, bytes]) -> int:
+    """Number of failed processing attempts recorded on a stream entry.
+
+    An entry without a readable counter - one written before the field existed, for
+    instance - counts as never having failed.
+
+    Args:
+        fields (Dict[bytes, bytes]): fields of a single stream entry.
+
+    Returns:
+        int: number of attempts already recorded for the entry.
+    """
+    try:
+        return int(fields.get(ATTEMPTS_FIELD, 0))
+    except (TypeError, ValueError):
+        logger.warning("Unreadable '%s' field on a stream entry: %s", ATTEMPTS_FIELD, fields.get(ATTEMPTS_FIELD))
+        return 0
 
 
 class RedisStreamConfig(StreamConfig):
@@ -52,10 +85,32 @@ class RedisStreamConfig(StreamConfig):
     consumer_name: Optional[str] = None
     url: str = "redis://localhost:6379"
     approximate_tail_trim: bool = False
+    #: How long an entry may stay unacknowledged before another consumer moves it
+    #: back into the queue. This is the recovery path for a consumer that *died*
+    #: holding an entry, so it has to exceed the longest a healthy consumer can
+    #: legitimately take over one item.
     autoclaim_min_idle_time: int = 60000  # in milliseconds (default: 1 min)
-    autoclaim_n_retries: Optional[int] = None
     raise_on_stream_corruption: bool = False
+    #: If ``True`` - an entry whose processing raised is acknowledged straight away
+    #: and re-added to the back of the stream. Without this a failed entry stays
+    #: pending until it has been idle for ``autoclaim_min_idle_time``, and because
+    #: the trim point is the oldest pending id it blocks
+    #: :meth:`RedisStreamWorker.trim_tail` for the *whole* stream until then.
+    requeue_failed_items: bool = True
+    #: Number of times an entry may be moved back into the queue - after a failure
+    #: or after being reclaimed from a dead consumer - before it is reported through
+    #: ``retry_limit_reached_callback`` and dropped from the stream. ``None``, or
+    #: ``-1`` for settings that have to travel through an environment variable,
+    #: means an entry is retried forever: that never blocks trimming, but it does
+    #: keep reprocessing an item that cannot succeed.
+    max_attempts: Optional[int] = None
     model_config = SettingsConfigDict(env_prefix="redis_stream_")
+
+    @field_validator("max_attempts", mode="after")
+    @classmethod
+    def unlimited_attempts_when_negative(cls, value: Optional[int]) -> Optional[int]:
+        """Accept a negative budget as "retry forever", which an env var cannot express as ``None``."""
+        return None if value is not None and value < 0 else value
 
 
 class RedisStreamWorker(StreamWorker):
@@ -78,103 +133,146 @@ class RedisStreamWorker(StreamWorker):
         return self._config.name
 
     async def put(self, item: AnyDict) -> None:
-        stream_item = StreamItem(content=self.serialize(item))
+        stream_item = StreamItem(content=self.serialize(item), attempts=0)
         logger.debug("Adding item to stream '%s': %s", self.stream_name, stream_item)
         await self._connection.xadd(name=self._config.name, fields=stream_item)
 
-    async def acknowledge_items_with_too_many_attempts(self, pending, count: int) -> None:
-        """Send acknowledge event to those items that have been failed to be processed for a large number of attempts.
+    async def requeue_stale_entries(self, count: int) -> None:
+        """Move entries left behind by a dead consumer back into the queue.
+
+        An entry unacknowledged for ``autoclaim_min_idle_time`` is claimed and re-added
+        at the end of the stream rather than handed to this consumer: a stream entry
+        cannot be modified in place, so re-adding it is what carries the attempt counter
+        (see :meth:`requeue_entries`) across both ways an item can fail.
 
         Args:
-            pending (_type_): the response of the xpending call
-            count (int): number of samples to read from the stream
+            count (int): maximum number of entries to reclaim in one call.
         """
-        if self._config.autoclaim_n_retries is None:
-            return
-
-        pending_range = await self._connection.xpending_range(
+        # the response is (next cursor, entries) and, since Redis 7, a third element
+        # listing ids that no longer exist - index rather than unpack to support both
+        response = await self._connection.xautoclaim(
             name=self._config.name,
             groupname=self._config.consumer_group,
-            min=pending["min"],
-            max=pending["max"],
+            consumername=self._config.consumer_name,
+            min_idle_time=self._config.autoclaim_min_idle_time,
+            start_id="0-0",
             count=count,
         )
-        for item in pending_range:
-            if item["times_delivered"] > self._config.autoclaim_n_retries:
-                logger.warning(
-                    "Message '%s' failed to be delivered: number of attempts: %d (allowed %d)",
-                    item["message_id"],
-                    item["times_delivered"],
-                    self._config.autoclaim_n_retries,
-                )
-                if self._retry_limit_reached_callback is not None:
-                    items = await self._connection.xautoclaim(
-                        name=self._config.name,
-                        groupname=self._config.consumer_group,
-                        consumername=self._config.consumer_name,
-                        min_idle_time=self._config.autoclaim_min_idle_time,
-                        start_id=item["message_id"],
-                        count=1,
-                    )
-                    await self._retry_limit_reached_callback(
-                        [self.deserialize(item[1][b"content"]) for item in items[1]]
-                    )
-                await self._connection.xack(self._config.name, self._config.consumer_group, item["message_id"])
+        entries: List[Tuple[bytes, Dict[bytes, bytes]]] = response[1]
+        if len(entries) == 0:
+            return
+
+        logger.warning(
+            "Re-claimed %d entries of stream '%s' left unacknowledged for over %dms",
+            len(entries),
+            self.stream_name,
+            self._config.autoclaim_min_idle_time,
+        )
+        await self.requeue_entries(entries, trigger="reclaimed")
 
     @asynccontextmanager
     async def consume(self, count: int = 1) -> AsyncIterator[List[AnyDict]]:
         pending = await self._connection.xpending(name=self._config.name, groupname=self._config.consumer_group)
-        items: Tuple[Tuple[str, List[Tuple[str, StreamItem]]]] = [(None, [])]
         if pending["pending"] > 0:
-            if self._config.autoclaim_n_retries is not None:
-                await self.acknowledge_items_with_too_many_attempts(pending=pending, count=count)
+            # entries abandoned by a dead consumer go back into the queue before
+            # anything is read, so that they stop holding back the trim point
+            await self.requeue_stale_entries(count=count)
 
-            items = [
-                await self._connection.xautoclaim(
-                    name=self._config.name,
-                    groupname=self._config.consumer_group,
-                    consumername=self._config.consumer_name,
-                    min_idle_time=self._config.autoclaim_min_idle_time,
-                    start_id="0-0",
-                    count=count,
-                )
-            ]
-            if items:
-                logger.debug(
-                    "Re-claimed %d items from the stream '%s': %s",
-                    len(items[0][1]),
-                    self.stream_name,
-                    items,
-                )
-
-        # if nothing was re-claimed - read data from the stream
-        if len(items[0][1]) == 0:
-            # read item using group API
-            items = await self._connection.xreadgroup(
-                groupname=self._config.consumer_group,
-                consumername=self._config.consumer_name,
-                streams={self._config.name: ">"},
-                count=count,
+        # read item using group API
+        items = await self._connection.xreadgroup(
+            groupname=self._config.consumer_group,
+            consumername=self._config.consumer_name,
+            streams={self._config.name: ">"},
+            count=count,
+        )
+        if items:
+            logger.debug(
+                "Read %d items from the stream '%s': %s",
+                len(items[0][1]),
+                self.stream_name,
+                items,
             )
-            if items:
-                logger.debug(
-                    "Read %d items from the stream '%s': %s",
-                    len(items[0][1]),
-                    self.stream_name,
-                    items,
-                )
         # check if empty list is return - yield directly
         if len(items) == 0:
             yield []
-        else:
+            return
+
+        entries: List[Tuple[bytes, Dict[bytes, bytes]]] = items[0][1]
+        try:
             # return all items in the list
-            yield [self.deserialize(item[1][b"content"]) for item in items[0][1]]
-            # acknowledge receiving and processing of items
-            await self._connection.xack(
-                self._config.name,
-                self._config.consumer_group,
-                *[item[0] for item in items[0][1]],
+            yield [self.deserialize(entry[1][b"content"]) for entry in entries]
+        except Exception:
+            # The consumer failed to process the batch, so it is never acknowledged
+            # and stays pending. Pending entries hold back the trim point of the
+            # whole stream, so move them to the back of it instead - see
+            # :meth:`requeue_entries`.
+            if self._config.requeue_failed_items and len(entries) > 0:
+                try:
+                    await self.requeue_entries(entries, trigger="failed")
+                except Exception:
+                    # Never mask the failure the consumer is reporting. The entries
+                    # stay pending and are requeued by :meth:`requeue_stale_entries`
+                    # once they have been idle long enough.
+                    logger.exception("Failed to requeue entries of stream '%s'", self.stream_name)
+            raise
+        # acknowledge receiving and processing of items
+        await self._connection.xack(
+            self._config.name,
+            self._config.consumer_group,
+            *[entry[0] for entry in entries],
+        )
+
+    async def requeue_entries(self, entries: List[Tuple[bytes, Dict[bytes, bytes]]], trigger: str) -> None:
+        """Acknowledge entries and re-add them to the back of the stream for another attempt.
+
+        A pending entry holds back the trim point of the whole stream (see
+        :meth:`get_max_processed_id`), so a failing item is moved rather than left in
+        place. The attempt counter travels with the entry (:data:`ATTEMPTS_FIELD`),
+        which is what lets one ``max_attempts`` budget cover both ways an item can
+        fail; past that budget the entry is reported through
+        ``retry_limit_reached_callback`` and dropped instead of requeued. Delivery is
+        at-least-once, so consumers have to be idempotent.
+
+        Args:
+            entries (List[Tuple[bytes, Dict[bytes, bytes]]]): raw stream entries (id and fields) to requeue.
+            trigger (str): what put the entry here - ``failed`` (the consumer raised) or ``reclaimed`` (left unacknowledged). Reported as a metric label.
+        """
+        max_attempts = self._config.max_attempts
+        for entry_id, fields in entries:
+            attempts = get_entry_attempts(fields) + 1
+            content = fields[b"content"]
+
+            if max_attempts is not None and attempts > max_attempts:
+                logger.error(
+                    "Entry '%s' of stream '%s' has been %s %d times (allowed %d) - dropping it from the stream",
+                    entry_id,
+                    self.stream_name,
+                    trigger,
+                    attempts - 1,
+                    max_attempts,
+                )
+                if self._retry_limit_reached_callback is not None:
+                    await self._retry_limit_reached_callback([self.deserialize(content)])
+                await self._connection.xack(self._config.name, self._config.consumer_group, entry_id)
+                REQUEUED_ITEMS.labels(self.stream_name, trigger, "dropped").inc()
+                continue
+
+            # Add first, acknowledge second: should the transaction not go through,
+            # the item is processed twice rather than lost.
+            pipeline = self._connection.pipeline(transaction=True)
+            pipeline.xadd(name=self._config.name, fields=StreamItem(content=content, attempts=attempts))
+            pipeline.xack(self._config.name, self._config.consumer_group, entry_id)
+            await pipeline.execute()
+
+            logger.warning(
+                "Entry '%s' of stream '%s' %s - requeued at the back of the stream (attempt %d of %s)",
+                entry_id,
+                self.stream_name,
+                trigger,
+                attempts,
+                max_attempts if max_attempts is not None else "unlimited",
             )
+            REQUEUED_ITEMS.labels(self.stream_name, trigger, "requeued").inc()
 
     async def reset_stream(self) -> None:
         response = await self._connection.delete(self._config.name)
@@ -297,6 +395,34 @@ class RedisStreamWorker(StreamWorker):
         if all_groups_info is None:
             return None
         return all_groups_info.get(self.config.consumer_group, -1)
+
+    async def get_oldest_pending_ages(self) -> Dict[str, float]:
+        """For each consumer group - how long its oldest unacknowledged entry has been pending.
+
+        This is the entry that holds back :meth:`trim_tail`; an age that grows past
+        ``autoclaim_min_idle_time`` means it is stuck rather than being worked on. It is
+        measured against Redis' own clock, not the caller's.
+
+        Returns:
+            Dict[str, float]: mapping between the group name and the age, in seconds, of its oldest pending entry (``0`` for a group with nothing pending).
+        """
+        groups = await self.get_groups()
+        if len(groups) == 0:
+            return {}
+
+        seconds, microseconds = await self._connection.time()
+        now_ms = seconds * 1000 + microseconds // 1000
+
+        ages: Dict[str, float] = {}
+        for g in groups:
+            group_name: str = g["name"].decode()
+            min_pending = (await self._connection.xpending(name=self._config.name, groupname=g["name"]))["min"]
+            if min_pending is None:
+                ages[group_name] = 0.0
+                continue
+            entry_ms = int(min_pending.decode().split("-")[0])
+            ages[group_name] = max(0.0, (now_ms - entry_ms) / 1000)
+        return ages
 
     async def trim_tail(self) -> None:
         """Clear those items that have already been processed by all the groups."""

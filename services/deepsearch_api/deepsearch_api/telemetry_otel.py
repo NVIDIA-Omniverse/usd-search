@@ -20,7 +20,6 @@ import time
 from contextlib import contextmanager
 from typing import Any, Dict, Generator
 
-from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
@@ -109,8 +108,8 @@ class JSONStdoutSpanExporter(SpanExporter):
                 if not span.attributes or "telemetry_key" not in span.attributes:
                     continue
 
-                # Extract event data from span
-                telemetry_key = span.attributes.get("telemetry_key")
+                # Extract event data from span (telemetry_key rides along in the
+                # attributes, so the record keeps identifying its event type).
                 event_attributes = dict(span.attributes)
 
                 event = {
@@ -222,6 +221,44 @@ class OpenTelemetryBusinessTelemetry:
                 span.set_attribute("error_type", type(e).__name__)
                 span.set_attribute("n_results", 0)
                 raise
+
+    def record_asset_load(
+        self,
+        asset_url: str,
+        username: str = None,
+        **attributes,
+    ) -> None:
+        """Record an asset-load (download) event as a span.
+
+        Deliberately a plain method rather than a context manager like
+        :meth:`record_query_event`: the caller times the request itself and
+        passes the outcome in, so a failure inside telemetry can never prevent
+        the download from running (there is no ``__enter__`` wrapping the
+        handler). See ``docs/plans/asset-load-telemetry.md`` §3.1.
+
+        Attributes must be OTel scalars (``str``/``bool``/``int``/``float``);
+        ``None`` values are dropped rather than sent, because the exporter
+        derives each field's Elasticsearch prefix from its value type and a
+        field whose type varies would land under two different names.
+        """
+        if not self.enabled:
+            return
+
+        attrs = {
+            "telemetry_key": "asset_load_total",  # Special attribute for event identification
+            "asset_url": (asset_url or "")[:1024],
+            "username": username or "anonymous",
+            **attributes,
+        }
+
+        with self.tracer.start_as_current_span("asset_load_event") as span:
+            for key, value in attrs.items():
+                if value is None:
+                    continue
+                try:
+                    span.set_attribute(key, value)
+                except Exception:  # noqa: BLE001 — telemetry must never break the request
+                    logger.warning("Skipping unserializable asset-load attribute %r", key)
 
     def record_results_presented(
         self,

@@ -40,7 +40,7 @@ usdsearch/
 └── docs/                       # Architecture docs and migration proposals
 ```
 
-`services/rendering-job` and `services/asset-graph-builder` are **not** uv workspace members due to dependency conflicts (see Known Workspace Limitations). `services/explorer` is a Node.js project and is also excluded.
+`services/rendering-job` and `services/asset-graph-builder` are **not** uv workspace members due to dependency conflicts (see Known Workspace Limitations). `services/explorer` is a Node.js project and is also excluded. `services/fs-watcher` is a standalone uv project, excluded so its deps stay out of the usdsearch image.
 
 ## Key architecture notes
 
@@ -52,6 +52,7 @@ usdsearch/
 - `packages/siglip2-triton-client` is a workspace leaf used by `ngsearch-backend`; `services/siglip2-triton` is its standalone server counterpart
 - `packages/llm-client` is the shared OpenAI-compatible LLM/VLM client (LangChain `ChatOpenAI`) plus the metadata/validation schemas; used by `services/deepsearch-monitor`, `services/deepsearch_api`, and `packages/plugins`. It supersedes the retired `packages/vision-endpoint` (the directory still physically exists but is not a workspace member; its CLIP/SigLIP2 Triton client moved to `packages/siglip2-triton-client`, and the helm values key `vision_endpoint` is kept for backward compatibility).
 - **One shared LLM/VLM connection, model picked per role.** `llm_client.LLMConnectionConfig` reads the endpoint once from `USDSEARCH_LLM_API_KEY` / `USDSEARCH_LLM_BASE_URL` (env prefix `usdsearch_llm_`); each role then only selects a model under its own prefix — query parsing `USDSEARCH_LLM_PARSING_*` (`services/deepsearch_api/.../llm_parse/config.py`, optionally overriding base-url/api-key for a separate parsing endpoint), validation `USDSEARCH_VISION_VALIDATION_*`, metadata `USDSEARCH_VISION_METADATA_*`. There is no provider selector — the old provider-specific scheme (`METADATA_GENERATION_VLM_SERVICE` + per-provider `*_API_KEY`) is gone. The helm chart renamed `ngsearch.microservices.search_rest_api.search_llm` → `llm_parsing` to match.
+- **Asset URLs are translated only at the HTTP edge.** `search_utils/url_mapping.py` maps a deployment's internal asset URLs (what the crawler indexed — the OpenSearch `base_key`, the Neo4j node key, what storage clients speak) to the public form it publishes, and back. Requests are normalized in pydantic `BeforeValidator`s (`AssetUrl`, `LuceneUrlRegexp`); responses go through `rewrite_response_document()` as the last step before serialization. Everything in between — index queries, ACL checks, Redis keys, pagination cursors — only ever sees the internal form, so **new code below the routers must not translate URLs**, and a new URL-bearing request field or response shape needs its annotation / rewrite call added (the URL-bearing fields are annotated `AssetUrl`/`LuceneUrlRegexp`; grep `rewrite_response_document` for the response sites). Disabled by default; all three gateway-exposed services (`deepsearch_api`, `asset-graph`, `info-endpoint`) configure it from the same `USDSEARCH_URL_MAPPING_*` env.
 - Package manager: **uv workspace** — all packages except `services/rendering-job` and `services/asset-graph-builder` are workspace members (see Known Workspace Limitations for why). `services/explorer` is a Node project, also excluded.
 - **Test data paths** in package tests must use `pathlib.Path(__file__).parent` to anchor paths relative to the test file, not the CWD. Bare relative paths like `"tests/..."` break when pytest is run from the workspace root.
 
@@ -135,7 +136,8 @@ Other Dockerfiles:
   - `docker/Dockerfile.explorer` — **public, self-contained.** `FROM bitnami nginx` + `COPY services/explorer/dist /app`. No npm build, no internal registry. It serves the pre-built **generic** bundle tracked in the repo at `services/explorer/dist/` (empty `REACT_APP_API_URL` = same-origin `/api/`, `usd*` include filter, no server mapping). This is the image the OSS mirror ships, the compose stack (`infra/compose/explorer.yml`) builds, and CI publishes as the canonical `usdsearch-explorer:<sha>` (job `build-explorer-public`).
   - `docker/Dockerfile.explorer-internal` — **internal only.** Today's multi-stage `node:20-alpine` → bitnami nginx build that runs `npm ci` (against the internal registry) + `npm run build`, with all the `REACT_APP_*` build args (CRA inlines them at build time). `REACT_APP_VERSION` is injected from `VERSION.md`. Use it — via `scripts/build-explorer.sh` (`--cutoff` / `--extensions`, `--suffix`, `--push`) or `scripts/build-explorer-general.sh` (bakes the shared `REACT_APP_SERVER_MAPPING`) — to produce customized/parameterized images. CMS team build: `REGISTRY=nvcr.io/m3sujtetvf5w/usdsearch ./scripts/build-explorer.sh --extensions "" --cutoff 0 --suffix=cms --push`. Excluded from the OSS mirror.
   - **Regenerating the tracked bundle.** After changing any Explorer source, run `scripts/generate-explorer-build.sh` (internal; runs the internal Dockerfile's `build` stage with generic defaults and rewrites `services/explorer/dist/`) and **commit `services/explorer/dist/`**. CI's `verify-explorer-build` job rebuilds the bundle the same way and fails, byte-for-byte, if the committed `dist/` is stale — its failure message tells you to re-run the script. Not part of the unified `usdsearch:latest` image.
-- `docker/Dockerfile.kit` — GPU-accelerated rendering image (Omniverse Kit subprocess workers); build context is `services/rendering-job/`. Fetches packman via sparse git checkout of `tools/packman` from the **public** `NVIDIA-Omniverse/kit-app-template` repo (tag controlled by `ARG KIT_APP_TEMPLATE_TAG=110.1.0`). The repo's own `tools/packman/config.packman.xml` (public CloudFront CDN) is used directly — no local override.
+- `docker/Dockerfile.rendering-job` — GPU-accelerated rendering image for `rendering-job` (FastAPI service rendering USD and MDL thumbnails with the ovrtx RTX renderer); build context is the repo root (for the shared workspace `uv.lock`; `docker/Dockerfile.rendering-job.dockerignore` replaces the root `.dockerignore`). Published as `usdsearch-kit-workflows` and deployed as the NVCF rendering function (`MODE=api`).
+- The `asset-graph-builder` ships in the CPU `docker/Dockerfile.usdsearch` image (a plain-Python worker loads a USD stage and emits its dependency graph — no Kit, no GPU). Published as `usdsearch-graph-builder` (built with `OMNI_USD_STOCK_URL` for the packman resolver stack) and run with `uvicorn graph_builder.service:app`.
 - `services/deepsearch_api/docker/Dockerfile` — slimmer single-service image for deepsearch-api only.
 
 **Build** (from repo root — build context must be the workspace root):
@@ -163,7 +165,16 @@ Extras **not** installed in the combined image by default: `siglip2` (pulls `tra
 
 ## Helm chart
 
-The `usdsearch` Helm chart lives at `helm/usdsearch/`. It deploys the full USD Search stack to Kubernetes: deepsearch, ngsearch, deepsearch-crawler, rendering-service, asset-graph-service, s3proxy (local sub-charts), plus vendored dependencies (OpenSearch, Redis, Neo4j, NGINX). Regenerate the chart README with `helm/scripts/update_readme.sh` after editing `README.md.gotmpl` or `values.yaml`.
+The `usdsearch` Helm chart lives at `helm/usdsearch/`. It deploys the full USD Search stack to Kubernetes: deepsearch, ngsearch, deepsearch-crawler, rendering-service, asset-graph-service, s3proxy (local sub-charts), plus vendored dependencies (OpenSearch, Redis, Neo4j, NGINX).
+
+### Chart README is generated
+
+`helm/usdsearch/README.md` is **generated — never edit it directly**. It has two sources, and which one to use depends on what you are documenting:
+
+- **`values.yaml`** — the `# -- (type)` / `# @raw` comment above a value becomes that value's `.AutoDescription`. Use this for anything that documents a specific key. The gotmpl decides *where* it lands: e.g. `deepsearch.plugins.asset_graph_generation`'s `@raw` block is pulled into the "USD properties search" section, so prose written there appears under that heading whether or not it is about USD properties.
+- **`README.md.gotmpl`** — the page skeleton: headings, standalone prose, and the tables that `range .Values`. Use this for a section that is not tied to one key, or to place an existing key's description somewhere else.
+
+Regenerate with `helm/scripts/update_readme.sh` after editing either. The docker fallback in that script strips blank lines, so clean the result with the pre-commit whitespace fixers (`pre-commit run trailing-whitespace end-of-file-fixer --files helm/usdsearch/README.md`) before committing — otherwise the diff is buried in whitespace noise.
 
 ### Versioning (dual git-tag scheme)
 
@@ -178,6 +189,17 @@ Three independent tag namespaces control versioning:
 - **Chart.yaml** is checked in with placeholder `0.0.0-dev` values — CI stamps real versions at package time via `helm/scripts/version.sh`.
 - On non-tagged commits, versions get a `-N` suffix (commits since last matching tag).
 - `uv-dynamic-versioning` uses `pattern = "default-unprefixed"` and only matches bare tags — no interference with prefixed tags.
+
+### Checking Redis co-location after a deploy
+
+The search REST API asks to be scheduled onto the Redis node via a **preferred** pod affinity, because Redis holds the RRF ranking cache that every paged search reads and every first page writes — cross-node, those are network round trips on the request path. Preferred means the scheduler may ignore it, so verify rather than assume:
+
+```bash
+./scripts/check-redis-colocation.sh              # current kubectl context + namespace
+./scripts/check-redis-colocation.sh -n ds-staging --strict   # non-zero exit if split
+```
+
+A split deployment is slower, not broken, so the script exits 0 either way unless `--strict` is passed. Note that with more API replicas than Redis nodes, a split is unavoidable.
 
 ### Running helm tests
 
@@ -202,7 +224,7 @@ Defined in `ci/helm/gitlab-ci.yml` (included from root). Helm jobs slot into the
 
 - Jobs trigger on `changes: helm/**/*` and `ci/helm/tests/**/*` — Python-only PRs skip helm CI entirely.
 - Tag pushes matching `chart-*` trigger the full lint → package → test → publish pipeline.
-- Publishing pushes to NGC at `omniverse/deeptag-internal/usdsearch`.
+- Publishing pushes to NGC at `m3sujtetvf5w/usdsearch/usdsearch`.
 
 ### Releasing a chart version
 
@@ -217,14 +239,14 @@ git push origin chart-1.4.0 images-1.4.0
 
 Top-level compose files at the repo root run a complete local dev stack (separate from the per-service files under `infra/compose/` used by CI). **Requires Docker Compose >= v2.26** — earlier versions (incl. the v2.20 shipped with Ubuntu 22.04) fail with `services.siglip2-triton conflicts with imported resource` because the gpu-plugins overlay extends a service that the root `docker-compose.yml` brings in via `include:`.
 
-- `docker-compose.yml` — base stack: opensearch, redis, neo4j, siglip2-triton (CPU-mock), deepsearch-api, info-endpoint, asset-graph-service, deepsearch-crawler, indexing-crawler, monitor-crawler, embedding workers (image/thumbnail), `monitor-worker-asset-graph-generation`, `graph-builder` (Kit image, `MODE=graph-builder`, no GPU reservation), and the nginx gateway. **No Explorer WebUI by default** — add the `docker-compose.web-ui.yml` overlay to include it.
+- `docker-compose.yml` — base stack: opensearch, redis, neo4j, siglip2-triton (CPU-mock), deepsearch-api, info-endpoint, asset-graph-service, deepsearch-crawler, indexing-crawler, monitor-crawler, embedding workers (image/thumbnail), `monitor-worker-asset-graph-generation`, `graph-builder` (kitless usdsearch image, no GPU reservation), and the nginx gateway. **No Explorer WebUI by default** — add the `docker-compose.web-ui.yml` overlay to include it.
 - `docker-compose.web-ui.yml` — overlay: Explorer React front-end. Adds the `explorer` service (built from `docker/Dockerfile.explorer`) and swaps the gateway's nginx config from `gateway.conf` to `gateway.web-ui.conf` (via the `!override` volumes tag) so `/`, `/ui/`, `/static/`, and the root-static catch-all proxy to the explorer container. Without this overlay, the gateway's `/` redirects to `/docs/` instead of `/ui/`.
 - `docker-compose.gpu-plugins.yml` — overlay: real SigLIP2 (GPU), `rendering-job` (Kit), and the GPU plugin workers `monitor-worker-thumbnail-generation` and `monitor-worker-rendering-to-embedding`.
 - `docker-compose.vlm-plugins.yml` — overlay: VLM metadata + validation workers; inference runs on a remote OpenAI-compatible API, so no local GPU is needed. Set the one shared `USDSEARCH_LLM_API_KEY` (optionally `USDSEARCH_LLM_BASE_URL` to point at any OpenAI-compatible endpoint); each role only picks a model via `USDSEARCH_VISION_METADATA_MODEL` / `USDSEARCH_VISION_VALIDATION_MODEL`. There is no per-provider key. Credentials are null-pass-through via the `x-vlm-provider-env` / `x-vlm-worker-env` anchors, so unset vars stay omitted from the container.
 - `docker-compose.s3proxy-auth.yml` — overlay: deploys s3proxy as a credential-translating reverse proxy for authenticated non-AWS S3 endpoints. Reads upstream credentials from the same `S3_STORAGE_AWS_*` host env vars the stack already uses, and exposes the bucket locally at `http://s3proxy:80` with `S3PROXY_AUTHORIZATION=none`. Required when using a custom S3 endpoint (non-`*.amazonaws.com`) with GPU plugins — Kit's native client library cannot authenticate to non-AWS endpoints (see Known Pitfalls). All services are redirected through s3proxy for consistency (same pattern as the Helm chart's sub-chart).
 - Infra services (`redis`, `opensearch`, `neo4j`, `siglip2-triton` base) come in via `include:` from `infra/compose/<svc>.yml` plus quickstart-only overrides at `infra/compose/quickstart/<svc>.override.yml`.
 - All services declare `restart: unless-stopped` (via the `x-usdsearch-image` anchor for image-based services, or explicitly for infra/gateway/explorer).
-- `graph-builder` shares `docker/Dockerfile.kit` with `rendering-job` but is tagged `usdsearch-graph-builder:latest` (separate from the renderer's `usdsearch-rendering-job:latest`); BuildKit cache makes the second build a near-instant cache-hit.
+- `graph-builder` builds from the usdsearch image (`docker/Dockerfile.usdsearch`, context = repo root) with `OMNI_USD_STOCK_URL` for the packman resolver stack, tagged `usdsearch-graph-builder:latest` and run with `uvicorn graph_builder.service:app`.
 
 **Gateway routes** (`infra/quickstart/gateway.conf` — baseline, no WebUI):
 - `/` → 302 to `/docs/`
@@ -241,11 +263,72 @@ With the `docker-compose.web-ui.yml` overlay, the gateway is reconfigured from `
 
 **Nucleus mode requires HTTP Basic Auth on every gateway request.** When `STORAGE_BACKEND_TYPE=nucleus`, the gateway gates the deepsearch-api / info-endpoint / asset-graph routes with Basic Auth using the same `OV_USERNAME` / `OV_PASSWORD` the stack was started with. Browsers show a credential prompt; smoke + curl-from-host calls need `BASIC_AUTH="$OV_USERNAME:$OV_PASSWORD"` (smoke script) or `-u "$OV_USERNAME:$OV_PASSWORD"` (raw curl). Without this, every endpoint returns 401 — which is misleading because the stack itself is fine. S3 backends run anonymously, no auth needed.
 
-**Storage API backend (`STORAGE_BACKEND_TYPE=storage_api`)** is selected purely by host env, exactly like Nucleus — no dedicated overlay file. Set `STORAGE_API_GRPC_ENDPOINT` (a **container-reachable** `host:port` — not bare `localhost`; use the host LAN IP, an external DNS name, or `host.docker.internal` with an `extra_hosts: ["host.docker.internal:host-gateway"]` entry which the base compose does not add) plus optional `STORAGE_API_BASE_URI` / `STORAGE_API_SSL` / `STORAGE_API_TOKEN` / `STORAGE_API_OPENID_*`. These are null-pass-through in `x-common-env`, `x-gpu-worker-env`, and `x-vlm-worker-env` (`StorageAPIStorageClientConfig` declares `env_prefix="storage_api_"`). No gateway Basic Auth (that is Nucleus-specific). GPU render-from-USD works: the `RenderingServiceClient` forwards storage_api creds to the rendering-job service **per request** — the gRPC endpoint as `storage_api_url` in the POST body and the optional bearer token via an `X-Token-Auth` header — so the GPU **workers** need `STORAGE_API_*`, but the `rendering-job` service does **not** (it builds the Kit `Authentication` from the request, not its own env).
+**Storage API backend (`STORAGE_BACKEND_TYPE=storage_api`)** is selected purely by host env, exactly like Nucleus — no dedicated overlay file. Set `STORAGE_API_GRPC_ENDPOINT` (a **container-reachable** `host:port` — not bare `localhost`; use the host LAN IP, an external DNS name, or `host.docker.internal` with an `extra_hosts: ["host.docker.internal:host-gateway"]` entry which the base compose does not add) plus optional `STORAGE_API_BASE_URI` / `STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES` / `STORAGE_API_SSL` / `STORAGE_API_TOKEN` / `STORAGE_API_OPENID_*`. `STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES` (a JSON array, e.g. `'["bucket-a","bucket-b"]'`) restricts discovery to a subset of buckets; empty (default) uses all, and it's ignored once `STORAGE_API_BASE_URI` is set. These are null-pass-through in `x-common-env`, `x-gpu-worker-env`, and `x-vlm-worker-env` (`StorageAPIStorageClientConfig` declares `env_prefix="storage_api_"`). No gateway Basic Auth (that is Nucleus-specific). GPU render-from-USD works: the `RenderingServiceClient` forwards storage_api creds to the rendering-job service **per request** — the gRPC endpoint as `storage_api_url` in the POST body and the optional bearer token via an `X-Token-Auth` header — so the GPU **workers** need `STORAGE_API_*`, but the `rendering-job` service does **not** (it builds the Kit `Authentication` from the request, not its own env). `STORAGE_API_GRPC_ENDPOINT` must be a bare `host:port` — a scheme is rejected at config validation (grpc-python creates the channel for a scheme-prefixed target and then never connects, so it would hang rather than fail), and the same applies to `STORAGE_API_NOTIFICATION_SERVICE_GRPC_ENDPOINT`. The copy handed to Kit is derived by `StorageAPIStorageClientConfig.kit_storage_api_url`, which prefixes `http://` when `STORAGE_API_SSL` is false — Kit's `omni.client` never sees `ssl` and reads TLS off the endpoint string instead (bare `host:port` = TLS unless the host is `localhost`/`127.0.0.1` or the port is 80; `http://…` = plaintext unless the port is 443, so a plaintext server on **:443** stays unreachable from Kit and the config logs a warning for that combination).
 
 **End-to-end test harness** at `ci/quickstart/`: parametric runner (`run_tests_quickstart.sh`) + sequential driver (`run_all.sh`) covering 6 configs — `public-s3`, `public-s3-vlm`, `private-s3`, `private-s3-vlm`, `nucleus`, `nucleus-vlm`. Each runner brings up base + GPU plugins (+ VLM overlay where applicable) via `docker compose up -d --wait --build`, polls `/search` until ≥1 indexed asset, runs the smoke script with bumped timeouts, and tears down with `down -v --remove-orphans` on EXIT. Auto-sets `BASIC_AUTH` from `$OV_USERNAME:$OV_PASSWORD` for nucleus configs. A `storage-api` config also exists (external Storage API gRPC endpoint, `STORAGE_API_GRPC_ENDPOINT` required from the host) — availability-gated like nucleus/private-s3. Not in GitLab CI yet — depends on GPU runner availability that isn't currently provisioned. Caller exports credentials under domain-specific names (`DS_STAGING_AWS_*` for staging S3) which the configs map to canonical names (`S3_STORAGE_AWS_*`); for Nucleus the canonical names `OV_USERNAME` / `OV_PASSWORD` are used directly.
 
 **Detecting graphed assets via `/search`**: `/search` and `/search_hybrid` accept `return_root_prims=true` (and `return_default_prims=true`), which annotate each hit with its prims pulled from the asset graph store. A non-empty `root_prims` proves the `asset_graph_generation` worker has already finished that asset — useful for tests or UIs that need to filter to graphed scenes deterministically (one query, no probing of `/asset_graph/usd/prims`).
+
+## Redis logical database allocation
+
+All services share a single Redis instance (compose `redis` service, configured
+with 32 logical DBs; Helm `{{ .Release.Name }}-redis-master`). To avoid keyspace
+collisions, purposes are separated either by a dedicated logical DB or (preferred
+for anything Cluster-portable) by a unique key prefix on the shared DB 0. Keep
+this table current when a service starts using a new DB or prefix.
+
+| DB | Purpose | Used by |
+|----|---------|---------|
+| 0  | Default connection + Redis Streams job queue + **deepsearch-api caches** (prefix-namespaced: `usdsearch:vlmval:v1` = VLM validation verdicts, `usdsearch:imgresolve:v1` = image resolution, `usdsearch:rrfpage:v1` = RRF result orderings for search pagination) | URL-based clients (`REDIS_URL`/`REDIS_STREAM_URL` with no `/<db>` suffix): crawler, monitor, info-endpoint, storage streams; `deepsearch-api` |
+| 5  | `assetdbms` (asset key/value store) | `storage` (`ngsearch_storage_service`) |
+| 7  | `assetdbms` (asset key/value store) | `deepsearch-monitor` (`monitor_omni_writer`) |
+| 9  | `cron` (scheduled-job bookkeeping) | `storage` (`ngsearch_storage_service`) |
+
+DBs 1–4, 6, 8, 10–31 are currently free. **Prefer prefix-namespacing on DB 0 over
+a dedicated logical DB**: logical DBs do **not** exist in Redis Cluster (only DB
+0), so a unique key prefix (e.g. `usdsearch:vlmval:v1`) is the Cluster-safe way to
+separate a keyspace. The `deepsearch-api` caches follow this — they share DB 0 and
+are isolated purely by prefix, each enforcing its own bounded size app-side (never
+via instance `maxmemory`, which would evict the pipeline's Streams data).
+
+## Redis Streams: retention and failed items
+
+A stream is trimmed only up to its **oldest pending (delivered but unacknowledged)
+entry** — `trim_tail()` issues `XTRIM MINID <oldest pending id>`. So one item that
+keeps failing retains every entry queued behind it, however many of those were
+processed successfully. That is the usual cause of Redis memory growing during
+indexing; check `omnideepsearch_stream_oldest_pending_age_seconds{stream,stream_group}`
+before anything else.
+
+An item can stop being worked on in two ways — the consumer raised, or the consumer
+died holding it — and both put the item back at the **end** of the stream rather than
+leaving it pending. The attempt count travels with the entry (its `attempts` field),
+so one budget covers both. Configured under the chart's `deepsearch.cache_settings`:
+
+| Setting | Env | Default | What it does |
+|---|---|---|---|
+| `job_autoclaim_n_retries` / `results_autoclaim_n_retries` | same names | 5 | The one retry budget: attempts before the item is dropped from the stream. Both a dropped job and a dropped result are recorded against the asset as `failed_retries_exhausted`, per plugin, and are visible from the info-endpoint's per-asset status. **`-1` retries forever** (as does leaving the library-level `max_attempts` unset) — nothing is dropped, but an item that can never succeed cycles indefinitely. |
+| `*_autoclaim_min_idle_time` | `FARM_JOB_…`, `NON_FARM_JOB_…`, `RESULTS_…` | 3 h / 90 min / 5 min | How long an item may stay unacknowledged before it is assumed abandoned and requeued. Must exceed the longest a healthy worker can hold one item — the 90 min non-farm value is sized by asset-graph generation (30 min build + 30 min store) — otherwise a slow item is processed twice. |
+| `requeue_failed_items` | `REDIS_STREAM_REQUEUE_FAILED_ITEMS` | `True` | Whether a consumer that *raises* requeues immediately. Turning it off doesn't strand the item: it stays pending until the idle time above elapses, and is then requeued as an abandoned one. |
+
+`omnideepsearch_stream_items_requeued_total{stream,trigger,outcome}` splits this by
+cause (`failed` vs `reclaimed`) and result (`requeued` vs `dropped`) — a spike in
+`reclaimed` means workers are dying, which is a different problem from a spike in
+`failed`.
+
+A **dropped** item is work the deployment paid for and lost, so it is worth alerting
+on rather than reading in a log. `deployPrometheusRules: true` ships two rules
+(`helm/usdsearch/templates/prometheus_rules.yaml`): one on the `dropped` counter, and
+one on `omnideepsearch_stream_oldest_pending_age_seconds` exceeding two reclaim
+windows, which is the growing-Redis symptom itself. Both carry `monitorLabels`, for
+matching a Prometheus Operator's `ruleSelector`.
+
+Note the asymmetry between the two dropped-item paths, which is deliberate: an
+exhausted **job** also gets `set_plugin_path_to_hash`, so the crawler treats it as
+done and stops re-enqueueing it until the asset changes. An exhausted **result** does
+not — it never reached the search backend, so its hash stays unwritten and the next
+crawl produces it again. Recording the status does not affect either decision; only
+`path_to_hash` does.
 
 ## Local filesystem backend (s3proxy)
 
@@ -259,7 +342,7 @@ LOCAL_FS_DATA_DIR=/path/to/my-assets \
 
 **Components:**
 - `s3proxy` (andrewgaul/s3proxy) — filesystem-nio2 backend, port 9000, mounts `$LOCAL_FS_DATA_DIR`
-- `fs-watcher` (services/fs-watcher/) — watches `$LOCAL_FS_DATA_DIR`, triggers `/process/asset` on info-endpoint for each new/changed file
+- `fs-watcher` (services/fs-watcher/) — watches `$LOCAL_FS_DATA_DIR`, triggers `/process/asset` on info-endpoint for each new/changed file. Submits the raw object key (`s3://bucket/my car.usd`, never `my%20car.usd`). A standalone uv project excluded from the workspace (its deps stay out of the usdsearch image); tests via `./ci/fs-watcher/run_tests_fs-watcher.sh`
 - `LocalFSPathMiddleware` (packages/search-utils/search_utils/local_fs_middleware.py) — ASGI middleware on all 3 API services that bidirectionally rewrites `s3://bucket/` <-> `$LOCAL_FS_DATA_DIR/`
 
 **Environment variables:**
@@ -272,11 +355,51 @@ LOCAL_FS_DATA_DIR=/path/to/my-assets \
 - Requests: local paths in query params/bodies (`/home/user/assets/car.usd`) are rewritten to `s3://usdsearch-local/car.usd` before reaching the application
 - Responses: `s3://usdsearch-local/car.usd` in JSON responses is rewritten to `/home/user/assets/car.usd` before reaching the client
 - Controlled by `LOCAL_FS_MODE=true` + `LOCAL_FS_HOST_PATH` env vars (set by the compose overlay)
+- Service-to-service responses are rewritten too (AGS answers deepsearch-api with local paths); `normalize_upstream_document` maps them back to `s3://` before any storage or index lookup
 - Complete no-op when `LOCAL_FS_MODE` is unset (production, CI, other backends)
 
-**Alternative: MinIO backend** (`docker-compose.local-s3.yml`) — copies files into MinIO at startup, closer to production S3 behavior, MinIO can be scaled for larger deployments.
+**Alternative: MinIO backend** (`docker-compose.local-s3.yml`) — copies files into MinIO at startup, closer to production S3 behavior, MinIO can be scaled for larger deployments. Its images (and the `minio`/`minio-mc` images `infra/compose/minio.yml` and CI use) pull from the project's GitLab registry — `gitlab-master.nvidia.com:5005/omniverse/deeptag/usdsearch/minio:latest` and `.../mc:latest`, mirrored from `dockerhub.nvidia.com/minio/minio:latest` and `dockerhub.nvidia.com/minio/mc:latest` respectively — because `quay.io/minio/*` now rejects pulls as `unauthorized` (and Docker Hub intermittently refused anonymous pulls before that). To refresh a mirror, `docker pull` the `dockerhub.nvidia.com` source, `docker tag` it to the GitLab path, and `docker push`; `infra/compose/minio.yml` (the test stacks) pins both by digest, so update those digests too (`docker buildx imagetools inspect <gitlab-path>:latest`).
 
 ## Running tests
+
+**Always check `./ci/` for a runner before running anything, and use it instead of a bare `pytest`.** Almost every workspace member has one at `ci/<name>/run_tests_<name>.sh` — `ls ci/` first, it is the cheapest possible check. The runner brings up the backing services the tests need (via `infra/compose/*.yml` — redis, opensearch, minio, storage-api, …), exports the env vars the app reads, and invokes pytest the way CI does, so a local pass there actually predicts a CI pass. A bare `pytest` skips all of that and hides whole classes of failure: tests silently skip on a missing service, or fail locally for reasons that have nothing to do with your change.
+
+**Prefer the real service over a mock.** Since the runner already provisions the backing services, write the test against them. A stub that stands in for a client or a transport mostly asserts that the code you just wrote is the code you just wrote; it cannot tell you whether the *service* behaves as assumed, which is usually the part in doubt. Where you need to exercise a state the live service will not produce — a prior version's behavior, an error path — build that state out of real components (e.g. feed the real model a deliberately mis-configured tokenizer) rather than replacing the component itself.
+
+**Prefer one parameter table to a run of near-identical tests.** Several tests
+differing only in an input and an expected value are one
+`@pytest.mark.parametrize` with a named `pytest.param` per row. The cases end up
+side by side where a gap in the matrix is visible, a failure names the shape that
+broke (`test_lucene_regexp_translation[complement]`) rather than just the
+function, and the shared setup stops being copied. Keep tests separate when the
+*assertions* differ, not just the data — a table whose body branches per row is
+worse than the tests it replaced.
+
+The env vars matter as much as the containers. The compose services deliberately do **not** listen on their default ports — redis is published on **6380**, not 6379 — and the runner is what exports `REDIS_URL` / `REDIS_STREAM_URL` to match. A bare `pytest` silently connects to whatever happens to be on `localhost:6379` instead, so the suite fails (or worse, passes) against the wrong server.
+
+```bash
+# search-utils (redis + opensearch + storage-api + minio, with the MinIO buckets seeded)
+./ci/search-utils/run_tests_search_utils.sh
+
+# Cache / Redis streams (brings up redis)
+./ci/cache/run_tests_cache.sh
+
+# Plugins (brings up redis + opensearch + siglip2-triton, and neo4j + AGS + kit-worker unless SKIP_AGS_TESTS=True)
+./ci/plugins/run_tests_plugins.sh
+
+# Asset-graph builder (builds the Kit image and starts the kit-worker container)
+./ci/asset-graph-builder/run_tests_asset_graph_builder.sh
+
+# Search REST API (provisions OpenSearch + Redis + env)
+./ci/deepsearch-api/run_tests_deepsearch_api.sh
+
+# Helm chart unit tests
+HELM_CHART_PATH=./helm/usdsearch ci/helm/tests/unit/run_all.sh
+```
+
+Narrowing a run: the plugins runner takes a `PYTEST_K_FILTER` env var (default `test_plugins`); the others append the tests dir and pass extra args through an unquoted `$@`, so a single-token `-k` works but a multi-word `-k "a or b"` expression splits — narrow to one token or run the full suite.
+
+Bare `pytest` is a fallback for pure-unit work with no backing services, and its result is only as trustworthy as that assumption — which is easy to get wrong, since suites that look like unit tests (the Redis stream and cache tests, for instance) talk to a real service:
 
 ```bash
 # Run tests for a specific workspace member
@@ -288,8 +411,6 @@ uv run --package deepsearch-crawler pytest services/deepsearch-crawler/tests/tes
 # Run a single test by name
 uv run --package search-utils pytest packages/search-utils/tests/ -k "test_redis_cache" -v
 ```
-
-Before validating a change, check `./ci/` first: most members have a CI runner at `ci/<name>/run_tests_<name>.sh` that provisions the right backing services (via `infra/compose/*.yml`), exports the env vars the app reads, and invokes pytest the way CI does — a local pass there actually predicts a CI pass. (Note: these scripts append the tests dir and pass extra args through an unquoted `$@`, so a single-token `-k` works but a multi-word `-k "a or b"` expression splits — narrow to one token or run the full suite.)
 
 ## Skill tests
 
@@ -337,8 +458,11 @@ When behavior changes, update the skill first, then the docs that expose it.
   public hosted instance the docs use.
 - Do not paste large generated result payloads into docs; describe the expected
   output shape instead.
-- Internal-only material (`docs/agent-desktop/search/internal/`) must stay in the
-  sync drop list, never linked from a public doc.
+- Internal-only material (`docs/agent-desktop/search/internal/`) must stay in
+  the sync drop list, never linked from a public doc. It is dropped via
+  `drop_prefix` in `scripts/rsync-opensource.sh`; verify with
+  `scripts/rsync-opensource.sh -n <tmpdir>` after touching that list.
+  Internal-only skills live in their own internal repos, not under `skills/`.
 
 **Skill discovery compatibility.** The repo carries compat symlinks so each
 runtime finds the same `skills/`:
@@ -370,6 +494,31 @@ body physics under 100MB`, `$inspect-asset <asset-url-from-search-results>`.
 Avoid hard-coding a specific asset URL unless it is known to be stable and
 public; search indexes evolve and stale URLs make onboarding fail.
 
+## Docstrings & comments
+
+Keep both short — essential information only. A docstring earns its length by
+telling a reader something the signature does not; a comment, something the code
+does not.
+
+- **One line by default.** What the function does, and the single non-obvious
+  constraint a caller must know. If the name and type hints already say it, no
+  docstring is better than a restated one.
+- **A comment states the non-obvious fact, not the reasoning that reached it.**
+  One or two lines at the line it explains. Narrating what the code plainly does,
+  or arguing a decision at paragraph length, is noise the next reader must skip.
+- **Background goes elsewhere.** Investigation notes, upstream-reference
+  citations, version history, "why this is the way it is" — those belong in the
+  module docstring, the relevant `docs/*.md` page, or a plan doc under
+  `docs/plans/`. A method docstring is not the place to re-derive a decision.
+- **Rationale that must stay next to the code goes in a comment**, at the line it
+  explains, not in the docstring where it pushes the actual contract out of view.
+- **Tests are not an exception.** The test name and the `pytest.param` id already
+  say which case is being run; the docstring is only for what they cannot — what
+  breaks in production if the assertion fails. Restating the assertions in prose
+  is the most common way a test file doubles in size without gaining anything.
+- Same reasoning as [Merge requests & changelog](#merge-requests--changelog):
+  these are read far more often than written, and bloat buries the signal.
+
 ## Lint / format
 
 ```bash
@@ -385,18 +534,18 @@ Always run `pre-commit run --all-files` (or at minimum `pre-commit run` against 
 
 `THIRD_PARTY_NOTICE.md` at the repo root + the `licenses/` directory list every third-party Python package shipped with USD Search at runtime, with name, version, SPDX license, homepage, and per-package license text. They are regenerated by `scripts/generate_third_party_notice.sh` (bash entry point) which calls `scripts/_generate_third_party_notice.py` (HTTP + wheel/sdist extraction). Re-run after any `pyproject.toml` change — or after changing the runtime image's `apt-get` layer (see "Bundled OS packages" below).
 
-Four production-dep trees are enumerated (test/dev groups excluded) — the three latter are the same services that are excluded from the workspace and thus need their own lock:
+Two lockfiles are enumerated (production deps only; test/dev groups excluded):
 
-- root `uv.lock`
-- `services/rendering-job/uv.lock`
-- `services/asset-graph-builder/uv.lock`
-- `services/siglip2-triton/docker/uv.lock`
+- root `uv.lock` — exported once for the whole workspace and again per member for `services/asset-graph-builder` and `services/rendering-job`, so the `Sources` column tags which image pulls each package
+- `services/siglip2-triton/docker/uv.lock` — excluded from the workspace, so it needs its own lock
 
-All four are tracked, even though `uv.lock` is in `.gitignore` — `.gitignore` carries explicit `!`-exceptions for these four paths. Adding another excluded service in the future requires another exception line.
+Both are tracked, even though `uv.lock` is in `.gitignore` — `.gitignore` carries explicit `!`-exceptions for them. Adding another excluded service in the future requires another exception line.
+
+Components that never reach a `uv.lock` are tracked by hand in `scripts/third_party_extras.json`: the `ovrtx` wheel (pinned in `services/rendering-job/requirements-gpu.txt`), the graph-builder's packman USD stack (OpenUSD, Omniverse client library, `omni_usd_resolver`, oneTBB — versions in the `usd-stack` stage of `docker/Dockerfile.usdsearch` and `build-graph-builder` in `.gitlab-ci.yml`), pip-installed build tools left in an image (`uv`, `virtualenv`), model weights, and base images. Update it whenever those pins change. Each entry's license text is fetched from `license_text_url`; for licenses not published at any URL (e.g. the Omniverse client library's NVIDIA proprietary notice, which only ships inside its package) commit the text under `scripts/third_party_license_texts/` and point `license_text_file` at it.
 
 The script passes `--frozen` to every `uv export` so reruns never silently mutate a lockfile. Cached PyPI metadata + downloaded artifacts live under `_tmp/license-cache/` (already gitignored via the catch-all `_tmp` rule).
 
-The `third-party-notice` pre-commit hook (`.pre-commit-config.yaml`) guards the tracked notices against drift: it runs `scripts/generate_third_party_notice.sh --check`, which regenerates the notice + `licenses/` into a temp tree and diffs them against the committed copies, failing with a byte-for-byte diff when they are stale (the failure message tells you to re-run the script and commit the result). The hook only fires when a staged file can actually change the notice — `**/pyproject.toml`, the four tracked `uv.lock`s, the two enumerated Dockerfiles (`docker/Dockerfile.usdsearch`, `docker/Dockerfile.siglip2-triton`), the generator scripts (`scripts/generate_third_party_notice.sh`, `scripts/_generate_third_party_notice.py`, `scripts/_apt_deps_incontainer.sh`, `scripts/third_party_extras.json`), or the tracked outputs (`THIRD_PARTY_NOTICE.md`, `licenses/`) — so unrelated commits skip it. Because it does a full regeneration it needs docker + NGC pull access (for the apt base images) and network access to PyPI/GitHub, the same as a manual run; run it explicitly with `pre-commit run third-party-notice --all-files`. Note the `licenses/` carve-out on the `trailing-whitespace` / `end-of-file-fixer` hooks: the license texts are verbatim and those fixers would otherwise mangle them (and keep this check permanently red).
+The `third-party-notice` pre-commit hook (`.pre-commit-config.yaml`) guards the tracked notices against drift: it runs `scripts/generate_third_party_notice.sh --check`, which regenerates the notice + `licenses/` into a temp tree and diffs them against the committed copies, failing with a byte-for-byte diff when they are stale (the failure message tells you to re-run the script and commit the result). The hook only fires when a staged file can actually change the notice — `**/pyproject.toml`, the two tracked `uv.lock`s, `services/rendering-job/requirements-gpu.txt` (the `ovrtx` pin), the three enumerated Dockerfiles (`docker/Dockerfile.usdsearch`, `docker/Dockerfile.siglip2-triton`, `docker/Dockerfile.rendering-job`), the generator scripts (`scripts/generate_third_party_notice.sh`, `scripts/_generate_third_party_notice.py`, `scripts/_apt_deps_incontainer.sh`, `scripts/third_party_extras.json`), or the tracked outputs (`THIRD_PARTY_NOTICE.md`, `licenses/`) — so unrelated commits skip it. Because it does a full regeneration it needs docker + NGC pull access (for the apt base images) and network access to PyPI/GitHub, the same as a manual run; run it explicitly with `pre-commit run third-party-notice --all-files`. Note the `licenses/` carve-out on the `trailing-whitespace` / `end-of-file-fixer` hooks: the license texts are verbatim and those fixers would otherwise mangle them (and keep this check permanently red).
 
 Same-name-different-version entries are kept as separate rows, one per `(name, version)`. Today this captures two known workspace splits: `pydantic` 1.x vs 2.x and `websockets` 10.4 vs 16.0.
 
@@ -404,30 +553,41 @@ When a wheel/sdist on PyPI does not ship a `LICENSE*`/`COPYING*`/`NOTICE*` file,
 
 ### Bundled OS packages (runtime apt-get layer)
 
-The notice also enumerates the Debian/Ubuntu packages the bundled images install (or upgrade) via their `apt-get` layers, **plus their dependency closure**. They land in a separate "Bundled OS packages" table with `os-<name>-<version>.txt` license files, and the `Sources` column names the image each package belongs to. Two images are enumerated today, configured via the `APT_TARGETS` array in `generate_third_party_notice.sh` (each entry is `<source-label>:<dockerfile>:<stage>`, where `<stage>` is empty for a single-stage Dockerfile):
+The notice also enumerates the Debian/Ubuntu packages the bundled images install (or upgrade) via their `apt-get` layers, **plus their dependency closure**. They land in a separate "Bundled OS packages" table with `os-<name>-<version>.txt` license files, and the `Sources` column names the image each package belongs to. Three images are enumerated today, configured via the `APT_TARGETS` array in `generate_third_party_notice.sh` (each entry is `<source-label>:<dockerfile>:<stage>`, where `<stage>` is empty for a single-stage Dockerfile):
 - **`usdsearch-runtime`** — `docker/Dockerfile.usdsearch`'s `runtime` stage on top of its `nvcr.io/nvidia/base/ubuntu:noble` base (`python3.12`, `ca-certificates`).
 - **`siglip2-triton`** — `docker/Dockerfile.siglip2-triton` (single stage) on top of its `nvcr.io/nvidia/tritonserver` base (`openssl`, a vulnerability bugfix bump).
+- **`rendering-job`** — `docker/Dockerfile.rendering-job` (single stage) on top of `nvcr.io/nvidia/omniverse/ov-base-ubuntu24-x86_64`, which already ships Python 3.12 and the GL/EGL stack ovrtx needs; the layer only applies security upgrades (`openssl`, `libssl3t64`, `curl`).
 
 This step is docker-based (the only way to compute the real install closure + read each package's copyright):
 
-1. For each `APT_TARGETS` entry, `generate_third_party_notice.sh` parses the target stage's `FROM` image (`FROM ... AS <stage>` when a stage is named, else the first `FROM`) and its `apt-get install` package list straight out of the Dockerfile (so it tracks Dockerfile changes; single-line package lists only).
+1. For each `APT_TARGETS` entry, `generate_third_party_notice.sh` parses the target stage's `FROM` image (`FROM ... AS <stage>` when a stage is named, else the first `FROM`) and its `apt-get install` package list straight out of the Dockerfile (so it tracks Dockerfile changes). A list continued over `\`-terminated lines is followed until the line carrying the closing `&&`.
 2. It runs that base image and executes `scripts/_apt_deps_incontainer.sh` inside it (mounted read-only, with `TPN_SOURCE=<source-label>`): snapshot `dpkg` before, `apt-get install` the parsed packages, and emit a JSON manifest (`name`, `version`, copyright from `/usr/share/doc/<pkg>/copyright`, `source`) of the reported set — the newly-**added** closure **plus the explicitly-requested packages** (`"$@"`). The latter union is what captures a package the base already ships and `apt-get install` merely **upgrades** (e.g. the openssl bump on the Triton base), which a pure before/after diff would miss. When the copyright path is missing or a **dangling symlink** (the base image strips the target package's doc dir — e.g. `openssl` → `../libssl3/copyright`, whose `libssl3t64` doc was removed), the text is recovered from the archive: `apt-get download` the package's own `.deb`, else the symlink-target package's `.deb`, resolving the t64/rename by prefix-matching the target name against the package's `apt-cache depends` list (`libssl3` → `libssl3t64`). The `.deb`'s copyright is extracted via `dpkg-deb --fsys-tarfile | tar -xO`. The per-target manifests are merged into a single `_tmp/license-cache/apt_deps.json`.
 3. `_generate_third_party_notice.py --apt-manifest` writes the copyright files and infers each license id: SPDX-ish short ids from a machine-readable (DEP-5) `copyright`, else SPDX text heuristics over a widened window (free-form copyrights bury the license body past the preamble — e.g. Python's), else `UNKNOWN`. Entries with the same `(name, version)` across images are merged into one row whose `Sources` lists every image.
 
 Notes / gotchas:
 - **Requires docker + NGC pull access** to each target's base image. The step is best-effort per target: if docker is missing it skips all targets; a single unparseable/unbuildable target warns and contributes `[]` without killing the others (the rest of the notice still generates). Set `THIRD_PARTY_SKIP_APT=1` to skip it entirely; edit `APT_TARGETS` (or `DOCKERFILE=` for the usdsearch entry) to change what's enumerated.
-- An apt-get layer that only **upgrades** a base-image package is captured only for packages named explicitly on the `apt-get install` line — the dependency closure of an upgrade (versions bumped on already-installed transitive deps) is **not** enumerated, since those packages were already present before the install. Net-new packages still bring their full closure.
+- Packages the layer **upgrades** are captured too: the in-container script snapshots `dpkg` versions before the install and reports every base package whose version changed (e.g. `libcurl4t64` upgraded alongside `curl`), next to the net-new closure and the explicitly-named packages. A blanket `apt-get upgrade` is not replayed, so avoid it in enumerated Dockerfiles; name the packages to patch instead. The scan container runs as root with the image entrypoint bypassed (NVIDIA entrypoints print banners or demand EULA acceptance).
 - A package whose `/usr/share/doc/<pkg>/copyright` is a **dangling symlink** is recovered from the archive `.deb` (see step 2 above), so it no longer falls back to `UNKNOWN` / `_(not retrieved)_`. Recovery is best-effort and needs apt network access inside the container; if the target package has no candidate and no rename-matching dependency, it still degrades to `UNKNOWN`. The base images' own packages are out of scope here (delta only); track a base image itself in `scripts/third_party_extras.json` if needed.
 
 ## CI pipeline
 
 Pipeline runs on: MR events, commit tags, default branch, and `release/*` branches.
 
-**Stages**: `init` → `lint` → `unit` → `build` → `publish-images` → `test` → `sevan-integration` → `security` → `publish` → `deploy` → `pages-prepare` → `pages`. Helm jobs share the root stages (`lint`, `init`, `build`, `test`, `publish`) rather than living in their own helm-prefixed stages.
+**Stages**: `init` → `lint` → `unit` → `build` → `test` → `sevan-integration` → `security` → `publish` → `deploy` → `smoke` → `pages-prepare` → `pages`. Helm jobs share the root stages (`lint`, `init`, `build`, `test`, `publish`) rather than living in their own helm-prefixed stages.
+
+**`deploy` stage** — the `deploy-nvcf-*` jobs extend the upstream `.deploy-nvcf-container` template, which runs `python ci/create_function.py` on a `python:3.10` image after `pip install ngcsdk==3.160.1 setuptools==80.9.0`. The template copies its own `create_function.py` only if the repo doesn't ship one, so **our** `ci/create_function.py` wins. That script is not part of any workspace member; `ngcsdk` is declared in the root `pyproject.toml`'s opt-in `ci` dependency group purely so the script resolves and runs locally (`uv run --group ci python ci/create_function.py`). The group is not synced by default, so it stays out of the production image and out of `THIRD_PARTY_NOTICE.md`; `uv sync --all-groups` (test scripts, test-runner stage) does install it.
+
+**`smoke` stage** — `smoke-nvcf-rendering-job-stg` / `smoke-nvcf-rendering-job` run `ci/rendering-job/smoke_test_nvcf.sh` against the staging and production NVCF rendering functions: `/health`, `/readyz`, `/info`, then a real render of a small public `omniverse-content-production` asset, asserting the returned images decode to valid JPEG/PNG. Each check prints green PASS / red FAIL and any FAIL fails the job; rendered images are kept as job artifacts. Both jobs are `when: manual` (like the `deploy-nvcf-*` jobs) and carry no `needs`, so the currently-deployed function can be checked from any pipeline without redeploying. The function is resolved by **name** (`usdsearch_rendering_function[_stg]`) via the NVCF functions API rather than by a hardcoded id, so a redeploy doesn't stale the config. The production job sets `ALLOW_NOT_READY=true` because a saturated request queue there reports `/readyz` `not_ready` transiently while renders still succeed.
+
+`smoke-nvcf-siglip2-triton` is the embedding-side counterpart: it runs `ci/siglip2-triton/smoke_test_nvcf.py` against `usdsearch_siglip2_function` (also resolved by name, also `when: manual` with no `needs`). That function is deployed as a **gRPC** (`PREDICT_V2`) function, so the checks go through the repo's own `siglip2-triton-client` — a TLS channel to `grpc.nvcf.nvidia.com:443` with `function-id` + `authorization` call metadata ([NVCF gRPC docs](https://docs.nvidia.com/nvcf/g-rpc-function-invocation)) — rather than curl: `ModelReady` (retried while a cold function scales up a GPU instance), `ModelMetadata` for all four models, batched text + image embeddings, a cross-modal check that each of a cat/dog image pair scores higher against its own caption than the other's, and a parity check that client-side preprocessing/tokenization into the bare encoders reproduces the ensembles' embeddings. Embeddings and a JSON summary are kept as job artifacts. The job keeps `GIT_LFS_SKIP_SMUDGE=1` (no need for the 7.2 GB of ONNX weights) but pulls the LFS-tracked `siglip2_triton_client/tokenizer/tokenizer.json`, which the parity check tokenizes with. The same script points at a local Triton with `TRITON_ENDPOINT=localhost:8001 TRITON_SSL=false NVCF_FUNCTION_ID= NVCF_RUN_KEY=`.
+
+**`security` stage** — `docker:scan:usdsearch` / `:rendering-job` / `:siglip2-triton` / `:graph-builder` scan the images built earlier in the pipeline for OSS CVEs. Each is one include of the `pulse-anchore_container` component (`job_name` per image), which pulls the image from the GitLab registry by URL: the job-level `CONTAINER_URL_1` (supplied by a `.container-scan-url-*` anchor) is matched by `container_urls_varname_regex`, and `anchore-launcher` authenticates with the built-in `$CI_REGISTRY_USER` / `$CI_REGISTRY_PASSWORD`. Shared bits live in `.container-scan-common`: `allow_failure: true` (findings are non-blocking for now), no LFS / submodules / history, and a `rules:` override that restores tag and `release/*` coverage the component's own rules drop (this project protects no tags). `nspect_id` must be passed as a **literal** — the component assigns it to a variable named `NSPECT_ID`, so `$NSPECT_ID` self-references and resolves empty; `pulse-bddetect` maps it to `PULSE_NSPECT_ID`, which is why the include above it can pass the variable. These replaced `.docker:scan:with-policy` (from `deepsearch-build-upload-pipeline.yaml`), whose retired `.container-scan:*` base drove pulse-cli against a host that no longer resolves; the local `.container-scan-policy_v2.json` went with it, since the component always evaluates against the central ProdSec policy and per-repo exceptions move to its `allowlist` input.
 
 External template includes:
 - `omniverse/deeptag/ci-cd-storage-backends` → `nucleus.yml`
 - `omniverse/deeptag/gitlab-templates` → `deepsearch-build-upload-pipeline.yaml`
+- `sectools/gitlab/components/pulse-bddetect` → repo OSS scan (`pulseoss:repository`)
+- `sectools/gitlab/components/pulse-anchore` → container scans (`docker:scan:*`)
 - `local: ci/helm/gitlab-ci.yml` → Helm chart lint, package, test, publish
 
 The Claude Code skill lint + behavioral tests (gated on `changes: skills/** | .claude/skills/** | ci/skills/**`) are defined inline in the root `.gitlab-ci.yml` as `skills-lint`, not in a separate include.
@@ -438,9 +598,11 @@ The Claude Code skill lint + behavioral tests (gated on `changes: skills/** | .c
 
 **Per-package CI scripts**: each workspace member has a runner at `./ci/<name>/run_tests_<name>.sh`. Most are plain pytest runs; the docker-compose-based ones are `asset-graph-builder` (no upstream `needs`), `siglip2-triton` (GPU optional), `rendering-job` (GPU required), `search-utils` (needs minio + dind), and the helm chart suite (`./ci/helm/tests/unit/run_all.sh`).
 
+**Change-gated jobs**: `skills-lint` / `skills-validate` (see above), `test-explorer` (`services/explorer/**`), the two `sevan-integration` jobs, and `unit-siglip2-triton` — the last via `.siglip2-triton-rules-on-changes`, gated on `packages/siglip2-triton-client/** | services/siglip2-triton/** | docker/Dockerfile.siglip2-triton | infra/compose/siglip2-triton*.yml | ci/siglip2-triton/** | pyproject.toml | uv.lock`. It is by far the most expensive unit job (builds the Triton image from the 7.2 GB LFS `model_repo/`, no `GIT_LFS_SKIP_SMUDGE`) and nothing `needs:` it, so unrelated MRs skip it entirely. All gates fall back to `when: manual, allow_failure: true`, so the job stays one click away — including when the change is to the job definition itself. `build-siglip2-triton` stays **ungated**: `publish-siglip2-triton`, `docker:scan:siglip2-triton` and `test-deepsearch-api-container` all `needs:` its image.
+
 **Build-stage jobs** (`build-usdsearch`, `build-siglip2-triton`, `build-rendering-job`): push images to the GitLab registry tagged `$CI_COMMIT_SHORT_SHA` for downstream jobs to pull.
 
-**`publish-images` stage** (`publish-usdsearch`, `publish-siglip2-triton`, `publish-rendering-job`): triggered **only on `images-X.Y.Z` tag pushes**. Pulls images from the GitLab registry (tagged `$CI_COMMIT_SHORT_SHA` by the build stage), re-tags them with the version from the git tag, and pushes to `nvcr.io/nvidia/usdsearch/<name>:<version>`. This ensures the `images-X.Y.Z` tag actually publishes Docker images to NGC — the same images that were tested in the `test` stage. Note: the `publish-rendering-job` job (and the build/scan/test jobs feeding it) emits the OCI image under the name `usdsearch-kit-workflows`, not `rendering-job` — the Kit image is reused for both the renderer and the asset-graph-builder sidecar, so the rename disambiguates the publication target. Source dir, Python module, and compose stack tags keep the legacy `rendering-job` name.
+**`publish` stage** (`publish-usdsearch`, `publish-siglip2-triton`, `publish-rendering-job`, `publish-graph-builder`, via the shared `.publish-image` template): auto-runs on **any** tag push (`if: $CI_COMMIT_TAG`), and is available `when: manual` otherwise. Pulls the image built earlier in the pipeline (tagged `$CI_COMMIT_SHORT_SHA` by the build stage) from the GitLab registry, re-tags it with the git tag (or, when run manually off a tag, `<VERSION.md>-<short-sha>`), and pushes to `$PUBLISH_REGISTRY` (`nvcr.io/m3sujtetvf5w/usdsearch`) — also tagging `:latest` when the pipeline is on the default branch. `publish-graph-builder` ships `usdsearch-graph-builder`, the kitless image the helm chart's `asset-graph-builder` sidecar deploys (`global.image.graph_builder`) — same `Dockerfile.usdsearch` as `publish-usdsearch`, built by `build-graph-builder` with a different `OMNI_USD_STOCK_URL` build-arg. Note: the `publish-rendering-job` job (and the build/scan/test jobs feeding it) emits the OCI image under the name `usdsearch-kit-workflows`, not `rendering-job` — a legacy name retained so the deployed NVCF rendering function keeps pulling the same repository across the ovrtx migration. Source dir, Python module, and compose stack tags keep the `rendering-job` name. `$PUBLISH_REGISTRY` is in the org the NVCF functions live in, so the deploy stage (`.deploy-nvcf-republished-container`) deploys the published image directly (`NGC_GROUP=$NGC_CLI_ORG/$NGC_CLI_TEAM/$IMAGE_NAME`) with no re-publish step.
 
 **`test` stage** (CI variable: container tests): contains three kinds of jobs:
 - `sanity-usdsearch` — pulls the built `usdsearch` image and runs `python -m usdsearch.admin.tools $COMMAND` (matrix over several `--help` commands) to verify the Fire CLI entry point is importable.
@@ -455,6 +617,7 @@ The Claude Code skill lint + behavioral tests (gated on `changes: skills/** | .c
 
 **Required CI secrets/variables**:
 - `NGC_API_KEY` — Docker login to `nvcr.io`
+- `NVCF_GENAI_RUN_KEY` — NVCF key used by the `smoke` stage; it both lists functions (name → id lookup) and invokes them
 - `CI_REGISTRY_USER`, `CI_REGISTRY_PASSWORD`, `CI_REGISTRY_IMAGE` — GitLab container registry (auto-set by GitLab)
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` — read access to `s3://deepsearch-test-bucket` in `eu-central-1`
 - `BASE_STACK_USERNAME`, `BASE_STACK_PASSWORD` — Nucleus test stack credentials
@@ -480,6 +643,9 @@ The Claude Code skill lint + behavioral tests (gated on `changes: skills/** | .c
 - **Never pull the whole `siglip2-embedding` nested field into search responses**: each thumbnail's `siglip2-embedding.embedding` is a 1536-float vector, so returning the field bloats every hit. In the `deepsearch_api` search backend (`search_backend/main.py`), `_build_source_includes` requests only the sub-field actually needed (`siglip2-embedding.embedding` for similarity-threshold dedup / `return_predictions`, `siglip2-embedding.image` for `return_images`) — never the whole field. `_vector_inner_hits_source` keeps the vector-leg `inner_hits` `_source` at the **fully-qualified** names `["siglip2-embedding.image", "siglip2-embedding.keyword", "siglip2-embedding.label"]`, adding the vector only when `return_embeddings` is set. The dotted prefix is mandatory: nested `inner_hits` `_source` includes resolve relative to the **root** document, so bare names (`"image"`) match nothing and the inner `_source` comes back empty — silently breaking thumbnail loading for `description`-only queries (the vector leg is then the only source of the image hash). Consumers differ: similarity dedup + predictions read the embedding from the **top-level `_source`**, while the image hash is read from the vector legs' `siglip2-embedding` **inner_hits** (v2 `compat.py` and v3) — so inner_hits must always keep `image`.
 - **`SearchResult.source` is a plain dict at runtime**, not a `SearchResultSource` instance — `compat.py`, `filtered.py`, and `routers_v3/search_v3.py` consume it with `.get()`/`.items()`/`[...]`. Do **not** "fix" it by constructing the model (`SearchResultSource(**src)`); that raises `AttributeError` across the pipeline. A `field_serializer` on the field (`search_backend/models.py`) silences the pydantic serialization warning while keeping it a dict.
 - **Asset-graph spatial coords reject non-finite values with 422**: the `radius`, `center_x/y/z`, and bounding-box `min_/max_bbox_*` query params in `services/asset-graph/.../api/endpoints.py` set `Query(..., allow_inf_nan=False)`, so `inf`/`nan` inputs fail validation with HTTP 422 instead of reaching the DB. Keep `allow_inf_nan=False` when adding new float spatial query params.
+- **Never-traversed default prims must be dropped from the graph, not synthesized**: `stage.Traverse()` uses the default predicate (defined + active + loaded + non-abstract), so an `over`/inactive/abstract prim is skipped. When such a prim is the stage's `defaultPrim` (common in SimReady **physics / override payload sublayers** — e.g. `.../Interior_Roof_Panel_C01/payloads/Physics/physics.usda`, whose `RootNode` is an `over` with no defined geometry), `merge_prim_properties` (`graph_builder/prim_properties.py`) still auto-vivifies a bare `{"properties": {...}}` entry to hang the SimReady `customLayerData` metadata on. That entry lacks the fields AGS's `PrimCreateModel` requires (`usd_path`, `prim_type`, `bbox_max/min/midpoint`), so posting it makes AGS reject the **whole** graph with a 422. **Architectural decision (Option 2, deliberate):** `drop_incomplete_prims()` removes these stubs before posting rather than back-filling a synthetic prim — the dropped metadata is redundant, since it also lives on the main asset's real (`def`) default prim that references/payloads the sublayer, so it does not need to be queryable on the sublayer node itself. The drop is a **key-presence** check, never a value check: traversed non-geometry prims (Scope/Material/physics-joint) legitimately carry `±GF_FLT_MAX` sentinel bboxes and typeless (`""`) `prim_type` but have every key, so only the never-traversed stub matches. If you re-add metadata to untraversed prims, either give them a full valid record or accept they'll be dropped — do not post a partial prim.
+- **Surface the AGS response body, not just the status, on failed graph writes**: `AssetGraphGeneration.store_graph` (`packages/plugins/plugins/asset_graph_generation.py`) must **not** use `aiohttp`'s `raise_for_status=True` — it raises before the body is read, collapsing a 422 to a bare `422, message='Unprocessable Entity'` and hiding *which* prim fields failed. Instead it checks `resp.status >= 400`, reads `await resp.text()`, and folds the detail into the raised `ClientResponseError` (mirrors the AGS-side `Neo4jError` handler that returns code+message rather than a bare 500). Keep this pattern when touching AGS/kit-worker request code.
+- **Rendering-job auto-framing uses one global pivot offset — do not switch to per-view centering**: `OvrtxViewRenderer._auto_frame` (`services/rendering-job/.../ovrtx_rendering/renderer.py`, `RENDER_ADJUST_FRAMING`) ports Kit's framing. A single world-space offset of the orbit pivot is solved from Kit's top (`el=0`) and side (`el=270`) probe views, and one shared distance from the requested views, so every view orbits the same point. Centering each view separately was considered and rejected (2026-09-28, [#5](https://gitlab-master.nvidia.com/omniverse/deeptag/usdsearch/-/issues/5)): it would center every image, costs about the same, and would fix assets like `l_desk` that stay ~40–54 px off-center (as they did in Kit). But the views would no longer share one orbit point, and each view's offset would come from that view's mask alone, so stray geometry, thin protrusions or mask artifacts would push individual images off-center with nothing to average them out. Fitting the one global offset to the rendered oblique views instead of the probes centers better but moved box assets away from `tests/kit_data` (`SM_CardBoxC` hash distance 0–2 → 3–7), so the probes stay for Kit parity.
 
 ## Removed / deprecated backends
 
@@ -510,6 +676,26 @@ in each service or package directory — e.g.
 [`packages/search-utils/README.md`](../packages/search-utils/README.md),
 [`services/deepsearch-crawler/README.md`](../services/deepsearch-crawler/README.md),
 [`services/asset-graph/README.md`](../services/asset-graph/README.md), and so on.
+
+## Merge requests & changelog
+
+Keep both terse — they are read far more often than they are written, and bloat
+buries the signal.
+
+- **MR descriptions: concise.** A short *What* (and *Why*, if not obvious), plus
+  anything a reviewer genuinely needs (dependency on another MR, migration step,
+  risk). Skip exhaustive change-by-change narration — the diff already shows it.
+- **CHANGELOG: slim.** One short sentence per bullet — what changed, not how it
+  works. Do not enumerate a feature's sub-features across several bullets, and do
+  not list every new option, status value or env var inline. Collapse them into a
+  single line unless a detail is genuinely load-bearing. The changelog bloats fast
+  otherwise.
+- **Detail belongs in `docs/`, not the changelog.** When a change needs real
+  explanation — new configuration knobs, a status/reason taxonomy, a migration —
+  put it in the relevant `docs/*.md` page (or the chart README, via `values.yaml`
+  / `README.md.gotmpl`) and have the changelog bullet link there. A reader
+  scanning the changelog wants to know whether a change affects them; the page
+  they land on answers how.
 
 ## Contributing, security
 

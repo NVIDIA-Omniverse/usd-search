@@ -40,6 +40,7 @@ from botocore.config import Config as BotocoreConfig
 from botocore.handlers import disable_signing
 
 from ...misc_utils import str2bool
+from ...url_mapping import s3_https_prefixes
 from .. import (
     CopyResult,
     EventMapping,
@@ -122,43 +123,40 @@ class S3StorageClient(StorageClient):
     def listing_finished(self) -> asyncio.Event:
         return self._listing_finished
 
+    @property
+    def _https_prefixes(self) -> Tuple[str, List[str]]:
+        """``(canonical, aliases)`` https prefixes for this bucket.
+
+        Shared with the public/internal URL mapping
+        (``search_utils.url_mapping``) so the two can never disagree about what
+        an asset's https address is.
+        """
+        return s3_https_prefixes(
+            bucket_name=self.config.bucket_name,
+            region_name=self.config.region_name,
+            aws_endpoint_url=self.config.aws_endpoint_url,
+        )
+
     def _key_from_uri(self, uri: str) -> RemoteFilePath:
-        bucket = self.config.bucket_name
         # Accept the native s3:// form plus the https URL forms some deployments
         # index assets under (the search index can store either), so callers may
         # pass an https base_key straight through. All are reduced to the object
         # key for the configured bucket.
-        prefixes = [f"s3://{bucket}/"]
-        if self.config.aws_endpoint_url:
-            # Custom (non-AWS) endpoint, path-style: https://<endpoint>/<bucket>/<key>
-            prefixes.append(f"https://{self.config.aws_endpoint_url}/{bucket}/")
-        else:
-            # AWS virtual-hosted-style. The region segment may be dot- or
-            # dash-separated (s3.us-west-2 vs the legacy s3-us-west-2) or absent.
-            region = self.config.region_name
-            if region:
-                prefixes.append(f"https://{bucket}.s3.{region}.amazonaws.com/")
-                prefixes.append(f"https://{bucket}.s3-{region}.amazonaws.com/")
-            prefixes.append(f"https://{bucket}.s3.amazonaws.com/")
-        for prefix in prefixes:
+        canonical, aliases = self._https_prefixes
+        for prefix in [f"s3://{self.config.bucket_name}/", canonical, *aliases]:
             if uri.startswith(prefix):
                 return RemoteFilePath(uri[len(prefix) :])
         raise InvalidURL(f"{uri} is not a valid S3 URL")
 
     def s3_uri_to_https_uri(self, uri: str) -> str:
         key = self._key_from_uri(uri)
-        if self.config.aws_endpoint_url is None:
-            return f"https://{self.config.bucket_name}.s3.{self.config.region_name}.amazonaws.com/{key}"
-        else:
-            return f"https://{self.config.aws_endpoint_url}/{self.config.bucket_name}/{key}"
+        return f"{self._https_prefixes[0]}{key}"
 
     def https_uri_to_s3_uri(self, uri: RemoteFileUri) -> RemoteFileUri:
-        if self.config.aws_endpoint_url is None:
-            url_prefix: str = f"https://{self.config.bucket_name}.s3.{self.config.region_name}.amazonaws.com"
-        else:
-            url_prefix: str = f"https://{self.config.aws_endpoint_url}/{self.config.bucket_name}"
-        if uri.startswith(url_prefix.rstrip("/")):
-            return RemoteFileUri(f"s3://{self.config.bucket_name}/{uri[len(url_prefix) :]}")
+        canonical, aliases = self._https_prefixes
+        for prefix in [canonical, *aliases]:
+            if uri.startswith(prefix):
+                return RemoteFileUri(f"s3://{self.config.bucket_name}/{uri[len(prefix) :]}")
         raise ValueError(f"{uri} is not a valid HTTPS S3 URL")
 
     def get_backend_from_uri(self, uri: RemoteFileUri) -> Optional["S3StorageClient"]:
@@ -345,17 +343,39 @@ class S3StorageClient(StorageClient):
     ) -> AsyncIterator[PathType]:
         raise NotImplementedError
 
+    #: Codes a HEAD returns for an object that is not there. Providers differ on
+    #: which they use, so accept all three wherever a HEAD is classified.
+    _NOT_FOUND_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
     async def check_if_exists(self, uri: str) -> Tuple[bool, Optional[PathType]]:
+        exists, _denied = await self._check_access(uri)
+        return exists, PathType(uri=uri) if exists else None
+
+    async def _check_access(self, uri: str) -> Tuple[bool, Optional[bool]]:
+        """``(exists, access_denied)``: denied is True when the object is there but
+        unreadable, False when it is absent or the URI is unusable, None when the
+        answer says nothing either way.
+
+        A 403 used to propagate, failing the whole caller with a 500 instead of
+        skipping one unreadable file. Classification reuses the same codes as
+        :meth:`head_item` and :meth:`_is_access_denied`, so a provider that answers
+        ``NoSuchKey`` or ``Forbidden`` is not left to raise.
+        """
         try:
             exists_response = await (await self.s3.Object(self.config.bucket_name, self._key_from_uri(uri))).load()
             logger.debug("File uri=%s head response: %s", uri, exists_response)
         except botocore.exceptions.ClientError as exc:
-            if exc.response["Error"]["Code"] == "404":
-                return False, None
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in self._NOT_FOUND_CODES:
+                return False, False
+            if self._is_access_denied(exc):
+                logger.debug("Access denied for uri=%s: %s", uri, code)
+                return False, True
             raise exc
         except InvalidURL:
-            return False, None
-        return True, PathType(uri=uri)
+            # Not addressable in this bucket at all — absent, not forbidden.
+            return False, False
+        return True, None
 
     async def get_item(self, uri: Union[RemoteFileUri, RemoteFilePath]) -> Optional[PathType]:
         """Get single asset metadata from the storage backend
@@ -391,7 +411,7 @@ class S3StorageClient(StorageClient):
             )
         except botocore.exceptions.ClientError as exc:
             code = str(exc.response.get("Error", {}).get("Code", ""))
-            if code in ("404", "NoSuchKey", "NotFound"):
+            if code in self._NOT_FOUND_CODES:
                 return None
             raise
 
@@ -584,15 +604,16 @@ class S3StorageClient(StorageClient):
         batch_return: bool = True,
         return_meta: bool = False,
     ) -> AsyncIterator[List[VerifyBatchAccessResponse]]:
-        # NOTE: Currently this method only checks if paths exist on the bucket, it does not check the actual ACL
+        # NOTE: checks reachability for *this* client (a HEAD), not the bucket's
+        # ACL document. `access_denied` carries the 403/404 split.
         for idx in range(0, len(uri_list), max_nucleus_requests):
             uris_batch = uri_list[idx : idx + max_nucleus_requests]
 
-            batch_exists_results = await asyncio.gather(*[self.check_if_exists(uri) for uri in uris_batch])
+            batch_results = await asyncio.gather(*[self._check_access(uri) for uri in uris_batch])
 
             yield [
-                VerifyBatchAccessResponse(uri=uri, exists=exists_result, acl=self._default_acl)
-                for uri, (exists_result, _) in zip(uris_batch, batch_exists_results)
+                VerifyBatchAccessResponse(uri=uri, exists=exists, access_denied=denied, acl=self._default_acl)
+                for uri, (exists, denied) in zip(uris_batch, batch_results)
             ]
 
     async def update_acl(self, path_dict: Dict[str, str]) -> None:

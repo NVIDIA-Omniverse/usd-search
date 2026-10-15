@@ -40,22 +40,35 @@ async def get_storage_backend_info(
     request: Request,
     check_availability: Annotated[bool, Query(description="Check if storage backend is available")] = False,
 ) -> StorageBackendInfo:
-    """Display some information about the storage backend, to which the USD Search API instance is connected to."""
+    """Display some information about the storage backend(s), to which the USD Search API instance is connected to.
+
+    A single Storage API deployment can serve several buckets / namespace roots. These are discovered via
+    ``ListTopLevelAddresses`` and reported as one entry per root; backends that expose a single root (or a
+    Storage API server without discovery support) report their configured ``base_uri``. When the Storage
+    API backend's ``allowed_top_level_addresses`` is configured, only that subset is reported.
+    """
     storage_client: StorageClient = request.app.storage_client
+
+    backend_type = get_storage_backend_type(storage_client)
+    s3_endpoint_url = storage_client.config.aws_endpoint_url if isinstance(storage_client, S3StorageClient) else None
+    available = (
+        await default_on_exception(storage_client.check_connection(), default=False) if check_availability else None
+    )
+
+    # Resolve the namespace roots (buckets). Falls back to base_uri when discovery is unavailable.
+    addresses = await default_on_exception(storage_client.list_top_level_addresses(), default=None)
+    if not addresses:
+        addresses = [storage_client.base_uri]
 
     return StorageBackendInfo(
         backends={
-            storage_client.base_uri: StorageBackendItemInfo(
-                storage_backend_type=get_storage_backend_type(storage_client),
-                base_url=storage_client.base_uri,
-                available=(
-                    await default_on_exception(storage_client.check_connection(), default=False)
-                    if check_availability
-                    else None
-                ),
-                s3_endpoint_url=(
-                    storage_client.config.aws_endpoint_url if isinstance(storage_client, S3StorageClient) else None
-                ),
+            address: StorageBackendItemInfo(
+                storage_backend_type=backend_type,
+                base_url=address,
+                available=available,
+                s3_endpoint_url=s3_endpoint_url,
             )
+            for address in addresses
+            if address is not None
         }
     )

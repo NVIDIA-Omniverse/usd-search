@@ -28,7 +28,7 @@
 #   - NVIDIA GPU with driver installed
 #   - nvidia-container-toolkit
 #   - Rendering service image built:
-#       docker build -f docker/Dockerfile.kit -t rendering-job:latest services/rendering-job/
+#       docker build -f docker/Dockerfile.rendering-job -t rendering-job:latest .
 
 include:
   - infra/compose/siglip2-triton-gpu.yml
@@ -62,6 +62,7 @@ x-gpu-worker-env: &gpu-worker-env
   # X-Token-Auth). Null-pass-through, kept in sync with x-common-env.
   STORAGE_API_GRPC_ENDPOINT:
   STORAGE_API_BASE_URI:
+  STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES:
   STORAGE_API_TOKEN:
   STORAGE_API_SSL:
   STORAGE_API_OPENID_CLIENT_ID:
@@ -89,10 +90,8 @@ services:
 
   rendering-job:
     build:
-      context: ./services/rendering-job
-      dockerfile: ../../docker/Dockerfile.kit
-      additional_contexts:
-        graph-builder: ./services/asset-graph-builder
+      context: .
+      dockerfile: docker/Dockerfile.rendering-job
     container_name: usdsearch-renderer
     restart: unless-stopped
     environment:
@@ -108,7 +107,9 @@ services:
       - KIT_WORKER_SETTINGS_N_WORKERS=1
       - KIT_WORKER_SETTINGS_BATCH_SIZE=1
       - RENDERING_SERVICE_SETTINGS_KIT_WORKER_MEMORY_LIMIT=25600
-      - HOME=/home/ubuntu
+      # Kit-style auto-framing (re-centre and zoom on the asset's silhouette); `false` frames by the 3D bbox only.
+      - RENDER_ADJUST_FRAMING=${RENDER_ADJUST_FRAMING:-true}
+      - HOME=/home/renderer
       - LOGGING_CONFIG=/logging.yml
     ports:
       - "8200:8000"

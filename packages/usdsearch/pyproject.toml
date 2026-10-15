@@ -13,6 +13,7 @@ dependencies = [
     "tenacity>=8.2.3",
     "humanize>=4.11.0",
     "tqdm>=4.64.1",
+    "neo4j>=5.14.1",
     "search-utils",
     "ngsearch-cache",
     "ngsearch-info-endpoint",

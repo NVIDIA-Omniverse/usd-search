@@ -14,12 +14,12 @@
 # limitations under the License.
 
 # standard modules
-from typing import Union
+from typing import Union, cast
 
 # third party modules
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image
+from PIL import Image, ImageOps
 from transformers import SiglipImageProcessor
 
 
@@ -43,6 +43,35 @@ class ImagePreprocessor:
             do_normalize=True,
         )
 
+    @staticmethod
+    def _apply_exif_orientation(
+        images: Union[
+            Image.Image,
+            list[Image.Image],
+            "NDArray[np.uint8]",
+            list["NDArray[np.uint8]"],
+        ],
+    ) -> Union[
+        Image.Image,
+        list[Image.Image],
+        "NDArray[np.uint8]",
+        list["NDArray[np.uint8]"],
+    ]:
+        # Honor the EXIF orientation tag before resizing: neither
+        # SiglipImageProcessor nor the server-side preprocessor rotates
+        # images, so an unrotated portrait photo would be embedded sideways.
+        # Numpy arrays carry no EXIF and pass through unchanged. (Pillow types
+        # exif_transpose as Optional; it returns None only with in_place=True,
+        # so `or img` just narrows the type.)
+        if isinstance(images, Image.Image):
+            return ImageOps.exif_transpose(images) or images
+        if isinstance(images, list):
+            return cast(
+                Union[list[Image.Image], list["NDArray[np.uint8]"]],
+                [(ImageOps.exif_transpose(img) or img) if isinstance(img, Image.Image) else img for img in images],
+            )
+        return images
+
     def __call__(
         self,
         images: Union[
@@ -52,7 +81,7 @@ class ImagePreprocessor:
             list["NDArray[np.uint8]"],
         ],
     ) -> NDArray[np.float32]:
-        processed = self.processor(images=images, return_tensors="np")
+        processed = self.processor(images=self._apply_exif_orientation(images), return_tensors="np")
         return processed["pixel_values"]
 
     def batch_iter(

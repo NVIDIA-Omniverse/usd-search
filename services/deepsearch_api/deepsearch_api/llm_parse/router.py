@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field, field_validator
 from .extractor import LLMParseExtractor
 from .fields import REGISTRY
 from .mapper import COMMA_JOIN_PARAMS, map_ir
-from .models import ParsedQuery
+from .models import ParsedQuery, SearchIR
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,15 @@ class FilterFieldInfo(BaseModel):
         description="Resolved USD property key (env override applied) for property-backed "
         "fields; null for fields not backed by a single property.",
     )
+    label: Optional[str] = Field(
+        default=None,
+        description="Optional human-readable UI label; clients fall back to `name` when null.",
+    )
+    group: Optional[str] = Field(
+        default=None,
+        description="Optional Explorer rail group this filter renders under; ungrouped "
+        "fields share a default group.",
+    )
 
 
 @router.post(
@@ -108,6 +117,9 @@ async def parse_query(request: Request, body: QueryParsingRequest = Body(...)) -
         # Mirror the VLM-validation endpoint: a disabled feature is a clear 503,
         # not a silently-degraded 200 that the caller could mistake for a parse.
         raise HTTPException(status_code=503, detail="LLM query parsing is not enabled on this server")
+    if not await extractor.is_ready():
+        # Fail fast on a known-down endpoint instead of paying extract()'s retry/timeout cost.
+        raise HTTPException(status_code=503, detail="LLM query parsing model is currently unreachable")
 
     # A failure here raises LLMParseExtractionError, handled app-side as a clear
     # 503 instead of an ambiguous 500. The mapper is pure and defensive, so the
@@ -119,10 +131,22 @@ async def parse_query(request: Request, body: QueryParsingRequest = Body(...)) -
     # rejected) must never appear in interpreted_query, or the client would show
     # the user a constraint that was never enforced. The dropped ones (with a
     # reason) are reported separately so the UI can still tell the user about them.
-    interpreted = ir.model_copy(update={"filters": applied})
+    #
+    # Rebuilt as a plain SearchIR rather than model_copy'd from the extractor's
+    # ConstrainedSearchIR: the constrained model's `field` is a registry-generated
+    # enum, and that enum must not reach the response (it would put this
+    # deployment's filter catalog into the published schema — see models.py).
+    interpreted = SearchIR(
+        semantic_query=ir.semantic_query,
+        filters=applied,
+        unmapped_constraints=ir.unmapped_constraints,
+        limit=ir.limit,
+    )
+    # The raw query is user free text (possibly personal data) and is captured by
+    # query telemetry; log only its size here.
     logger.info(
-        "LLM query parsing interpreted query=%r -> applied=%d dropped=%d unmapped=%d",
-        body.query,
+        "LLM query parsing interpreted query (len=%d) -> applied=%d dropped=%d unmapped=%d",
+        len(body.query),
         len(applied),
         len(dropped),
         len(ir.unmapped_constraints),
@@ -158,6 +182,8 @@ async def list_filter_fields() -> List[FilterFieldInfo]:
             comma_join=any(k in COMMA_JOIN_PARAMS for k in f.param_keys),
             kind=f.kind,
             property=f.property,
+            label=f.label,
+            group=f.group,
         )
         for f in REGISTRY.values()
     ]

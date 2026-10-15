@@ -16,6 +16,7 @@ go straight to the source so you can read what each file does.
 |---|---|
 | `USDSEARCH_LLM_API_KEY` | `""` |
 | `USDSEARCH_LLM_BASE_URL` | `https://inference-api.nvidia.com` (NVIDIA Inference Hub) |
+| `USDSEARCH_LLM_DEFAULT_HEADERS` | `{}` — JSON object of extra HTTP headers sent on every request (e.g. `{"X-HF-Bill-To":"my-org"}`) |
 
 USD Search talks to **any OpenAI-API-compatible LLM/VLM serving system** and ships
 pointed at NVIDIA Inference Hub by default. Set `USDSEARCH_LLM_API_KEY` to use the
@@ -30,20 +31,67 @@ Client + connection: [`llm_client/client.py`](../packages/llm-client/llm_client/
 | Role | Runs | Default model | Prompt | Fields / schema | Config |
 |---|---|---|---|---|---|
 | **LLM query parser** (query → filters) | per query | `gcp/google/gemini-3.5-flash` ¹ | [system prompt](../services/deepsearch_api/deepsearch_api/llm_parse/prompts/llm_parsing_system_prompt.txt) | [`search_fields.yaml`](../services/deepsearch_api/deepsearch_api/llm_parse/search_fields.yaml) | [`llm_parse/config.py`](../services/deepsearch_api/deepsearch_api/llm_parse/config.py) |
-| **Validation** (rerank results) | per result, opt-in | `gcp/google/gemini-3.5-flash` | [validation prompt](../packages/llm-client/llm_client/validation/validation_prompt.txt) | [`validation_fields.yaml`](../packages/llm-client/llm_client/validation/validation_fields.yaml) | [`validation/config.py`](../services/deepsearch_api/deepsearch_api/validation/config.py) |
-| **Metadata gen** (tag assets) | batch, crawl time | `gcp/google/gemini-3.1-pro-preview` | [metadata prompt](../packages/llm-client/llm_client/metadata/metadata_prompt.txt) | [`metadata_fields.yaml`](../packages/llm-client/llm_client/metadata/metadata_fields.yaml) | [`metadata_generation.py`](../packages/llm-client/llm_client/metadata/metadata_generation.py) |
+| **Validation** (rerank results) | per result, opt-in | `gcp/google/gemini-3.1-flash-lite` | [validation prompt](../packages/llm-client/llm_client/validation/validation_prompt.txt) | [`validation_fields.yaml`](../packages/llm-client/llm_client/validation/validation_fields.yaml) | [`validation/config.py`](../services/deepsearch_api/deepsearch_api/validation/config.py) |
+| **Metadata gen** (tag assets) | batch, crawl time | `azure/openai/gpt-5.6-sol` ² | [metadata prompt](../packages/llm-client/llm_client/metadata/metadata_prompt.txt) | [`metadata_fields.yaml`](../packages/llm-client/llm_client/metadata/metadata_fields.yaml) | [`metadata_generation.py`](../packages/llm-client/llm_client/metadata/metadata_generation.py) |
 
 ¹ must support structured output (json_schema). Failure modes are surfaced in the
 503 `details` (timeout vs token limit vs schema mismatch) — a model that keeps
 hitting its completion token limit needs a higher `USDSEARCH_LLM_PARSING_MAX_TOKENS`
 or a different model.
 
+² chosen by the 2026-08 metadata bake-off — see `deepsearch-evaluation/metadata_bakeoff/`.
+
+### Metadata generation
+
+The VLM metadata exists purely for search and retrieval — nothing in it is
+user-facing. Every field is either distinctive searchable vocabulary (BM25 over
+`value_text`) or a stable filter facet (`vision_metadata` k=v):
+
+- Search vocabulary: `caption`, `object_type`, `queries`, `tags`, `environment`,
+  `colors`, `materials`, `visible_text` (legibility-gated — only fully readable
+  text is transcribed).
+- Filter facets: `category`, `style` (representation-only), `scale`, `state`,
+  `physical_attributes` (closed trait list; "rigid" is the implied default and
+  not tagged). In the generic release `category` is free-text (nullable) — its
+  corpus-derived 30-value vocabulary is **deployment-opt-in**: it ships
+  commented out in `metadata_fields.yaml` and is enabled per deployment by
+  uncommenting it or overriding
+  `vision_endpoint.metadata_fields` in that deployment's helm values.
+- Vocabulary enforcement is driven entirely by `allowed_values` in
+  `metadata_fields.yaml` and comes in two flavors:
+  - **Single-value fields** (`style`, `scale`, `state` — and `category` where
+    a deployment enables its list) are nullable
+    enums: the value is drift-normalized (case/spacing), and anything still
+    off-vocabulary becomes **null** — never a forced wrong label.
+  - **List fields** (`physical_attributes`) keep the good items and drop the
+    bad: each item is drift-normalized, off-vocabulary items are **dropped and
+    logged** (the log is the early-warning signal that the vocabulary may be
+    missing a genuinely useful value), and the drop runs *before* the
+    `max_items` truncation so junk items can never crowd out valid ones.
+    Neither flavor ever fails validation or burns the one-shot repair re-ask.
+  - For list bounds, `max_items` is enforced by truncating the least-relevant
+    tail. `min_items` is prompt-only guidance: sparse lists remain valid so an
+    otherwise useful asset is not discarded when the model finds fewer items.
+  - The mechanism is YAML-generic: adding `allowed_values` to any list field
+    (e.g. `colors`, `materials` later) enables the same behavior with no code
+    change. Vocabularies are corpus-derived; the re-derivation runbook lives in
+    the header of `packages/llm-client/llm_client/metadata/metadata_fields.yaml`.
+- Removed as measured dead weight (2026-08): `use_cases` (top values applied to
+  70-90% of all assets — zero-signal index bloat), `description` and
+  `dense_description` (no query coverage beyond tags/queries), and the
+  `is_high_quality`/`has_issues` booleans (stored as `value_bool`, unreachable
+  by both the text leg and the k=v filter).
+
 Env prefixes: `USDSEARCH_LLM_PARSING_*`, `USDSEARCH_VISION_VALIDATION_*`,
 `USDSEARCH_VISION_METADATA_*`. Each supports `_MODEL`, `_PROMPT_FILEPATH`,
-`_MAX_TOKENS`, `_TEMPERATURE`, `_MAX_TRIES`, `_REASONING_EFFORT` (+ search: `_ENABLED`,
-`_TIMEOUT_SECONDS`, `_CACHE_SIZE`, `_BASE_URL`, `_API_KEY`; validation: `_ENABLED`,
-`_MAX_CONCURRENT`, `_TIMEOUT_SECONDS`, `_DOMAIN_CONTEXT_FILEPATH`). See each config
-file for the full list.
+`_MAX_TOKENS`, `_TEMPERATURE`, `_MAX_TRIES`, `_REASONING_EFFORT`, `_EXTRA_BODY` (+ search: `_ENABLED`,
+`_TIMEOUT_SECONDS`, `_CACHE_SIZE`, `_BASE_URL`, `_API_KEY`, `_PROBE_TTL_SECONDS` (default 120s — how long a
+cached reachability-probe reading is trusted before `/llm_parse/query` re-probes; see
+[llm-parse-probe-ttl-cache.md](plans/llm-parse-probe-ttl-cache.md)); validation: `_ENABLED`,
+`_MODE`, `_METHOD` (`generative` | `logprob`), `_LOGPROB_*` (incl.
+`_LOGPROB_DOMAIN_CONTEXT`), `_MAX_CONCURRENT`, `_MAX_IMAGES_PER_VALIDATION`,
+`_TIMEOUT_SECONDS`, `_DOMAIN_CONTEXT_FILEPATH`; see
+[vlm-validation.md](vlm-validation.md)). See each config file for the full list.
 
 The LLM query parser may optionally run on **its own** endpoint: set
 `USDSEARCH_LLM_PARSING_BASE_URL` / `USDSEARCH_LLM_PARSING_API_KEY` (helm:
@@ -69,6 +117,8 @@ Override any `*_FILEPATH` to load your own copy instead of editing the shipped o
 ## Embeddings (not an LLM role)
 
 SigLIP2 on Triton via [`siglip2_triton_client/clip.py`](../packages/siglip2-triton-client/siglip2_triton_client/clip.py); env `CLIP_*` / `SIGLIP2_*` (e.g. `CLIP_TRITON_SERVER_URL`).
+
+**Text queries are case-insensitive.** SigLIP2's reference preprocessing lowercases text before tokenization, so `"Red Chair"`, `"red chair"` and `"RED CHAIR"` produce the same embedding and the same results. Two layers enforce this: a `Lowercase` normalizer in the bundled `tokenizer.json`, and a lowercasing step in the client, which keeps the server-side (ensemble) path correct against a Triton container built before that normalizer was added. Set `SIGLIP2_LOWERCASE_TEXT=false` to disable the client-side layer and reproduce pre-fix behavior (`CLIP_LOWERCASE_TEXT` is the equivalent for a bare `CLIPConfig`; the services build a `SigLIP2Config`, whose prefix wins). Punctuation is *not* stripped (that is SigLIP v1 canonicalization, not v2). The keyword/BM25 legs were always case-insensitive — OpenSearch analyzers lowercase both sides — so this only ever affected the embedding leg.
 
 ## Precedence
 

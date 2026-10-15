@@ -58,6 +58,7 @@ spec:
       hostname: {{ $fullName }}
       subdomain: {{ $fullName }}-subdomain
       volumes:
+      {{- include "deepsearch-global.storageBackendVolumes" . | nindent 6 }}
       {{ with .Values.microservices.search_rest_api.extraVolumes }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
@@ -89,6 +90,8 @@ spec:
           name: {{ $fullName }}-backend-config
       - name: tmp
         {{- toYaml .Values.microservices.search_rest_api.tmpDir | nindent 8 }}
+      - name: download-tmp
+        {{- toYaml .Values.microservices.search_rest_api.downloadTmpDir | nindent 8 }}
       serviceAccountName: {{ include "ngsearch.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -115,6 +118,10 @@ spec:
           ports:
           - name: http
             containerPort: 8000
+          {{ with .Values.microservices.search_rest_api.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{ with .Values.microservices.search_rest_api.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
@@ -124,6 +131,7 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
+          {{- include "deepsearch-global.storageBackendVolumeMounts" . | nindent 10 }}
           {{- with .Values.microservices.search_rest_api.extraVolumeMounts }}
           {{- toYaml . | nindent 10 }}
           {{- end }}
@@ -163,6 +171,9 @@ spec:
           - mountPath: /run/lock
             name: tmp
             subPath: run-lock
+          # Disk-backed; deliberately not under /tmp, which is RAM-backed.
+          - mountPath: {{ .Values.microservices.search_rest_api.download.temp_dir | default "/var/tmp/usdsearch-downloads" | quote }}
+            name: download-tmp
           resources:
             {{- toYaml .Values.microservices.search_rest_api.resources | nindent 12 }}
           envFrom:
@@ -179,14 +190,130 @@ spec:
             - name: USDSEARCH_VISION_VALIDATION_ENABLED
               value: {{ .Values.microservices.search_rest_api.validation.enabled | quote }}
             {{- if .Values.microservices.search_rest_api.validation.enabled }}
+            - name: USDSEARCH_VISION_VALIDATION_MODE
+              value: {{ .Values.microservices.search_rest_api.validation.mode | quote }}
             - name: USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT
               value: {{ .Values.microservices.search_rest_api.validation.max_concurrent_requests | quote }}
+            {{- with .Values.microservices.search_rest_api.validation.max_tries }}
+            - name: USDSEARCH_VISION_VALIDATION_MAX_TRIES
+              value: {{ . | quote }}
+            {{- end }}
+            - name: USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION
+              value: {{ .Values.microservices.search_rest_api.validation.max_images_per_validation | quote }}
+            {{- /* `with` skips 0, which is also the code default (images at stored size). */}}
+            {{- with .Values.microservices.search_rest_api.validation.image_max_px }}
+            - name: USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX
+              value: {{ . | quote }}
+            {{- end }}
             - name: USDSEARCH_VISION_VALIDATION_MODEL
               value: {{ .Values.microservices.search_rest_api.validation.model | quote }}
+            - name: USDSEARCH_VISION_VALIDATION_METHOD
+              value: {{ .Values.microservices.search_rest_api.validation.method | default "generative" | quote }}
+            {{- if eq (.Values.microservices.search_rest_api.validation.method | default "generative") "logprob" }}
+            {{- with .Values.microservices.search_rest_api.validation.logprob }}
+            {{- with .cover_min }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_COVER_MIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .top_logprobs }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_TOP_LOGPROBS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .max_tokens }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_MAX_TOKENS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_ABSTAIN_AS_NO
+              value: {{ .abstain_as_no | default false | quote }}
+            {{- /* hasKey rather than `default`: false is the (opt-out) default and
+                   `default` would silently replace it. */}}
+            {{- if hasKey . "domain_context" }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_DOMAIN_CONTEXT
+              value: {{ .domain_context | quote }}
+            {{- end }}
+            {{- if hasKey . "image_text_query" }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_IMAGE_TEXT_QUERY
+              value: {{ .image_text_query | quote }}
+            {{- end }}
+            {{- /* Asset facts (text queries): the lists go in as JSON; `with` skips [] (the code default, off). */}}
+            {{- with .asset_facts }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_FACTS
+              value: {{ . | toJson | quote }}
+            {{- end }}
+            {{- with .asset_path_roots }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_PATH_ROOTS
+              value: {{ . | toJson | quote }}
+            {{- end }}
+            {{- with .asset_path_max_chars }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_PATH_MAX_CHARS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .asset_caption_max_chars }}
+            - name: USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_CAPTION_MAX_CHARS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
             - name: USDSEARCH_VISION_VALIDATION_DOMAIN_CONTEXT_FILEPATH
               value: /validation_domain_context.txt
+            {{- with .Values.microservices.search_rest_api.validation.extra_body }}
+            - name: USDSEARCH_VISION_VALIDATION_EXTRA_BODY
+              value: {{ . | toJson | quote }}
+            {{- end }}
+            {{- with .Values.microservices.search_rest_api.validation.cache }}
+            {{- /* Persistent verdict cache (Redis L2). Connection is REDIS_URL from
+                   the env config map; keys are separated by prefix on the shared DB. */}}
+            - name: USDSEARCH_VISION_VALIDATION_CACHE_ENABLED
+              value: {{ .enabled | quote }}
+            {{- with .ttl_seconds }}
+            - name: USDSEARCH_VISION_VALIDATION_CACHE_TTL_SECONDS
+              value: {{ . | int64 | quote }}
+            {{- end }}
+            {{- /* int64 avoids Helm rendering large ints in scientific notation
+                   (e.g. 1000000 -> "1e+06"), which the app can't parse as int. */}}
+            - name: USDSEARCH_VISION_VALIDATION_CACHE_MAX_ENTRIES
+              value: {{ .max_entries | int64 | quote }}
+            {{- end }}
             {{- with .Values.microservices.search_rest_api.validation }}
             {{- include "ngsearch.template.vlm.config" (dict "source" .provider) | nindent 12 }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.microservices.search_rest_api.image_resolution_cache }}
+            {{- /* Persistent asset_url -> image_id[] resolution cache (Redis).
+                   Connection is REDIS_URL from the env config map; keys are
+                   separated by prefix on the shared DB. */}}
+            - name: USDSEARCH_IMAGE_RESOLUTION_CACHE_ENABLED
+              value: {{ .enabled | quote }}
+            - name: USDSEARCH_IMAGE_RESOLUTION_CACHE_TTL_SECONDS
+              value: {{ .ttl_seconds | int64 | quote }}
+            {{- end }}
+            {{- include "deepsearch-global.urlMappingEnv" . | nindent 12 }}
+            {{- with .Values.microservices.search_rest_api.pagination }}
+            {{- /* Search result pagination. SearchSettings declares no env_prefix,
+                   so these are bare upper-cased field names. */}}
+            - name: PAGINATION_MAX_OFFSET
+              value: {{ .max_offset | int64 | quote }}
+            - name: PAGINATION_DEFAULT_WINDOW
+              value: {{ .default_window | int64 | quote }}
+            - name: PAGINATION_CURSOR_TTL_SECONDS
+              value: {{ .cursor_ttl_seconds | int64 | quote }}
+            {{- with .access_filter }}
+            - name: ACCESS_FILTER_OVERFETCH_FACTOR
+              value: {{ .overfetch_factor | int64 | quote }}
+            - name: ACCESS_FILTER_MAX_FETCHES
+              value: {{ .max_fetches | int64 | quote }}
+            {{- end }}
+            {{- with .ranking_cache }}
+            {{- /* Cached RRF orderings so pages 2..N skip the query legs.
+                   Connection is REDIS_URL from the env config map; keys are
+                   separated by prefix on the shared DB. Purely a latency
+                   optimisation — a miss recomputes. */}}
+            - name: USDSEARCH_SEARCH_RANKING_CACHE_ENABLED
+              value: {{ .enabled | quote }}
+            - name: USDSEARCH_SEARCH_RANKING_CACHE_TTL_SECONDS
+              value: {{ .ttl_seconds | int64 | quote }}
+            - name: USDSEARCH_SEARCH_RANKING_CACHE_MAX_ENTRIES
+              value: {{ .max_entries | int64 | quote }}
             {{- end }}
             {{- end }}
             - name: USDSEARCH_LLM_PARSING_ENABLED
@@ -199,6 +326,10 @@ spec:
             {{- with .Values.microservices.search_rest_api.llm_parsing.max_tokens }}
             - name: USDSEARCH_LLM_PARSING_MAX_TOKENS
               value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.microservices.search_rest_api.llm_parsing.extra_body }}
+            - name: USDSEARCH_LLM_PARSING_EXTRA_BODY
+              value: {{ . | toJson | quote }}
             {{- end }}
             {{- if .Values.microservices.search_rest_api.llm_parsing.enabled }}
             {{- with .Values.microservices.search_rest_api.llm_parsing.provider }}
@@ -337,14 +468,34 @@ spec:
               value: {{ .size_check_concurrency | quote }}
             {{- end }}
             {{- if not (kindIs "invalid" .max_bundle_bytes) }}
+            {{- /* int64, not quote: Helm reads YAML numbers as float64, which
+                   renders large values as "2.1e+09" and fails to parse. */}}
             - name: DOWNLOAD_MAX_BUNDLE_BYTES
-              value: {{ .max_bundle_bytes | quote }}
+              value: {{ .max_bundle_bytes | int64 | quote }}
             {{- end }}
-            {{- if .temp_dir }}
+            {{- if .compression }}
+            - name: DOWNLOAD_COMPRESSION
+              value: {{ .compression | quote }}
+            {{- end }}
+            {{- if .stored_extensions }}
+            - name: DOWNLOAD_STORED_EXTENSIONS
+              value: {{ .stored_extensions | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .trace_files) }}
+            - name: DOWNLOAD_TRACE_FILES
+              value: {{ .trace_files | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .max_concurrent) }}
+            - name: DOWNLOAD_MAX_CONCURRENT
+              value: {{ .max_concurrent | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .queue_timeout) }}
+            - name: DOWNLOAD_QUEUE_TIMEOUT
+              value: {{ .queue_timeout | quote }}
+            {{- end }}
+            {{- end }}
             - name: DOWNLOAD_TEMP_DIR
-              value: {{ .temp_dir | quote }}
-            {{- end }}
-            {{- end }}
+              value: {{ .Values.microservices.search_rest_api.download.temp_dir | default "/var/tmp/usdsearch-downloads" | quote }}
             - name: ENABLE_ACCESS_VERIFICATION
               value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
             - name: STORAGE_REQUIRE_AUTH
@@ -384,12 +535,40 @@ spec:
               value: {{ .Values.microservices.search_rest_api.hybrid_search.scoring_config.hybrid_text | toJson | quote }}
             - name: HYBRID_SEARCH_SCORING_CONFIG_VECTOR_FIELDS
               value: {{ .Values.microservices.search_rest_api.hybrid_search.scoring_config.vector_fields | toJson | quote }}
+            {{- with .Values.microservices.search_rest_api.hybrid_search.scoring_config.name_match }}
+            - name: HYBRID_SEARCH_SCORING_CONFIG_NAME_MATCH
+              value: {{ . | toJson | quote }}
+            {{- end }}
         {{- with .Values.microservices.search_rest_api.extraContainers }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
       initContainers:
       {{- with .Values.microservices.search_rest_api.extraInitContainers }}
       {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or (and (.Values.microservices.search_rest_api.validation.enabled) (.Values.microservices.search_rest_api.validation.cache.enabled)) (.Values.microservices.search_rest_api.image_resolution_cache.enabled) (.Values.microservices.search_rest_api.pagination.ranking_cache.enabled) }}
+        {{- /* The Redis-backed caches (VLM verdict L2 + image_url resolution +
+               RRF ranking) are only picked up if Redis is reachable at startup
+               (probed once), so block until it is available. */}}
+        - name: redis-liveness-check
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $ngsearchRestAPIDockerImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          command:
+          - python
+          - -m
+          - search_utils.redis.wait_ready
+          envFrom:
+            - configMapRef:
+                name: {{ include "ngsearch.fullname" . }}-env-config
+          resources:
+            requests:
+              cpu: 200m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
       {{- end }}
       {{- if and (.Values.microservices.search_rest_api.embeddingLivenessCheck.enabled) (.Values.global.embedding_deployment.enabled) }}
         - name: init-embedding
@@ -455,10 +634,32 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     {{- $affinity := .Values.microservices.search_rest_api.affinity | default .Values.affinity }}
-    {{- with $affinity }}
+    {{- if $affinity }}
+      {{/* A supplied affinity REPLACES the built-in preferences below rather than
+           adding to them. Appending used to emit a second `podAffinity:` key
+           whenever the caller set one — duplicate YAML keys, last one wins, so the
+           built-ins were silently dropped anyway. Replacing says so honestly.
+           Callers who want the defaults plus their own should copy the block
+           below; it is soft (`preferred`), so nothing here can block scheduling. */}}
+      affinity:
+        {{- toYaml $affinity | nindent 8 }}
+    {{- else }}
       affinity:
         podAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
+            {{- /* Redis holds the RRF ranking cache, read on every paged search and
+                   written on every first page. Cross-node those are network round
+                   trips on the request path, so co-location is worth more than the
+                   gateway hop below — hence the higher weight. Preferred, not
+                   required: a Redis-less or differently-scheduled cluster must
+                   still place these pods. */}}
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: redis
+                    app.kubernetes.io/instance: {{ $releaseName }}
+                topologyKey: kubernetes.io/hostname
             - weight: 10
               podAffinityTerm:
                 labelSelector:
@@ -466,7 +667,6 @@ spec:
                     app.kubernetes.io/name: api-gateway
                     app.kubernetes.io/instance: {{ $releaseName }}
                 topologyKey: kubernetes.io/hostname
-        {{- toYaml . | nindent 8 }}
     {{- end }}
     {{- $tolerations := .Values.microservices.search_rest_api.tolerations | default .Values.tolerations }}
     {{- with $tolerations }}

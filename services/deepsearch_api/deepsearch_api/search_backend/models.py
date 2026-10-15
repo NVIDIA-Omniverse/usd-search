@@ -21,10 +21,20 @@ from deepsearch_api.routers_v2.models import (
     QueryRelevanceValidationResult,
 )
 from deepsearch_api.search_backend.models_extra import AGSAssetData
-from pydantic import BaseModel, Field, PrivateAttr, confloat, field_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    confloat,
+    conint,
+    field_serializer,
+    field_validator,
+)
 from pydantic.config import ConfigDict
 from pydantic_settings import BaseSettings
 from pydantic_settings.main import SettingsConfigDict
+
+from search_utils.url_mapping import to_internal_url_or_passthrough
 
 
 class VectorQueryScoreType(str, Enum):
@@ -58,6 +68,7 @@ class SearchType(str, Enum):
 
     - TEXT: Keyword/full-text search leg.
     - HYBRID: Combined text + vector search with RRF fusion (the recommended default).
+    - NAME: Name vote: hits whose name or path holds every query word, as whole words (no extra query).
     - FILTER_ONLY: No text/vector query — results are purely from filters.
     - TEXT_TO_VECTOR: Text query converted to embedding for vector search.
     - IMAGE_SIMILARITY: Image-based vector search using visual embeddings.
@@ -66,6 +77,7 @@ class SearchType(str, Enum):
 
     TEXT = "text"
     HYBRID = "hybrid"
+    NAME = "name"
     FILTER_ONLY = "filter_only"
     TEXT_TO_VECTOR = "text_to_vector"
     IMAGE_SIMILARITY = "image_similarity"
@@ -237,6 +249,15 @@ class SearchResult(BaseModel):
         default=None,
         description="VLM validation result: match confidence and reasoning (only present when validate_results=true)",
     )
+    sort_values: Optional[List[Any]] = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Internal: this hit's OpenSearch `sort` values, carried so the access-filtering layer can "
+            "resume a deep walk exactly where it stopped. Excluded from every response — it is transport "
+            "between pipeline stages, not part of the API."
+        ),
+    )
 
     @field_serializer("source")
     def _serialize_source(self, source: Any, _info: Any) -> Any:
@@ -262,19 +283,55 @@ class SearchResponse(BaseModel):
             "Size of the RRF fusion candidate pool — i.e. the number of distinct documents that survived "
             "client-side reciprocal-rank fusion across all query legs after similarity-threshold filtering. "
             "Bounded by scoring_config.rrf_config.window_size (default 2 * (from + limit), capped at "
-            "OpenSearch's index.max_result_window of 10000). This is NOT the corpus match count — see "
-            "corpus_total for that."
+            "OpenSearch's index.max_result_window of 10000). This is NOT the corpus match count (see "
+            "corpus_total) and NOT the page count basis (see paginable_total)."
         )
     )
     corpus_total: Optional[int] = Field(
         default=None,
         description=(
             "Lower-bound estimate of the number of documents in the index matching the query and filters, "
-            "computed as max(per-leg OpenSearch total_hits) across all executed legs. Equal to the true "
-            "corpus match count for filter-only and single-leg queries; for multi-leg hybrid queries it "
-            "underestimates the union when legs disagree (true union is in [max(legs), sum(legs)]). "
-            "kNN/vector legs are bounded by window_size and contribute a floor only. May be absent for "
+            "computed as max(per-leg OpenSearch total_hits) across all executed legs. Every leg now runs with "
+            "track_total_hits=true, so each leg's own count is exact; the estimate is a lower bound only "
+            "because legs may disagree on membership (true union is in [max(legs), sum(legs)]). Note the "
+            "per-leg counts measure different things: a text leg counts documents matching the text query AND "
+            "the filters, while a filter-only leg counts the filter set. An approximate-kNN leg is bounded by "
+            "its k. Do NOT use this to compute page counts — use paginable_total. May be absent for "
             "back-compat with older clients."
+        ),
+    )
+    paginable_total: Optional[int] = Field(
+        default=None,
+        description=(
+            "How many results are actually reachable by paging — the basis for page count "
+            "(ceil(paginable_total / limit)). For a single-leg query this is the exact match count, bounded by the "
+            "depth limit; for a multi-leg (RRF) query it is the size of the fusion window, which is typically far "
+            "smaller than corpus_total. Render this, not corpus_total, in a paginator. "
+            "CAVEAT: with deduplicate_by_hash=true this OVERSTATES, because OpenSearch counts documents before "
+            "collapsing, not collapsed groups — expect fewer results than advertised. Access filtering can also "
+            "shorten individual pages, so treat it as an upper bound rather than an exact count."
+        ),
+    )
+    next_cursor: Optional[str] = Field(
+        default=None,
+        description=(
+            "Opaque cursor for the next page. Pass it back as `cursor` — it pins the fusion window and resume "
+            "position, so paging stays consistent. Absent when there is no further page."
+        ),
+    )
+    has_more: bool = Field(
+        default=False,
+        description=(
+            "Whether a further page exists. Derived from the pagination state, NOT from len(hits) — post-retrieval "
+            "filters (access permissions) can shorten a page without it being the last one."
+        ),
+    )
+    pagination: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Diagnostics: the mode chosen (`leg` = paged natively by OpenSearch, `rrf` = paged inside the fusion "
+            "window), the offset, the page size, and the depth limit with the reason for it — so a client can tell "
+            "'no more results' from 'cannot page further in this mode'."
         ),
     )
     hits: List[SearchResult] = Field(
@@ -359,7 +416,7 @@ class RRFConfig(BaseModel):
     )
     query_rank_constants: dict[SearchType | str, int] = Field(
         default_factory=dict,
-        description='Override rank_constant for specific search legs, keyed by leg name (e.g., {"hybrid": 30, "text_to_vector": 90}). Valid leg names: "hybrid" (text leg), "text_to_vector" (description embedding), "image_similarity", and "vector_<n>" for explicit vector queries.',
+        description='Override rank_constant for specific search legs, keyed by leg name (e.g., {"hybrid": 30, "text_to_vector": 90}). Valid leg names: "hybrid" (text leg), "name" (the name vote), "text_to_vector" (description embedding), "image_similarity", and "vector_<n>" for explicit vector queries.',
     )
 
 
@@ -390,7 +447,6 @@ class HybridTextConfig(BaseSettings):
         default="or",
         description="How to combine matches across fields: 'or' (any field matches) or 'and' (all fields must match). Recommended: 'or' for discovery, 'and' for precision.",
     )
-
     model_config = SettingsConfigDict(env_prefix="hybrid_search_hybrid_text_config_")
 
 
@@ -425,6 +481,41 @@ class VectorFieldConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="hybrid_search_vector_field_config_")
 
 
+class NameMatchConfig(BaseSettings):
+    """The name vote: one more RRF vote for hits whose name or path holds every query word.
+
+    Rank fusion sees ranks, not scores, so the asset a query names ("allegro hand" -> allegro_hand.usd) can lose to
+    look-alikes that sit moderately high in both the text and the vector leg. The vote is read from the hits the legs
+    already returned (their name and path), so it costs no extra query. Words are whole words: a name or path is split
+    at anything not a letter or digit, at camelCase and at letter/digit boundaries ("AllegroHand" -> allegro, hand;
+    "onrobot" does not hold "robot"), a plural counts ("robot" ~ "Robots"), and a query word with a digit matches the
+    start of a part ("m900" ~ "m900ib280"). Stopwords and one-character words are left out of the query. A query of
+    min_words words or more gets the vote; a shorter one only when its word is rare among the returned hits
+    (rare_word_hits). It applies only when the request fuses several legs.
+    """
+
+    enabled: bool = Field(
+        default=True, description="Whether hits whose name or path holds every query word get the vote."
+    )
+    weight: confloat(ge=0, le=100) = Field(
+        default=1.0,
+        description="RRF weight of the name vote (its rank constant is rrf_config.query_rank_constants['name'], else rank_constant).",
+    )
+    min_words: conint(ge=1, le=8) = Field(
+        default=2,
+        description="A query of this many words or more (after stopwords) gets the vote.",
+    )
+    rare_word_hits: conint(ge=0, le=100) = Field(
+        default=1,
+        description=(
+            "A shorter query (one word) gets the vote only when at most this many of the returned hits hold its word: "
+            "a product name ('allegro') yes, a common noun ('table', 'car') no. 0 never."
+        ),
+    )
+
+    model_config = SettingsConfigDict(env_prefix="hybrid_search_name_match_config_")
+
+
 class ScoringConfig(BaseSettings):
     """Controls how text, vector, and hybrid search results are combined via Reciprocal Rank Fusion.
 
@@ -453,6 +544,11 @@ class ScoringConfig(BaseSettings):
     vector_fields: Dict[str, VectorFieldConfig] = Field(
         default_factory=dict,
         description="Vector search fields configuration. Key is the field name (e.g., 'siglip2-embedding.embedding'), value is the field config with dimension and weight.",
+    )
+
+    name_match: NameMatchConfig = Field(
+        default_factory=NameMatchConfig,
+        description="The name vote: an extra RRF vote for hits whose name or path holds every query word.",
     )
 
     model_config = SettingsConfigDict(env_prefix="hybrid_search_scoring_config_", extra="allow")
@@ -488,6 +584,17 @@ class VectorQuery(BaseModel):
     query: Union[str, List[float]] = Field(
         description="The query content: a text string (for type 'text'), a base64 image or URL (for type 'image'), or a list of floats (for type 'vector'). For text queries, use SHORT descriptive phrases (2-5 words) for best results with CLIP/SigLIP2 embeddings."
     )
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _normalize_asset_reference(cls, v):
+        """Accept a rewritten asset URL wherever an internal one is accepted.
+
+        Only touches values that start with a configured public prefix, so text
+        queries and base64 payloads pass through untouched (and everything does
+        when URL mapping is off).
+        """
+        return to_internal_url_or_passthrough(v)
 
 
 class DeepSearchSearchRequestV2(DeepSearchSearchRequest):

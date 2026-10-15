@@ -24,7 +24,7 @@ fi
 
 echo "################################################################################"
 echo "################################ Running isort #################################"
-isort $check_flag "$@"
+uv run isort $check_flag "$@"
 isort_status=$?
 
 if (( isort_status != 0 )); then
@@ -33,7 +33,7 @@ fi
 
 echo "################################################################################"
 echo "################################ Running black #################################"
-black $check_flag "$@"
+uv run black $check_flag "$@"
 black_status=$?
 
 if (( black_status != 0 )); then

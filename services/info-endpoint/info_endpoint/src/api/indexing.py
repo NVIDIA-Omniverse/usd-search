@@ -26,6 +26,7 @@ from fastapi.params import Query
 from plugins import BasePlugin
 
 from search_utils.storage_client import StorageClient
+from search_utils.url_mapping import AssetUrl, rewrite_response_document
 
 from .exceptions import InvalidURL
 from .models import AssetStorageBackendInfo, BackendStatusType, StatusResult
@@ -68,7 +69,7 @@ The service could additionally report asset metadata from the storage backend if
 async def get_asset_status(
     request: Request,
     url: Annotated[
-        str,
+        AssetUrl,
         Query(description="Asset URL for which processing status needs to be retrieved"),
     ],
     return_asset_metadata: Annotated[bool, Query(description="Return metadata for the asset if set to True")] = False,
@@ -105,8 +106,10 @@ async def get_asset_status(
         actual_hash_value=actual_hash_value,
     )
 
-    return StatusResult(
-        url=url,
-        plugins_statuses=plugin_status,
-        storage_backend_info=storage_backend_info,
+    return rewrite_response_document(
+        StatusResult(
+            url=url,
+            plugins_statuses=plugin_status,
+            storage_backend_info=storage_backend_info,
+        )
     )

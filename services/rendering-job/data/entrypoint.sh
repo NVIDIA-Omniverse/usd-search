@@ -21,11 +21,12 @@ PORT="${INFERENCE_PORT:-8000}"
 
 if [[ "${CI:-}" = "true" ]]; then
   echo "CI=true detected"
+  if [[ "$#" -gt 0 ]]; then
+    exec "$@"
+  fi
   exec bash
 elif [[ "$MODE" == "api" ]]; then
   exec python -m uvicorn deepsearch_rendering_job.api.main:app --host 0.0.0.0 --port "${PORT}"
-elif [[ "$MODE" == "graph-builder" ]]; then
-  exec python -m uvicorn graph_builder.service:app --host 0.0.0.0 --port "${PORT}"
 else
   exec python -m deepsearch_rendering_job "$@"
 fi

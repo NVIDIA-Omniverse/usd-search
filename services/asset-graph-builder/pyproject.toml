@@ -7,23 +7,24 @@ authors = [
 ]
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "aiohttp>=3.13.5",
+    "aiohttp>=3.14.3",
     "jinja2>=3.1.6",
     "authlib>=1.7.2",
-    "certifi==2023.7.22",          # NOTE: fixed — license not BSD/MIT/Apache, SWIPAT self-checkout not possible
-    "cryptography>=48.0.1",        # NOTE: fixed — SWIPAT self-checkout not possible
-    "fastapi>=0.110.0",
+    "certifi>=2023.7.22",
+    "cryptography>=50.0.0",
+    "fastapi>=0.125.0",
     "httpx>=0.27.2",
     "orjson>=3.9.0",
     "pillow>=10.2.0",
-    "pydantic<2",
+    "pydantic>=2.10.5",
     "pyyaml>=6.0.1",
     "python-multipart>=0.0.22",
     "sentry-sdk>=2.14.0",
     "setuptools>=78.1.1",
-    "starlette>=0.36.3",  # capped <1.0 transitively by pydantic<2 (fastapi w/ starlette 1.x needs pydantic>=2.7)
+    "starlette>=0.50.0",
     "typing_extensions>=4.9.0",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
+    "usd-core==25.11",  # pxr fallback for the builder; the image layers the ABI-matched packman USD 25.11 stack (stock USD + client + resolver) on top for remote resolution
     "uvicorn>=0.24.0.post1",
 ]
 

@@ -92,8 +92,15 @@ curl "${CURL_AUTH[@]}" -sf "$BASE"/info/backend/storage | grep -q '"storage_back
     && check OK "GET /info/backend/storage" \
     || check FAIL "/info/backend/storage" "missing storage_backend_type"
 
-N=$(curl "${CURL_AUTH[@]}" -sf "$BASE"/info/plugins | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null)
+PLUGINS_JSON=$(curl "${CURL_AUTH[@]}" -sf "$BASE"/info/plugins)
+N=$(echo "$PLUGINS_JSON" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null)
 [ "${N:-0}" -ge 1 ] && check OK "GET /info/plugins ($N plugins)" || check FAIL "/info/plugins" "no plugins reported"
+# info-endpoint must load the same plugin config as monitor-crawler
+# (infra/quickstart/plugin.config.yaml), where asset_graph_generation is
+# active. The image default disables it, so a missing mount shows up here.
+echo "$PLUGINS_JSON" | python3 -c 'import json,sys;sys.exit(0 if "asset_graph_generation" in {p["name"] for p in json.load(sys.stdin)} else 1)' 2>/dev/null \
+    && check OK "GET /info/plugins lists asset_graph_generation as active" \
+    || check FAIL "/info/plugins" "asset_graph_generation not active — info-endpoint is not using infra/quickstart/plugin.config.yaml"
 
 echo "── 3. deepsearch-api: V2 text search ──"
 RES=$(curl "${CURL_AUTH[@]}" -sf "$BASE/search?description=robot&limit=3")
@@ -253,6 +260,16 @@ print(f\"    polygons={s.get('total_polygon_count')}, points={s.get('total_point
 "
     else
         check FAIL "/asset_graph/usd/scene_summary/" "n_prims missing or 0"
+    fi
+
+    # On-demand graph processing: info-endpoint must accept (not ignore) an
+    # explicit asset_graph_generation request. Re-enqueues one priority job.
+    PROCESS_JSON=$(curl "${CURL_AUTH[@]}" -sfG --data-urlencode "url=$GRAPHED_URL" \
+        --data-urlencode "plugins=asset_graph_generation" "$BASE/process/asset")
+    if echo "$PROCESS_JSON" | python3 -c 'import json,sys;sys.exit(0 if "asset_graph_generation" in json.load(sys.stdin).get("plugins",[]) else 1)' 2>/dev/null; then
+        check OK "GET /process/asset plugins=asset_graph_generation (submitted)"
+    else
+        check FAIL "/process/asset" "asset_graph_generation not submitted: ${PROCESS_JSON:-no response}"
     fi
 else
     check FAIL "/asset_graph/usd/prims" "no graphed hits in /search?return_root_prims=true after ${ASSET_GRAPH_TIMEOUT}s — ags worker may not be running (check 'docker logs usdsearch-worker-ags')"

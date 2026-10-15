@@ -30,6 +30,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from storage.src.services.config import NGSearchStorageSearchBackendConfig
 
+from search_utils.url_mapping import configure_url_mapper, rewrite_response_text
+
 # local / proprietary modules
 from .api.backend import router as backend_router
 from .api.clients import get_active_plugins, get_cache_client, get_storage_client
@@ -90,6 +92,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.active_plugins = get_active_plugins()
     app.cache_client = await get_cache_client()
     app.storage_client = get_storage_client()
+    # Public/internal asset-URL translation, shared with deepsearch-api and AGS
+    # (this service is gateway-exposed at /info and /process). Note the storage
+    # *backend* listing in /info/backend/storage is deliberately NOT translated:
+    # those roots identify infrastructure, and the Explorer keys its auth mode off
+    # their scheme. No-op unless USDSEARCH_URL_MAPPING_MODE is set.
+    app.url_mapper = configure_url_mapper(storage_config=app.storage_client.config)
     app.service_config = INFOEndpointServiceConfig()
     app.search_backend_config = NGSearchStorageSearchBackendConfig()
     instrumentator.expose(app, tags=["internal_metrics"], include_in_schema=False)
@@ -140,7 +148,8 @@ async def ngsearch_storage_backend_unavailable(request: Request, exc: NGSearchSt
 async def invalid_url_exception(request: Request, exc: InvalidURL) -> JSONResponse:
     return JSONResponse(
         status_code=400,
-        content={"error": "Invalid URL", "details": str(exc)},
+        # Quote the URL the caller sent, not its internal translation.
+        content={"error": "Invalid URL", "details": rewrite_response_text(str(exc))},
     )
 
 
@@ -156,7 +165,7 @@ async def empty_plugin_list(request: Request, exc: EmptyPluginList) -> JSONRespo
 async def asset_not_found(request: Request, exc: AssetNotFoundError) -> JSONResponse:
     return JSONResponse(
         status_code=400,
-        content={"error": "Asset missing", "details": str(exc)},
+        content={"error": "Asset missing", "details": rewrite_response_text(str(exc))},
     )
 
 

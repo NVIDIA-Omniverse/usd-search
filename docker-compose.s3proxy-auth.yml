@@ -35,7 +35,7 @@
 #
 #   # Start the stack with GPU plugins + s3proxy auth proxy:
 #   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml \
-#     -f docker-compose.s3proxy-auth.yml up --build
+#     -f docker-compose.s3proxy-auth.yml -f docker-compose.s3proxy-auth.gpu.yml up --build
 #
 # How it works:
 #   - s3proxy authenticates to the upstream endpoint using your credentials
@@ -70,7 +70,9 @@ services:
       S3PROXY_AUTHORIZATION: none
       LOG_LEVEL: info
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ 2>/dev/null || wget -q --spider http://localhost:80/ 2>/dev/null"]
+      # The image ships bash + java only (no wget/curl), so probe the port
+      # with bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/80"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -133,20 +135,3 @@ services:
     depends_on:
       s3proxy:
         condition: service_healthy
-
-  # ─── GPU plugin services (active when gpu-plugins overlay is also used) ────
-
-  rendering-job:
-    environment:
-      - S3_STORAGE_AWS_ENDPOINT_URL=http://s3proxy:80
-    depends_on:
-      s3proxy:
-        condition: service_healthy
-
-  monitor-worker-thumbnail-generation:
-    environment:
-      <<: *s3proxy-env
-
-  monitor-worker-rendering-to-embedding:
-    environment:
-      <<: *s3proxy-env

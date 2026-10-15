@@ -51,6 +51,7 @@ spec:
       {{- $globalImagePullSecrets | nindent 6 }}
       hostname: {{ $fullName }}
       volumes:
+      {{- include "deepsearch-global.storageBackendVolumes" . | nindent 6 }}
       - name: logging-config
         configMap:
           name: {{ $fullName }}-logging
@@ -83,6 +84,7 @@ spec:
           - -m
           - monitor.src.monitor_crawler_cron
           volumeMounts:
+          {{- include "deepsearch-global.storageBackendVolumeMounts" . | nindent 10 }}
           - mountPath: /logging.yaml
             name: logging-config
             subPath: logging.yaml
@@ -99,6 +101,8 @@ spec:
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            {{- /* These must match the VLM workers because this process computes their cache hashes. */}}
+            {{- include "deepsearch.template.vlm.metadataOutputConfig" .Values.vision_endpoint | nindent 12 }}
             - name: LOGGING_CONFIG
               value: /logging.yaml
             - name: SENTRY_DSN

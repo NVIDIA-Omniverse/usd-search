@@ -197,9 +197,12 @@ class Prim(BaseModel):
             for k, v in kwargs.items()
             if k.startswith("property_") and not k.startswith("property_int_") and not k.startswith("property_float_")
         }
+        # Oversized values are stored unindexed under `raw_property_` (see neo4j.py); fold them
+        # back into `properties` under their original key so callers see them transparently.
+        props.update({k.removeprefix("raw_property_"): v for k, v in kwargs.items() if k.startswith("raw_property_")})
         if kwargs.get("source_asset_url") == "None":
             kwargs["source_asset_url"] = None
-        kwargs = {k: v for k, v in kwargs.items() if not k.startswith("property_")}
+        kwargs = {k: v for k, v in kwargs.items() if not (k.startswith("property_") or k.startswith("raw_property_"))}
         return cls(properties=props, **kwargs)
 
     def clean_up_semantic_labels(self) -> None:

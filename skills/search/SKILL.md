@@ -30,7 +30,10 @@ Stage 3 → 4 → 5 of the `/quickstart` journey: take the user's
 API, and present ranked thumbnails.
 
 **Be terse.** Run the query, save thumbnails, show them, stop. No
-per-curl narration. Before asking for any `*_API_KEY`, grep
+per-curl narration. **Every search ends with pictures the user can look
+at** — see [Show the thumbnails](#show-the-thumbnails-always-unless-the-user-opts-out);
+the only exception is a user who asked not to see them.
+Before asking for any `*_API_KEY`, grep
 `~/.zshrc ~/.zshenv ~/.zprofile ~/.profile ~/.bashrc ~/.bash_profile
 ~/.env*` for `export <NAME>=`; if absent, ask the user to `export` it
 themselves — never accept a pasted secret.
@@ -45,12 +48,20 @@ its absolute path is shown in the skill-load header above, call it
   sizes, physics, tags): `llm_parse/query` + the filter catalog.
 - `references/validation.md` — escalation past captions: server VLM
   validator, the thumbnail sub-agent, scene-vs-object rules, iterate/empty.
+- `references/contact_sheet.py` — renders the saved thumbnails for the
+  user (Markdown lines + `contact-sheet.html`); run it on every search.
 
 ## Environment
 
 Tooling: this skill shells out to `curl` and `python3` only (both
 standard; `python3` builds the request body and parses responses). No
 `jq` or other extra dependency.
+
+**Before the first `python3` call in a session**, confirm it's there:
+`command -v python3`. If missing, check `command -v uv`; if present,
+prefix every `python3` call below with `uv run` (`uv` fetches an isolated
+interpreter on demand). If neither is on `PATH`, stop and tell the user to
+install one before continuing.
 
 Required:
 - `USD_SEARCH_API_URL` — set by `/quickstart` or `/deploy-usdsearch`.
@@ -118,20 +129,36 @@ summary. Don't re-open the JSON across turns to print keys, then hits,
 then fields one at a time; each poke is a turn whose output rides in
 context for the rest of the run.
 
-Fetch thumbnails for the top 5–10 hits (images are NEVER inlined):
+Fetch thumbnails for the top 5–10 hits:
 
 ```bash
 curl -s "${USD_SEARCH_API_URL}/images?asset_url=<source.base_key>" \
   --output "$DIR/0N_<sanitized-name>.jpg"
 ```
 
-Write a `manifest.json` (`name`, `url`/`base_key`, `rrf_score`, local
-filename per rank) so `/inspect-asset` and follow-on `/search` calls
-resume without re-querying.
+Write a `manifest.json` so `/inspect-asset`, `contact_sheet.py`, and
+follow-on `/search` calls resume without re-querying:
+
+```json
+{"query": "blue forklift",
+ "hits": [{"rank": 1, "name": "forklift_a", "url": "s3://…/a.usd",
+           "rrf_score": 0.0163, "thumbnail": "01_forklift_a.jpg"}]}
+```
+
+`rank` + `thumbnail` (the local file name) are what the contact sheet
+needs; `similarity_score`, `confidence` and a `note` ("Round 2") are
+rendered too when present.
 
 Skip hits with top-level `hit.thumbnail_exists == false` (no SigLIP2
 embedding → `/images` 404s). If a caller omits `return_images` the field
 is `null` — fetch `/images` defensively instead of pre-skipping.
+
+**Never `Read` a result JPEG yourself** — a thumbnail pulled into this
+conversation is re-read on every later turn and is the single largest
+avoidable cost. (Unresolved hits go to the sub-agent in
+`references/validation.md` instead.) That is a rule about *your* context,
+not about the user's: the pictures still go to the user, via
+[Show the thumbnails](#show-the-thumbnails-always-unless-the-user-opts-out).
 
 ## Relevance validation (mandatory)
 
@@ -176,10 +203,45 @@ Two rules that always apply, even on captions alone:
   substitute near-misses. (First consider iterating: synonym, or Round 2
   image-similarity on the best partial — see `references/validation.md`.)
 
+## Show the thumbnails (always, unless the user opts out)
+
+Render the hits that survived validation with the contact-sheet helper —
+it never prints image bytes, only paths:
+
+```bash
+python3 "$SKILL/references/contact_sheet.py" --dir "$DIR" --keep 1,3,4 --title "$Q"
+```
+
+`--keep` is the list of ranks that survived validation (omit it to show
+them all). The helper writes `$DIR/contact-sheet.html` — a grid of the
+kept thumbnails with the asset URL and scores on each card — and prints
+one Markdown image line per hit plus a `no thumbnail on disk:` line for
+anything that failed to download.
+
+Then, in your answer:
+
+- **Paste the printed Markdown image lines verbatim**, one per match, in
+  the per-match block below. They are what makes the thumbnail visible
+  where Markdown images render.
+- **Give the contact-sheet path too**, on one line — e.g. *"all 4 side by
+  side: `./search-results/<slug>/contact-sheet.html`"*. It is the
+  fallback for terminals that don't render inline images, so it is not
+  optional.
+- Say *"no thumbnail available"* for a match the helper reported as
+  missing; still show it, identified by its asset URL.
+
+**The opt-out.** If the user asks for no images — *"no thumbnails"*,
+*"text only"*, *"just the URLs"*, *"don't show pictures"* — skip the
+`/images` fetch and this whole section, and present URLs + metadata only.
+Honor it for the rest of the conversation, and don't ask about it
+otherwise: showing thumbnails is the default and needs no permission.
+
 ## Present results
 
 Show ONLY the validated matches. Compact list per match:
-- thumbnail, asset URL / `base_key`
+- **the thumbnail** — the Markdown image line printed by
+  `contact_sheet.py` (omitted only when the user opted out of images)
+- asset URL / `base_key`
 - `rrf_score` (+ `similarity_score`, `confidence` if VLM validation ran)
 - one-line metadata (dimensions or key USD properties)
 - how it was found (text / image / Round 2)
@@ -200,8 +262,12 @@ Otherwise end with a short pointer list (not a question):
   stays out of your context this way.
 - **Parse filter-heavy queries first** (`references/filters.md`); on any
   non-200 from `/llm_parse/query` fall back to plain hybrid search.
-- **Fetch thumbnails via `/images` — never inlined.**
+- **Fetch thumbnails via `/images`; never `Read` one yourself** — that
+  limit is yours, not the user's.
+- **Always show the thumbnails** (`references/contact_sheet.py`: Markdown
+  lines + `contact-sheet.html`) unless the user asked not to see images.
 - **Validate before presenting.** Text signals first, thumbnails last
   (via the sub-agent). Return only matches; if none, say so.
 - **Indirect credentials only.** Never accept pasted secrets.
-- **Persist results** to `./search-results/<slug>/` with a manifest.
+- **Persist results** to `./search-results/<slug>/` with a manifest and
+  the contact sheet.

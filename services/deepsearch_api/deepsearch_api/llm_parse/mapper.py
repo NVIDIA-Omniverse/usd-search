@@ -21,6 +21,10 @@ the schema enums) so a partially-misunderstood query still produces a valid
 search. The IR's ``unmapped_constraints`` (constraints matching no catalog field)
 never reach this mapper — they carry no field/operator to map and are surfaced
 straight to the client, so they never produce search params.
+
+This is also the seam between "what the LLM said" and "what we tell the client":
+the filters returned here are always **wire** ``IRFilter``s, so a constrained
+filter's enum ``field`` becomes a plain string before it can reach a response.
 """
 
 from __future__ import annotations
@@ -29,7 +33,14 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from .fields import REGISTRY
-from .models import DroppedFilter, DroppedFilterReason, IRFilter, SearchIR
+from .models import (
+    DroppedFilter,
+    DroppedFilterReason,
+    IRFilter,
+    SearchIR,
+    field_name,
+    to_wire_filter,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +76,8 @@ def map_ir(ir: SearchIR) -> Tuple[Dict[str, Any], List[IRFilter], List[DroppedFi
     Returns ``(params, applied_filters, dropped_filters)``. ``applied_filters``
     holds only the filters that actually contributed to ``params``;
     ``dropped_filters`` holds the rest, each tagged with why it could not be
-    applied (unknown field, unsupported operator, or invalid value).
+    applied (unknown field, unsupported operator, or invalid value). Both lists
+    hold wire-model ``IRFilter``s regardless of what ``ir`` carried.
 
     Callers that echo the interpreted query back to the client should report
     ``applied_filters`` (not ``ir.filters``) so the response never advertises a
@@ -78,23 +90,23 @@ def map_ir(ir: SearchIR) -> Tuple[Dict[str, Any], List[IRFilter], List[DroppedFi
 
     def _drop(flt: IRFilter, reason: DroppedFilterReason, message: str) -> None:
         logger.debug("Dropping IR filter (%s): %s", reason.value, message)
-        dropped.append(DroppedFilter(filter=flt, reason=reason, message=message))
+        dropped.append(DroppedFilter(filter=to_wire_filter(flt), reason=reason, message=message))
 
     if ir.semantic_query and ir.semantic_query.strip():
         params["hybrid_text_query"] = ir.semantic_query.strip()
 
     for flt in ir.filters:
-        field_name = flt.field.value if hasattr(flt.field, "value") else str(flt.field)
+        name = field_name(flt)
         op = _operator_value(flt.operator)
-        field_def = REGISTRY.get(field_name)
+        field_def = REGISTRY.get(name)
         if field_def is None:
-            _drop(flt, DroppedFilterReason.UNKNOWN_FIELD, f"Field '{field_name}' is not available on this deployment.")
+            _drop(flt, DroppedFilterReason.UNKNOWN_FIELD, f"Field '{name}' is not available on this deployment.")
             continue
         if flt.operator not in field_def.operators:
             _drop(
                 flt,
                 DroppedFilterReason.UNSUPPORTED_OPERATOR,
-                f"Field '{field_name}' does not support the '{op}' operator.",
+                f"Field '{name}' does not support the '{op}' operator.",
             )
             continue
         try:
@@ -103,17 +115,17 @@ def map_ir(ir: SearchIR) -> Tuple[Dict[str, Any], List[IRFilter], List[DroppedFi
             _drop(
                 flt,
                 DroppedFilterReason.INVALID_VALUE,
-                f"Value {flt.value!r} could not be applied to '{field_name}': {exc}",
+                f"Value {flt.value!r} could not be applied to '{name}': {exc}",
             )
             continue
         if fragment:
             _merge(params, fragment)
-            applied.append(flt)
+            applied.append(to_wire_filter(flt))
         else:
             _drop(
                 flt,
                 DroppedFilterReason.INVALID_VALUE,
-                f"Value {flt.value!r} is not a valid '{field_name}' filter and was ignored.",
+                f"Value {flt.value!r} is not a valid '{name}' filter and was ignored.",
             )
 
     if ir.limit:

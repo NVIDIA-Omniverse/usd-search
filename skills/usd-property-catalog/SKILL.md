@@ -56,6 +56,14 @@ ask the user to `export` it themselves — never accept a pasted secret value.
 Routes assume the unified API gateway: use the unversioned
 `/search/stats/usd_properties` and `/search_hybrid`.
 
+**Tooling.** Step 2 requires `uv run` (needed for PyYAML) — this is not
+conditional on whether `python3` happens to be on `PATH`, so check it
+first and unconditionally: `command -v uv`. If `uv` is missing, stop and
+tell the user to install it before continuing — do not let the workflow
+reach Step 2 on the strength of `python3` alone. For steps 1 and 3, which
+also shell out to a bare `python3` for JSON one-liners: if `python3` is
+missing, run those one-liners with `uv run python3 -c '...'` instead.
+
 **Auth header logic** (same as `/search`):
 - `USERNAME` + `PASSWORD` set → `Authorization: Basic $(printf '%s:%s' "$U" "$P" | base64)`
 - `TOKEN` non-empty and not `x` → `Authorization: Bearer $TOKEN`
@@ -76,6 +84,26 @@ curl -s ${AUTH:+-H "$AUTH"} "$USD_SEARCH_API_URL/search/stats/usd_properties" -o
 
 Check the response is JSON with `unique_keys`/`unique_values`/`kv_pairs` (not a
 401/403 HTML body) before continuing.
+
+**Scoping to part of the corpus.** If the user asks for a catalog of a subtree,
+a file type, a scene, or any other subset, append the same filter parameters
+`/search` takes — `search_path`, `file_name`, `file_extension_include`,
+`filter_by_properties`, `filter_by_tags`, `filter_by_properties_numeric`,
+`filter_url_regexp`, date / size / user filters, bbox dimensions,
+`vision_metadata`, `search_in_scene`:
+
+```bash
+curl -s ${AUTH:+-H "$AUTH"} \
+  "$USD_SEARCH_API_URL/search/stats/usd_properties?search_path=/Projects/Vehicles/&file_extension_include=usd*" \
+  -o "$DIR/stats.json"
+```
+
+URL-encode values containing `=`, `&` or spaces (`--data-urlencode` with `-G` is
+the safe form). Add the scope to `$SLUG` so scoped catalogs do not overwrite the
+corpus-wide one. Counts stay exact for the subset, and filtering is asset-scoped
+— `filter_by_properties=class=vehicle` returns every property those assets carry,
+not just `class`. A `422` means a search-only parameter (`description`, `limit`,
+…) or a misspelled filter name was passed; the response body names it.
 
 ## 2. Build the catalog artifacts
 
@@ -129,6 +157,30 @@ uv run --no-project --with pyyaml python "$(dirname "$0")/references/build_catal
 To audit a different set of properties, copy `references/p0_targets.yaml`, edit
 the `targets` (each is a concept + regex `patterns` + `recommended_key` + `note`),
 and pass it to `--audit`.
+
+### Filter-intent mode: generate a complete per-index catalog
+
+A targets file can double as a **filter intent**: each target may also carry
+optional `field_name`, `label`, `group` (UI hints served through
+`GET /llm_parse/fields` and used by the Explorer rail) and a `type` override.
+With `--base` (a catalog whose corpus-agnostic fields to keep) and
+`--emit-catalog NAME`, the transform resolves every intent concept against the
+corpus stats — the `recommended_key` wins when the corpus actually carries it,
+otherwise the highest-coverage matching key; concepts with no matching key are
+dropped — and writes a complete, deploy-ready `search_fields.NAME.yaml` (dataset-agnostic:
+the same intent regenerates correct filters for an isaac corpus, a simready
+corpus, or any other index):
+
+```bash
+uv run --no-project --with pyyaml python "$(dirname "$0")/references/build_catalog.py" \
+  --stats "$DIR/stats.json" --out-dir "$DIR" --source "$USD_SEARCH_API_URL" \
+  --audit my_filters_intent.yaml --base search_fields.base.yaml --emit-catalog myindex
+```
+
+Point `USDSEARCH_LLM_PARSING_FIELDS_FILEPATH` at the emitted file. Because the
+property keys are resolved from the live index (never hand-guessed), re-running
+this against a different index regenerates the filters for *that* corpus —
+regenerate whenever the index changes.
 
 ## 4. Wire it into the deployment
 

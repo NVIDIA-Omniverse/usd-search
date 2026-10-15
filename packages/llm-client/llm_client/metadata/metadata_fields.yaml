@@ -13,6 +13,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Optional per-field keys consumed by llm_client.metadata.Metadata:
+#   allowed_values — closed vocabulary. On a str field it becomes a Literal enum
+#                    (off-vocabulary output fails validation and is repaired).
+#                    On a list[str] field each item is drift-normalized and
+#                    off-vocabulary items are DROPPED (logged, never a failure).
+#   nullable      — with allowed_values: the field may be null, and off-vocabulary
+#                    output is coerced to null instead of failing validation. A
+#                    null is better than a forced wrong value — new asset types
+#                    the vocabulary doesn't cover yet stay uncategorized rather
+#                    than miscategorized.
+#   min_items / max_items — bounds for a list[str] field (over-long lists are
+#                    truncated most-relevant-first; min_items is prompt-only
+#                    guidance and under-min lists remain valid).
+#
+# The category/style vocabularies are derived from the values observed across the
+# indexed corpus (plus this curated superset). Re-derive them regularly — at
+# minimum whenever a new content area is onboarded — and extend the lists here:
+# aggregate the distinct nested {name: category|style} value_text values from the
+# production index (see docs/models-and-config.md), review, and append what's
+# missing. Assets whose true category/style is not in the list get null until the
+# vocabulary catches up.
+
 metadata_fields:
 
 # ── Identity ────────────────────────────────────────────────────────────────
@@ -26,14 +48,6 @@ metadata_fields:
     "Ergonomic mesh office chair", "Stainless commercial kitchen prep table".
   type: str
 
-- name: description
-  description: >
-    One or two factual sentences describing the asset for search: what it is, its
-    notable visual features, materials, and typical function/role. Be informative
-    and specific (mention parts, mechanisms, branding, or condition if visible).
-    Only describe what is actually visible — do not invent backstory.
-  type: str
-
 - name: object_type
   description: >
     The single most specific common noun for the object (lowercase), e.g.
@@ -42,36 +56,63 @@ metadata_fields:
     Prefer the precise term over a generic one ("sectional sofa", not "furniture").
   type: str
 
-- name: category
-  description: >
-    The single best top-level category. Choose exactly ONE:
-    furniture, appliance, electronics, lighting, vehicle, robot, machinery, tool,
-    material_handling, container, packaging, structure, fixture, signage,
-    safety_equipment, sensor, instrument, weapon, clothing, food, nature, terrain,
-    character, decoration, prop, other.
-  type: str
+# Free-text `category` (no allowed_values list) gives poor results — the model
+# needs a closed vocabulary to pick from. DISABLED here; re-enable per
+# deployment via the allowed_values list below (uncomment the whole field), or
+# by overriding vision_endpoint.metadata_fields in helm values. The list is
+# corpus-derived for the Isaac/SimReady corpus (see the re-derivation runbook
+# above); off-list values coerce to null when enabled. Value hints: primitive_shape
+# = bare geometric primitive (cube, cylinder, plane); part = generic mechanical
+# component that is not a fastener (rod, peg, spacer, bracket); hardware =
+# fasteners (nut, bolt, screw, washer); prop = recognizable everyday object
+# used as set dressing.
+# - name: category
+#   description: >
+#     The single best top-level category as a short lowercase noun, e.g.
+#     furniture, vehicle, robot, signage, container; use null when no clear
+#     category applies — a wrong category is worse than none.
+#   type: str
+#   nullable: true
+#   allowed_values: [furniture, appliance, electronics, lighting, vehicle,
+#     robot, machinery, tool, hardware, part, primitive_shape, equipment,
+#     medical_equipment, material_handling, container, packaging, structure,
+#     fixture, signage, safety_equipment, sensor, instrument, weapon, clothing,
+#     food, nature, terrain, character, decoration, prop]
 
 # ── Discovery keywords ────────────────────────────────────────────────────────
 
+- name: queries
+  description: >
+    Short search phrases a person would actually type into a search box to find
+    this asset — aim for 5-10 (at least 3 required; even a bare primitive supports
+    shape/color phrases like "gray cube"), lowercase, ordered most generic first.
+    Start with the plain
+    object name, then common synonyms, then the few most distinctive qualified
+    phrasings: "forklift", "fork truck", "warehouse forklift", "yellow
+    counterbalance forklift". Each phrase 1-4 words, written the way users
+    search — no full sentences, no catalog or engineering jargon, and no generic
+    filler ("3d model", "asset", "object", "prop"). These phrases are matched
+    directly by keyword search.
+  type: list[str]
+  min_items: 3
+  max_items: 10
+
 - name: tags
   description: >
-    8-15 lowercase keywords a user might actually search, ordered most→least
-    relevant. Cover: the object name + synonyms (forklift, lift truck, fork truck);
-    specific type/variant (counterbalance, reach truck, pallet jack); visible parts
-    and features (forks, mast, cab, hydraulics); brand or model text if legible;
-    and domain/industry terms (warehouse, logistics, material handling). Be
-    thorough and include synonyms — this field drives most retrieval.
+    Lowercase keywords a user might actually search, ordered most→least relevant —
+    aim for 8-15 (at least 3 required). Cover: the object name + synonyms
+    (forklift, lift truck, fork truck); specific type/variant (counterbalance,
+    reach truck, pallet jack); clearly visible parts and part-level features
+    (forks, mast, overhead guard, cab, hydraulics); brand or model text ONLY if
+    clearly legible; and domain/industry terms (warehouse, logistics, material
+    handling). Be thorough, include synonyms, and use the words users type — not
+    catalog or engineering jargon. Never pad with generic filler ("3d model",
+    "asset", "object", "mesh", "prop") or attributes you cannot clearly see; for
+    bare primitives and abstract assets, shape and color terms (cube, box, sphere,
+    gray) count as valid tags.
   type: list[str]
-
-- name: use_cases
-  description: >
-    Pipelines / domains / applications this asset is well suited for (lowercase,
-    0-6). Examples: "synthetic data generation", "warehouse simulation",
-    "robotics manipulation", "autonomous mobile robots", "autonomous driving",
-    "digital twin", "retail planogram", "factory automation", "architectural
-    visualization", "game environment", "film vfx". Only include genuinely
-    plausible uses.
-  type: list[str]
+  min_items: 3
+  max_items: 15
 
 - name: environment
   description: >
@@ -80,6 +121,7 @@ metadata_fields:
     "hospital", "kitchen", "construction site", "outdoor", "urban street",
     "residential interior", "laboratory".
   type: list[str]
+  max_items: 5
 
 # ── Appearance ────────────────────────────────────────────────────────────────
 
@@ -89,20 +131,27 @@ metadata_fields:
     red, orange, yellow, green, blue, purple, pink, brown, black, white, gray,
     beige, gold, silver. Add a modifier only when distinctive (dark_gray, safety_yellow).
   type: list[str]
+  max_items: 5
 
 - name: materials
   description: >
     Apparent materials, primary→secondary (max 5). Common terms: steel, aluminum,
     metal, wood, plastic, glass, fabric, leather, rubber, concrete, stone, ceramic,
-    cardboard, paper, foam, carbon_fiber, chrome, brass, composite.
+    cardboard, paper, foam, carbon_fiber, chrome, brass, composite. Only materials
+    you can clearly identify at this resolution — when unsure between specific
+    metals, say "metal".
   type: list[str]
+  max_items: 5
 
 - name: style
   description: >
-    The dominant visual/representation style. Choose exactly ONE:
-    photorealistic, realistic, stylized, cartoon, low_poly, hand_painted, sci_fi,
-    fantasy, retro, modern, vintage, industrial, cad, scanned.
+    The dominant REPRESENTATION style — how the asset is rendered/authored, not
+    its design aesthetic (aesthetic terms like "industrial", "modern", "vintage"
+    belong in tags). realistic covers photorealistic. Choose exactly ONE from
+    the allowed list; use null if truly undeterminable.
   type: str
+  nullable: true
+  allowed_values: [realistic, stylized, low_poly, cad, scanned]
 
 # ── Physical / simulation attributes ──────────────────────────────────────────
 
@@ -110,42 +159,41 @@ metadata_fields:
   description: >
     Approximate real-world size class. Choose exactly ONE:
     tiny (fits in a hand), small (desktop), medium (human-scale / furniture),
-    large (vehicle / machine), huge (building / structure), unknown.
+    large (vehicle / machine), huge (building / structure); use null if the
+    size cannot be judged.
   type: str
+  nullable: true
+  allowed_values: [tiny, small, medium, large, huge]
 
 - name: state
   description: >
-    Apparent condition / finish. Choose exactly ONE:
-    pristine, new, used, worn, weathered, damaged, dirty, unknown.
-    (Useful for synthetic-data variety and digital-twin realism.)
+    Apparent condition. Choose exactly ONE — new (clean / like-new), used
+    (visibly in service), worn (heavy wear, weathering, or dirt), damaged
+    (broken or missing parts); use null if condition cannot be judged.
   type: str
+  nullable: true
+  allowed_values: [new, used, worn, damaged]
 
 - name: physical_attributes
   description: >
     Functional / mechanical traits relevant to simulation and robotics
-    (lowercase, 0-6). From: articulated, has_moving_parts, wheeled, deformable,
-    rigid, stackable, graspable, openable, foldable, transparent, emissive,
-    reflective, mounted, modular. Only include traits clearly evident.
+    (lowercase, 0-6), only from the allowed list. Rigid is the default —
+    tag only what deviates from a plain static rigid object, and only traits
+    clearly evident in the views.
   type: list[str]
+  max_items: 6
+  allowed_values: [articulated, has_moving_parts, wheeled, deformable,
+    stackable, graspable, openable, foldable, transparent, emissive,
+    reflective, mounted, modular]
 
 - name: visible_text
   description: >
-    Any legible text, labels, brand names, model numbers, signage, or warnings on
-    the asset (verbatim, 0-6 short strings). Empty list if none. This is a strong,
-    unique search signal (e.g. brand, "EXIT", load ratings, hazard labels).
+    Text on the asset that is CLEARLY LEGIBLE at the provided resolution
+    (verbatim, 0-6 short strings): labels, brand names, model numbers, signage,
+    warnings. If you cannot read every character of a string, omit it entirely —
+    never reconstruct partial text or infer branding from a logo shape or color
+    scheme. Empty list if none. Legible text is a strong, unique search signal
+    (e.g. brand, "EXIT", load ratings, hazard labels); invented text is the
+    worst kind of index pollution.
   type: list[str]
-
-# ── Quality flags (for filtering) ─────────────────────────────────────────────
-
-- name: is_high_quality
-  description: >
-    True if the asset looks high quality — complete and properly textured, with clean
-    geometry, plausible materials, and no obviously missing parts. False if it is a
-    bare primitive, placeholder, or visually incomplete.
-  type: bool
-
-- name: has_issues
-  description: >
-    True if there are visible defects: missing/pink textures, UV errors, stretched
-    textures, artifacts, or incomplete geometry. False if it renders cleanly.
-  type: bool
+  max_items: 6

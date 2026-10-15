@@ -71,9 +71,28 @@ class CLIPConfig(BaseSettings):
     triton_server_headers: Optional[dict] = Field(default=None, description="Metadata headers for Triton server")
     max_workers: int = Field(default=8, description="Max concurrent workers for async image embedding")
     batch_size: int = Field(default=4, description="Max images per inference request batch")
+    lowercase_text: bool = Field(
+        default=True,
+        description=(
+            "Lowercase text before tokenization, matching SigLIP2's reference preprocessing. "
+            "Redundant with the Lowercase normalizer in the bundled tokenizer, but kept so that "
+            "the ensemble path stays correct against a Triton container exported before that fix."
+        ),
+    )
 
     class Config:
         env_prefix = "clip_"
+
+    @classmethod
+    def from_env(cls, **overrides):
+        # The chart sets unprefixed TRITON_SERVER_*; use them only where no prefixed var is set, since CI exports a
+        # generic TRITON_SERVER_URL that must not override an explicit SIGLIP2_TRITON_SERVER_URL.
+        prefixed = cls().model_fields_set
+        connection = TritonClientSettings().model_dump(
+            include={"triton_server_url", "triton_server_ssl", "triton_server_headers", "triton_server_auth_token"},
+            exclude_unset=True,
+        )
+        return cls(**{**{k: v for k, v in connection.items() if k not in prefixed}, **overrides})
 
 
 class BaseCLIP(ABC):
@@ -133,8 +152,15 @@ class BaseCLIP(ABC):
             logger.error(e, exc_info=True)
             raise CLIPException(f"{self._clip_service} image embedding failed: {str(e)}") from e
 
+    def _normalize_texts(self, texts: list[str]) -> list[str]:
+        """Lowercase per SigLIP2's reference preprocessing; also covers pre-fix containers."""
+        if not self.config.lowercase_text:
+            return texts
+        return [text.lower() for text in texts]
+
     def embed_texts(self, texts: list[str], use_ensemble_model: bool = False) -> NDArray[np.float32]:
         try:
+            texts = self._normalize_texts(texts)
             if use_ensemble_model:
                 return self.ensemble_text_client.predict(texts)
 
@@ -188,6 +214,7 @@ class BaseCLIP(ABC):
 
     async def aembed_texts(self, texts: list[str], use_ensemble_model: bool = False) -> NDArray[np.float32]:
         try:
+            texts = self._normalize_texts(texts)
             if use_ensemble_model:
                 await self.async_ensemble_text_client.connect()
                 return await self.async_ensemble_text_client.predict(texts)
@@ -254,7 +281,7 @@ class SigLIP2(BaseCLIP):
 
     def __init__(self, clip_config: Optional[SigLIP2Config] = None):
         if clip_config is None:
-            clip_config = SigLIP2Config()
+            clip_config = SigLIP2Config.from_env()
 
         super().__init__(clip_service=CLIPService.siglip2)
 

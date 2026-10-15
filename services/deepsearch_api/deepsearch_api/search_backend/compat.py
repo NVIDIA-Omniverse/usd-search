@@ -25,6 +25,8 @@ from deepsearch_api.search_backend.models import (
 )
 from deepsearch_api.search_backend.utils import extract_embeddings_from_hit_source
 
+from search_utils.url_mapping import rewrite_response_document
+
 logger = logging.getLogger(__name__)
 
 
@@ -198,7 +200,9 @@ async def convert_search_response(
                 dimension_key = key[15:]
                 usd_dimensions[dimension_key] = value
 
-        # Create new SearchResult
+        # Create new SearchResult. `url` stays internal for the predictions lookup
+        # below (keyed by base_key) and is translated to the public form last, once
+        # the result is fully built.
         url = source.get("base_key", "")
         new_result = SearchResult.model_construct(
             url=url,
@@ -217,4 +221,7 @@ async def convert_search_response(
 
         converted_results.append(new_result)
 
-    return converted_results
+    # Translate every asset URL (the result's own `url` plus the `scene_url` /
+    # `source_asset_url` on each prim) to the deployment's public form. No-op
+    # unless URL mapping is configured.
+    return rewrite_response_document(converted_results)

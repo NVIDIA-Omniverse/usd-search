@@ -57,9 +57,9 @@ tests/helm/
 # Old source repos preserved for reference only
 _old/
 
-# Services with their own separate images — excluded from the unified image build context
+# The GPU rendering-job ships in its own image (docker/Dockerfile.rendering-job,
+# which has its own .dockerignore); keep it out of the usdsearch build context.
 services/rendering-job/
-services/asset-graph-builder/
 
 # Test directories (source code tests are not needed at runtime)
 **/tests/

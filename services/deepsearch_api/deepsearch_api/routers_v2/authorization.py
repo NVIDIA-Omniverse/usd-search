@@ -22,6 +22,7 @@ from deepsearch_api.routers_v2.service import check_acl
 from fastapi import APIRouter, Depends
 
 from search_utils.storage_client import StorageClient
+from search_utils.url_mapping import to_public_url_list
 
 router = APIRouter(
     prefix="/authorization",
@@ -42,4 +43,9 @@ async def verify_access(
     """
     For a given list of URLs, check if the user has access to them and return the list of URLs that the user has access to.
     """
-    return await check_acl(request.urls, storage_client)
+    # The reply is a subset of the request, and a caller can only use it as one if
+    # the URLs come back spelled the way they were sent. `request.urls` was
+    # normalized to the internal form on the way in, so translate back out — the
+    # body is a bare list, which the field-name-driven document rewriter cannot see
+    # into.
+    return to_public_url_list(await check_acl(request.urls, storage_client))

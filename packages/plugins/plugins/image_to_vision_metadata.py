@@ -27,11 +27,8 @@ from llm_client.exceptions import LLMException, ParsingException
 # third-party modules
 from opentelemetry import trace
 from pydantic import BaseModel
-
-# local/proprietary modules
 from storage.src.client import NGSearchStorageHelper, Result, StorageClientInput
 
-from search_utils.misc_utils import image_to_base64
 from search_utils.opensearch_utils import OpenSearchIndexSettings
 
 from .base_plugin import BasePlugin, PLuginBatchItem
@@ -39,6 +36,11 @@ from .config import ImageToEmbeddingConfig, VisionMetadataPluginConfig
 from .exceptions import MetadataException
 from .image_to_embedding import ImageToEmbedding
 from .models import PluginProcessingResult
+from .vision_metadata_utils import (
+    encode_vlm_images,
+    uniformly_sample,
+    vision_metadata_asset_state_hash,
+)
 
 SUPPORTED_VISION_GENERATED_METADATA_FIELD_TYPES = set([bool, str, list])
 tracer = trace.get_tracer(__name__)
@@ -66,14 +68,16 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
             system_namespace=".deepsearch.image_to_vision_metadata_plugin",
             config=config,
         )
-        self.thumbnail_resolutions = [256]
         self.max_image_load_time = 300
-        self.thumbnail_final_size = 256
+        # VLM inputs are quality-critical: the 512px default keeps fine detail
+        # (materials, small text) that the 256px embedding-path default throws
+        # away. Shrink-only — never upscaled.
+        self.thumbnail_final_size = config.vlm_image_max_px
         self._batch_data_field = "images"
         self._metadata_generation: Optional[MetadataGeneration] = None
 
     def asset_state_hash(self, hash_value: str) -> str:
-        return BasePlugin.asset_state_hash(self, hash_value)
+        return vision_metadata_asset_state_hash(BasePlugin.asset_state_hash(self, hash_value), self.config)
 
     @property
     def metadata_generation(self) -> Optional[MetadataGeneration]:
@@ -94,6 +98,21 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
     @property
     def config(self) -> VisionMetadataPluginConfig:
         return self._config
+
+    def sample_vlm_images(self, images: list) -> list:
+        """Evenly sample views while retaining the first and final image."""
+
+        sampled = uniformly_sample(images, self.config.vlm_max_images)
+        if len(sampled) != len(images):
+            self.logger.warning(
+                "Sampling %d of %d images for the VLM request (vlm_max_images)", len(sampled), len(images)
+            )
+        return sampled
+
+    def encode_vlm_images(self, images: list) -> list[str]:
+        """Encode a bounded, uniformly sampled copy of the supplied images."""
+
+        return encode_vlm_images(images, config=self.config, logger=self.logger)
 
     async def add_metadata(self, path: str, content: dict, storage_client: NGSearchStorageHelper) -> Result:
         return await storage_client.update_meta(input=StorageClientInput(key=path, meta=content))
@@ -116,7 +135,7 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
 
             base64_images_list = []
             for sample_preview in previews:
-                base64_images_list.append([image_to_base64(im) for im in sample_preview])
+                base64_images_list.append(self.encode_vlm_images(sample_preview))
 
             output_dict = await self.get_os_content(base64_images_list)
 
@@ -170,6 +189,9 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
         vision_generated_metadata: dict = vision_generated_metadata.model_dump()
         res: List[Dict[str, str | bool]] = []
         for field_name, field_value in vision_generated_metadata.items():
+            if field_value is None:
+                # Nullable fields (category/style) legitimately carry no value.
+                continue
             field_value_type = type(field_value)
             if field_value_type not in SUPPORTED_VISION_GENERATED_METADATA_FIELD_TYPES:
                 self.logger.error(f"Unsupported metadata field type: {field_value_type} for field: {field_name}")

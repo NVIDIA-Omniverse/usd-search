@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 from typing import Optional
 
 import redis.asyncio as aioredis
@@ -31,6 +32,20 @@ class CacheTools:
         self._redis_url = redis_url
         self._stream_name_prefix = stream_name_prefix
         self._cache_plugin_prefix = cache_plugin_prefix
+
+    def get_processing_queues(self) -> None:
+        """Print the total number of pending items across all cache streams."""
+        asyncio.run(self._get_processing_queues())
+
+    def clear_processing_queues(self, dry_run: bool = False, plugin_name: Optional[str] = None) -> None:
+        """Clear a cache stream.
+
+        Args:
+            dry_run: If ``True``, only print what would be cleared without modifying Redis.
+            plugin_name: If provided, clear the job stream for this plugin.
+                         If ``None``, clear the results stream.
+        """
+        asyncio.run(self._clear_processing_queues(dry_run=dry_run, plugin_name=plugin_name))
 
     async def _get_processing_queues(self) -> None:
         """Print the total number of pending items across all cache streams."""

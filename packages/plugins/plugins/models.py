@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # standard modules
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Protocol
 
 # local / proprietary modules
 from cache.src import PluginItemStatus
@@ -32,3 +32,20 @@ class PluginProcessingResult(TypedDict):
 class GenericPluginErrorItem(BaseModel):
     status: str = Field(..., description="error status")
     error_message: Optional[str] = Field(default=None, description="error message details")
+
+
+class PluginPhaseMetrics(Protocol):
+    """Sink for the per-phase timings a plugin measures while processing an item.
+
+    Plugins measure phases; they do not own metrics. The Prometheus registry and
+    the deployment labels (``omni_instance``, ``omni_service``, worker type) live
+    in the worker that runs the plugin, so the worker implements this and injects
+    it as :attr:`BasePlugin.phase_metrics`. Left unset — a plugin used outside a
+    worker, or metrics disabled — a plugin records nothing and carries on.
+    """
+
+    def observe_phase(self, phase: str, seconds: float) -> None:
+        """Record that ``phase`` took ``seconds``."""
+
+    def count_failure_phase(self, phase: str) -> None:
+        """Record that an item's processing died in ``phase``."""

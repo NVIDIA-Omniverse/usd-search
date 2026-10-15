@@ -37,8 +37,8 @@ uv.lock
 !/uv.lock
 !services/siglip2-triton/docker/uv.lock
 !/ci/skills/uv.lock
-!services/rendering-job/uv.lock
 !services/asset-graph-builder/uv.lock
+!/services/fs-watcher/uv.lock
 
 # Test / coverage
 .coverage
@@ -90,3 +90,22 @@ services/explorer/src/setupProxy.js
 skill-validation
 THIRD_PARTY_NOTICE_DIFF.md
 validation-reports
+
+# Local, in-progress planning docs (not part of the shipped documentation)
+docs/plans/
+
+ci/helm/tests/integration/logs/
+ci/helm/tests/unit/logs/
+
+# Kubeconfig for the throwaway kind cluster the helm unit tests run against
+.kind-kubeconfig
+
+# CI temporary files
+ci/helm/tests/integration/sample-webui.yaml
+
+# rendering-job test artifacts (rendered views saved for inspection)
+services/rendering-job/public/
+services/rendering-job/tests/image_data/
+
+# Local scratch space
+/tmp/

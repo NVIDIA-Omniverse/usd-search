@@ -38,11 +38,11 @@ data:
   rendering_job_template: |
     apiVersion: batch/v1
     kind: Job
-    metadata: 
+    metadata:
       name: {{ $fullName }}-rendering-job
-      labels: 
+      labels:
         {{- $renderingJobLabels | nindent 8 }}
-    spec: 
+    spec:
       ttlSecondsAfterFinished: {{ .Values.microservices.k8s_renderer.ttlSecondsAfterFinished | default 3600 }}
       activeDeadlineSeconds: {{ .Values.microservices.k8s_renderer.activeDeadlineSeconds | default 3600 }}
       template:
@@ -60,7 +60,14 @@ data:
           {{- end }}
           {{- $globalImagePullSecrets | nindent 10 }}
           serviceAccountName: {{ $listerJobServiceAccountName }}
-          volumes: 
+          volumes:
+            {{- include "deepsearch-global.storageBackendVolumes" . | nindent 12 }}
+            - name: logging-config
+              configMap:
+                name: {{ $fullName }}-logging
+                items:
+                  - key: logging.yaml
+                    path: logging.yaml
             - name: general-cache
               emptyDir:
                 medium: Memory
@@ -88,7 +95,7 @@ data:
               image: {{ $k8sRendererDockerImage }}
               resources:
                 {{- toYaml .Values.microservices.k8s_renderer.resources | nindent 16 }}
-              env: 
+              env:
               - name: PYTHONUNBUFFERED
                 value: "1"
               - name: KIT_WORKER_SETTINGS_N_WORKERS
@@ -103,13 +110,33 @@ data:
               {{- end }}
               - name: LOAD_ASSET_AS_REFERENCE
                 value: {{ .Values.microservices.k8s_renderer.load_asset_as_reference | quote }}
+              - name: RENDER_ADJUST_FRAMING
+                value: {{ .Values.microservices.k8s_renderer.adjust_framing | quote }}
+              - name: LOGGING_CONFIG
+                value: /logging.yaml
+              - name: OVRTX_SHADER_CACHE_DIR
+                value: /cache/shaders
+              - name: OVRTX_USD_CACHE_DIR
+                value: /cache/usd
+              - name: OVRTX_CACHE_MAX_SIZE_BYTES
+                value: {{ .Values.microservices.k8s_renderer.usd_cache.max_size_bytes | quote }}
+              - name: OVRTX_CACHE_CLEANUP_THRESHOLD
+                value: {{ .Values.microservices.k8s_renderer.usd_cache.cleanup_threshold | quote }}
+              - name: OVRTX_CACHE_GC_INTERVAL_SECONDS
+                value: {{ .Values.microservices.k8s_renderer.usd_cache.garbage_collection_interval_seconds | quote }}
               {{- with .Values.microservices.k8s_renderer.env }}
               {{- toYaml . | nindent 14 }}
               {{- end }}
-              volumeMounts: 
+              volumeMounts:
+                - name: logging-config
+                  mountPath: /logging.yaml
+                  subPath: logging.yaml
                 - mountPath: /cache/shaders
                   name: cache
                   subPath: shaders
+                - mountPath: /cache/usd
+                  name: cache
+                  subPath: usd
           initContainers:
           {{- if .Values.microservices.k8s_renderer.persistence.initVolumePermissions }}
             - name: permissions
@@ -117,10 +144,10 @@ data:
               securityContext:
                 runAsUser: 0
               {{- with $values.microservices.k8s_renderer.securityContext }}
-              command: 
+              command:
                 - sh
                 - -c
-                - chown -R {{ .fsGroup }}:{{ .runAsUser }} /cache
+                - chown -R {{ .fsGroup }}:{{ .runAsUser }} /cache/shaders /cache/usd
               {{- end }}
               resources:
                 limits:
@@ -130,6 +157,9 @@ data:
                 - mountPath: /cache/shaders
                   name: cache
                   subPath: shaders
+                - mountPath: /cache/usd
+                  name: cache
+                  subPath: usd
           {{- end }}
           {{- if .Values.microservices.k8s_renderer.maxRenderingJobsCount }}
             - name: check-max-rendering-jobs
@@ -165,7 +195,7 @@ data:
                   while True:
                     # Load kube config asynchronously
                     config.load_incluster_config()
-                    
+
                     # Create API client
                     async with ApiClient() as k8s_api:
                       v1_batch = client.BatchV1Api(k8s_api)
@@ -173,7 +203,7 @@ data:
                         namespace=namespace,
                         label_selector=job_labels
                       )
-                    
+
                     running_jobs = 0
                     for job in jobs.items:
                       if job.status.active:
@@ -195,7 +225,7 @@ data:
               env:
                 - name: PYTHONUNBUFFERED
                   value: "1"
-                - name: PARALLEL_LIMIT 
+                - name: PARALLEL_LIMIT
                   value: {{ .Values.microservices.k8s_renderer.maxRenderingJobsCount | quote }}
                 - name: K8S_RENDER_JOB_LABELS
                   valueFrom:
@@ -223,7 +253,7 @@ data:
 
                 asyncio.run(task())
               env:
-                - name: STORAGE_BACKEND_TYPE 
+                - name: STORAGE_BACKEND_TYPE
                   value: "{{ .Values.global.storage_backend_type }}"
                 {{- if eq .Values.global.storage_backend_type "nucleus" }}
                 {{- include "deepsearch-global.nucleusComplete" . | nindent 16 }}
@@ -234,6 +264,11 @@ data:
                 {{- else if eq .Values.global.storage_backend_type "storage_api" }}
                 {{- include "deepsearch-global.storageApiComplete" . | nindent 16 }}
                 {{- end}}
+              {{- $storageBackendVolumeMounts := include "deepsearch-global.storageBackendVolumeMounts" . }}
+              {{- if trim $storageBackendVolumeMounts }}
+              volumeMounts:
+                {{- $storageBackendVolumeMounts | nindent 16 }}
+              {{- end }}
               {{- end }}
           restartPolicy: "Never"
       backoffLimit: 0

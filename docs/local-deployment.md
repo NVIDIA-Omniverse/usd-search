@@ -67,6 +67,7 @@ docker compose \
   -f docker-compose.yml \
   -f docker-compose.local-fs.yml \
   -f docker-compose.gpu-plugins.yml \
+  -f docker-compose.local-fs.gpu.yml \
   up -d --build
 ```
 
@@ -108,6 +109,33 @@ Enable it in the local stack with the WebUI overlay; the gateway serves it at
 docker compose -f docker-compose.yml -f docker-compose.web-ui.yml up -d --build
 # open http://<host>:8080/ui/
 ```
+
+### Multiple indexes (runtime server mapping)
+
+When the deployment serves more than one index (the API's storage backends,
+selected per request by the `x-usdsearch-storage-backend` header), give the
+Explorer the index list at **container start** — the entrypoint renders
+`runtime-config.js` from env, so changing the list never rebuilds the image:
+
+```bash
+EXPLORER_SERVER_MAPPING='{
+  "backend-a": {"name": "Backend A", "apiUrl": "",
+                "embedding_config": {"field_name": "siglip2-embedding.embedding", "dimension": 1536}},
+  "backend-b": {"name": "Backend B", "apiUrl": "",
+                "embedding_config": {"field_name": "siglip2-embedding.embedding", "dimension": 1536}}
+}' EXPLORER_DEFAULT_SERVER=backend-a \
+docker compose -f docker-compose.yml -f docker-compose.web-ui.yml up -d
+```
+
+Each mapping key is a header value your API accepts; `apiUrl: ""` means
+same-origin (the gateway routes by header). The picker appears in the
+account popover; `?server=<key>` deep-links an index. Selecting an index
+re-points search, thumbnails, and the per-index filter catalog
+(`GET /llm_parse/fields`) together. The schema and fallback order are
+documented in
+[`services/explorer/public/runtime-config.js`](../services/explorer/public/runtime-config.js);
+on Kubernetes set the same two env vars via `deepsearch-explorer.extraEnvVars`
+(example in [`helm/usdsearch/values.yaml`](../helm/usdsearch/values.yaml)).
 
 For the full picture of every container image — what each is, how it's built,
 and where it's published — see [`docs/containers.md`](containers.md).

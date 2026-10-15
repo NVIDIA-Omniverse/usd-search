@@ -57,6 +57,9 @@ spec:
         {{- end }}
     spec:
       {{- $globalImagePullSecrets | nindent 6 }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       serviceAccountName: {{ include "rendering-service.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -105,8 +108,24 @@ spec:
               value: {{ include "rendering-service.kitExtraArgsJson" . | quote }}
             - name: LOAD_ASSET_AS_REFERENCE
               value: {{ .Values.settings.load_asset_as_reference | quote }}
+            - name: RENDER_ADJUST_FRAMING
+              value: {{ .Values.settings.adjust_framing | quote }}
             - name: LOGGING_CONFIG
               value: /logging.yaml
+            {{- if (index .Values.cacheVolumes "shader_cache" "enabled") }}
+            - name: OVRTX_SHADER_CACHE_DIR
+              value: {{ (index .Values.cacheVolumes "shader_cache" "volumeMount" "mountPath") | quote }}
+            {{- end }}
+            {{- if .Values.cacheVolumes.cache.enabled }}
+            - name: OVRTX_USD_CACHE_DIR
+              value: {{ printf "%s/usd" .Values.cacheVolumes.cache.volumeMount.mountPath | quote }}
+            - name: OVRTX_CACHE_MAX_SIZE_BYTES
+              value: {{ .Values.settings.usd_cache.max_size_bytes | quote }}
+            - name: OVRTX_CACHE_CLEANUP_THRESHOLD
+              value: {{ .Values.settings.usd_cache.cleanup_threshold | quote }}
+            - name: OVRTX_CACHE_GC_INTERVAL_SECONDS
+              value: {{ .Values.settings.usd_cache.garbage_collection_interval_seconds | quote }}
+            {{- end }}
           {{- with .Values.env }}
           {{- toYaml . | nindent 12 }}
           {{- end }}

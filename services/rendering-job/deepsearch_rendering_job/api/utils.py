@@ -38,9 +38,9 @@ from ..exceptions import (
 )
 from ..models import RenderingStatus, response_status_gauge
 from ..utils import (
+    deserialize_payload,
     extract_camera_metadata_from_payload,
     extract_images_from_payload,
-    unpickle_data,
 )
 from .config import get_package_version
 from .models import ContentType, RenderResponse, SupportedMediaTypes, URLType
@@ -50,7 +50,7 @@ class AccessLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         # Exclude healthchecks from access logs
         message = record.getMessage()
-        return message.find("/health") == -1 and message.find("/readyz") == -1 and message.find("/metrics") == -1
+        return not any(path in message for path in ("/health", "/readyz", "/metrics"))
 
 
 class TooManyRequestsLogFilter(logging.Filter):
@@ -63,21 +63,17 @@ class TooManyRequestsLogFilter(logging.Filter):
 def get_key(url: str, auth: Optional[Authentication] = None) -> str:
     string_to_hash = str(url)
     if auth is not None:
-        string_to_hash += json.dumps(auth.dict())
+        string_to_hash += json.dumps(auth.model_dump())
     return hashlib.sha256(string_to_hash.encode()).hexdigest()
 
 
 def parse_url(url: str) -> str:
     """
-    Parse the URL and return the base URL.
+    Return the storage backend type for the URL.
     """
     if url.startswith("omniverse://"):
         return URLType.omniverse
-    elif url.startswith("https://") and "amazonaws.com" in url:
-        return URLType.s3
     elif url.startswith(("http://", "https://")):
-        # Non-AWS S3-compatible endpoints (MinIO, s3proxy, etc.)
-        # Kit's Omniverse client library fetches these via the base HTTP provider.
         return URLType.s3
     else:
         raise ValueError(f"Invalid URL: {url}")
@@ -215,37 +211,37 @@ def prepare_rendering_response(
         payload = payload
 
     rendering_response = payload.content
-    unpickled_data = unpickle_data(rendering_response)
+    rendered_data = deserialize_payload(rendering_response)
 
-    if unpickled_data == RenderingStatus.load_error:
+    if rendered_data == RenderingStatus.load_error:
         raise LoadError(
-            (payload.exception if payload.exception is not None else "Failed to load the asset"),
+            payload.exception if payload.exception is not None else "Failed to load the asset",
             traceback=payload.traceback,
             url=url,
         )
 
-    if unpickled_data == RenderingStatus.invalid_mtl_names:
+    if rendered_data == RenderingStatus.invalid_mtl_names:
         raise InvalidMTLNames(
             payload.exception if payload.exception is not None else "Invalid MTL names",
             traceback=payload.traceback,
             url=url,
         )
 
-    if unpickled_data == RenderingStatus.render_error:
+    if rendered_data == RenderingStatus.render_error:
         raise RenderError(
-            (payload.exception if payload.exception is not None else "Failed to render the asset"),
+            payload.exception if payload.exception is not None else "Failed to render the asset",
             traceback=payload.traceback,
             url=url,
         )
 
-    if unpickled_data == RenderingStatus.error:
+    if rendered_data == RenderingStatus.error:
         raise UnknownBackendError(
-            (payload.exception if payload.exception is not None else "Unknown backend error"),
+            payload.exception if payload.exception is not None else "Unknown backend error",
             traceback=payload.traceback,
             url=url,
         )
 
-    if unpickled_data == "":
+    if rendered_data == RenderingStatus.empty_scene:
         if content_type == SupportedMediaTypes.zip:
             zip_buffer: io.BytesIO = create_zip_archive(images_base64=[], camera_metadata=[], url=url)
             url_parts = url.split("/")
@@ -260,15 +256,15 @@ def prepare_rendering_response(
         response_status_gauge.labels(status=RenderingStatus.empty_scene.value).inc()
         return RenderResponse(images=[], camera_metadata=[], status=RenderingStatus.empty_scene)
 
-    if unpickled_data == "timeout":
+    if rendered_data == "timeout":
         raise TimeoutError(
             payload.exception if payload.exception is not None else "Rendering timeout",
             traceback=payload.traceback,
             url=url,
         )
 
-    data = extract_images_from_payload(unpickled_data)
-    camera_metadata = extract_camera_metadata_from_payload(unpickled_data)
+    data = extract_images_from_payload(rendered_data)
+    camera_metadata = extract_camera_metadata_from_payload(rendered_data)
 
     if content_type == SupportedMediaTypes.zip:
         # Create and return zip archive
@@ -328,10 +324,7 @@ def _parse_basic_auth_header(header_value: str) -> HTTPBasicCredentials:
         username, password = decoded.split(":", 1)
         return HTTPBasicCredentials(username=username, password=password)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid X-Basic-Auth header",
-        ) from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-Basic-Auth header") from exc
 
 
 def prepare_authentication(
@@ -340,17 +333,21 @@ def prepare_authentication(
     url: str,
     x_token_auth: Optional[str] = None,
     storage_api_url: Optional[str] = None,
+    discovery_url: Optional[str] = None,
 ) -> Authentication:
     """
     Prepare the authentication for the request based on the input URL.
     """
-    # Storage API assets are authenticated with credentials forwarded
-    # explicitly by the client (gRPC endpoint in the request body, optional
-    # bearer token in the X-Token-Auth header), not via X-Basic-Auth and not
-    # from this service's own environment. Short-circuit before parse_url,
-    # whose URL scheme set does not cover Storage API URIs.
-    if storage_api_url:
-        return Authentication(storage_api_url=storage_api_url, storage_api_token=x_token_auth)
+    # Storage API assets are authenticated with credentials forwarded explicitly by
+    # the client (endpoint or discovery URL in the request, optional bearer token in
+    # the X-Token-Auth header), not via X-Basic-Auth nor this service's environment.
+    # Short-circuit before parse_url, which would classify these https URIs as S3.
+    if storage_api_url or discovery_url:
+        return Authentication(
+            storage_api_url=storage_api_url or "",
+            storage_api_discovery_url=discovery_url or "",
+            storage_api_token=x_token_auth,
+        )
 
     url_type: URLType = parse_url(url)
 

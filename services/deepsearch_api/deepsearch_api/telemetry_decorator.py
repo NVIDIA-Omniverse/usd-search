@@ -16,6 +16,7 @@
 import base64
 import functools
 import json
+import logging
 import os
 import time
 from importlib.metadata import version
@@ -23,10 +24,12 @@ from typing import Any, Callable, Dict, Optional
 
 import deepsearch_api
 from deepsearch_api.telemetry_otel import business_telemetry
-from fastapi import Request
+from fastapi import Request, Response
 from fastapi.security import HTTPBasicCredentials
 from opentelemetry.context import create_key, get_value
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 # Context key for storing username across spans
 USERNAME_CONTEXT_KEY = create_key("username")
@@ -84,13 +87,23 @@ def extract_telemetry_user_id_from_jwt(token: Optional[str]) -> str:
     except Exception:
         return "unknown"
 
+    # Omniverse / Nucleus token shape.
     try:
         email = payload["profile"]["email"]
         if len(email) > 0:
             return email
         return f'{payload["profile"]["first_name"]}_{payload["profile"]["last_name"]}'
     except KeyError:
-        return "unknown"
+        pass
+
+    # Generic OIDC token shape — a Storage API / S3 deployment issues these, and
+    # they carry the identity as a top-level claim rather than under `profile`.
+    for claim in ("email", "preferred_username", "sub"):
+        value = payload.get(claim)
+        if isinstance(value, str) and value:
+            return value
+
+    return "unknown"
 
 
 def _extract_query_text(args, kwargs) -> str:
@@ -195,6 +208,12 @@ def _extract_query_attributes(args, kwargs) -> dict:
             and not k.endswith("_backend")
             and not k.endswith("_backend_v2")
             and not k.endswith("_validator")
+            # ASGI plumbing, not query input: endpoints declare these to read
+            # headers or to set response headers (the v2 pagination X-* headers).
+            # Neither is JSON-serializable, and the whole dict is json.dumps'd
+            # below, so one of them anywhere in the signature would fail the
+            # request outright.
+            and not isinstance(v, (Request, Response))
         }
 
         # Handle Pydantic models in kwargs
@@ -272,8 +291,98 @@ def _extract_result_count(result) -> int:
     return 0
 
 
+def _extract_storage_backend_host(kwargs) -> Optional[str]:
+    """Storage backend host for the request, from the endpoint's storage client.
+
+    The search decorator reads the same value off ``search_backend_v2``
+    (``FilteredSearchClient.storage_backend_host`` is this client's ``telemetry_host``);
+    the download endpoint holds the storage client directly.
+    """
+    host = getattr(kwargs.get("storage_client"), "telemetry_host", None)
+    return host if isinstance(host, str) else None
+
+
+def _extract_asset_load_stats(kwargs) -> Dict[str, Any]:
+    """Per-phase timings and counts the handler accumulated on ``request.state``.
+
+    The handler writes each phase as it completes rather than assembling the
+    dict at return, so a request that fails part-way (403/404/413) still reports
+    what the phases that did run cost.
+    """
+    request = kwargs.get("request")
+    stats = getattr(getattr(request, "state", None), "asset_load_stats", None)
+    return dict(stats) if isinstance(stats, dict) else {}
+
+
+def telemetry_track_asset_load():
+    """Decorator to track asset-load (download) endpoint calls as a business event.
+
+    One event per request, emitted at completion — including on failure, where
+    it carries ``status="error"`` plus the HTTP status. ``manifest_only`` is
+    always present so size-preview calls, which transfer no asset data, can be
+    told apart from real loads.
+
+    Unlike :func:`telemetry_track_search`, the enablement check runs at call time
+    rather than at import time, so a test can toggle ``USE_SEARCH_TELEMETRY``
+    without re-importing the router module. The two decorators are gated
+    differently on purpose — see ``docs/plans/asset-load-telemetry.md`` §9/D3.
+    """
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            if not USE_SEARCH_TELEMETRY:
+                return await func(*args, **kwargs)
+
+            start_time = time.time()
+            status = "success"
+            error_type = None
+            http_status = None
+            try:
+                return await func(*args, **kwargs)
+            except Exception as exc:
+                status = "error"
+                error_type = type(exc).__name__
+                # HTTPException carries the response code; 403/404/413 are the
+                # interesting operational signals here.
+                code = getattr(exc, "status_code", None)
+                http_status = code if isinstance(code, int) else None
+                raise
+            finally:
+                try:
+                    business_telemetry.record_asset_load(
+                        asset_url=kwargs.get("asset_url") or "",
+                        username=_extract_username(args, kwargs),
+                        # Always sent, on every path: a record without it cannot
+                        # be separated from one that actually loaded data.
+                        manifest_only=bool(kwargs.get("manifest_only", False)),
+                        event_type="asset_load",
+                        status=status,
+                        error_type=error_type,
+                        http_status=http_status,
+                        processing_time_ms=(time.time() - start_time) * 1000,
+                        ngsearch_version=get_ngsearch_version(),
+                        omni_host=_extract_storage_backend_host(kwargs),
+                        user_agent=_extract_user_agent(kwargs),
+                        **_extract_asset_load_stats(kwargs),
+                    )
+                except Exception:  # noqa: BLE001 — telemetry must never break a download
+                    logger.warning("Failed to record asset-load telemetry", exc_info=True)
+
+        return wrapper
+
+    return decorator
+
+
 def telemetry_track_search():
-    """Decorator to automatically track search endpoint calls with both query and results events"""
+    """Decorator to automatically track search endpoint calls with both query and results events
+
+    Note the enablement check below happens at *import* time: when telemetry is
+    off the endpoint is left undecorated entirely. :func:`telemetry_track_asset_load`
+    deliberately checks at call time instead — the difference is intentional and
+    documented in ``docs/plans/asset-load-telemetry.md`` §9/D3; do not "fix" one
+    to match the other.
+    """
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
@@ -284,9 +393,7 @@ def telemetry_track_search():
             query_attributes = _extract_query_attributes(args, kwargs)
             user_agent = _extract_user_agent(kwargs)
 
-            # remove request object from query attributes
-            if "request" in kwargs and isinstance(kwargs["request"], Request):
-                query_attributes.pop("request")
+            # (Request/Response objects are dropped by _extract_query_attributes.)
 
             # Use context manager to wrap the entire function execution
             with business_telemetry.record_query_event(

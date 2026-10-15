@@ -17,6 +17,9 @@
 #   - builder-base: python:3.12-bookworm — common preparation (apt deps, uv, source,
 #                   build_pytinyexr.sh, build_search_utils.sh). Reused by `builder`
 #                   and `test-runner` so the expensive prep is shared via BuildKit cache.
+#   - usd-stack:    packman OpenUSD 25.11 + Omniverse client + omni_usd_resolver, for
+#                   the graph-builder's kitless remote asset resolution. Gated on
+#                   OMNI_USD_STOCK_URL; COPYd into `runtime` and `test-runner`.
 #   - builder:      production .venv only — wheel-built, no editable installs, no test/dev/lint
 #                   groups, minimal extras.
 #   - test-runner:  bookworm-based image used to run pytest. Has bash, uv, git, the workspace
@@ -44,8 +47,8 @@ COPY pyproject.toml uv.lock ./
 COPY build/ build/
 COPY tools/ tools/
 COPY packages/ packages/
-# Copy only included services — siglip2-triton (model weights), rendering-job, and
-# asset-graph-builder are excluded; they ship in their own separate images.
+# Copy only included services — siglip2-triton (model weights) and rendering-job
+# are excluded; they ship in their own separate images.
 COPY services/deepsearch_api/        services/deepsearch_api/
 COPY services/deepsearch-crawler/    services/deepsearch-crawler/
 COPY services/deepsearch-monitor/    services/deepsearch-monitor/
@@ -53,6 +56,7 @@ COPY services/info-endpoint/         services/info-endpoint/
 COPY services/storage/               services/storage/
 COPY services/crawlers/              services/crawlers/
 COPY services/asset-graph/           services/asset-graph/
+COPY services/asset-graph-builder/   services/asset-graph-builder/
 COPY logging.yml /logging.yml
 
 # Copy any pre-built wheels so the build script can skip versions already present.
@@ -66,6 +70,41 @@ RUN ./build/build_pytinyexr.sh
 
 # Download IDL protos and generate gRPC client code under packages/search-utils/_build/
 RUN ./build/build_search_utils.sh
+
+
+# ── usd-stack ──────────────────────────────────────────────────────────────
+# Kitless remote asset resolution for the graph-builder. Pulls NVIDIA's
+# ABI-matched packman stack (stock OpenUSD 25.11 + Omniverse client +
+# omni_usd_resolver, all py3.12 against the same oneTBB) so graph_builder's
+# usd_deps subprocess resolves omniverse:// / s3:// / http(s):// URLs. All three
+# .7z archives are on the public packman CDN; OMNI_USD_STOCK_URL gates the whole
+# (ABI-coupled) stack so only the graph-builder build pulls it — left empty (the
+# base usdsearch image) the image resolves local paths only via the usd-core wheel.
+FROM builder-base AS usd-stack
+ARG OMNI_USD_RESOLVER_URL="https://d4i3qtqj3r0z5.cloudfront.net/omni_usd_resolver_usd_25.11_py_3.12.linux-x86_64.release@2.3.0.7z"
+ARG OMNI_CLIENT_LIBRARY_URL="https://d4i3qtqj3r0z5.cloudfront.net/omni_client_library.linux-x86_64@2.68.0.7z"
+# OpenUSD 25.11 links oneTBB (libtbb.so.12) as a separate runtime lib, not bundled.
+ARG OMNI_ONETBB_URL="https://d4i3qtqj3r0z5.cloudfront.net/onetbb@2021.13.0-4-manylinux_2_35_x86_64-release-gcc.7z"
+ARG OMNI_USD_STOCK_URL=""
+ARG OMNI_USD_STOCK_SHA256=""
+ARG OMNI_CLIENT_LIBRARY_SHA256=""
+ARG OMNI_USD_RESOLVER_SHA256=""
+ARG OMNI_ONETBB_SHA256=""
+RUN mkdir -p /opt/omni-usd-stack \
+    && if [ -n "${OMNI_USD_STOCK_URL}" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*; \
+        for spec in \
+            "usd|${OMNI_USD_STOCK_URL}|${OMNI_USD_STOCK_SHA256}" \
+            "client|${OMNI_CLIENT_LIBRARY_URL}|${OMNI_CLIENT_LIBRARY_SHA256}" \
+            "resolver|${OMNI_USD_RESOLVER_URL}|${OMNI_USD_RESOLVER_SHA256}" \
+            "tbb|${OMNI_ONETBB_URL}|${OMNI_ONETBB_SHA256}"; do \
+            name="${spec%%|*}"; rest="${spec#*|}"; url="${rest%|*}"; sha="${rest##*|}"; \
+            curl -fL "${url}" -o /tmp/pkg.7z && \
+            { [ -z "${sha}" ] || echo "${sha}  /tmp/pkg.7z" | sha256sum -c -; } && \
+            7z x -o"/opt/omni-usd-stack/${name}" /tmp/pkg.7z >/dev/null && \
+            rm /tmp/pkg.7z; \
+        done; \
+    fi
 
 
 # ── builder ──────────────────────────────────────────────────────────────
@@ -109,6 +148,12 @@ FROM builder-base AS test-runner
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --all-extras --all-groups
 
+# The graph-builder unit tests open remote Nucleus/S3 assets, so the resolver
+# stack must be present for the usd_deps subprocess they spawn.
+COPY --from=usd-stack /opt/omni-usd-stack /opt/omni-usd-stack
+ENV OMNI_USD_STACK_HOME=/opt/omni-usd-stack
+ENV OMNI_USD_RESOLVER_PLUGIN_PATH=/opt/omni-usd-stack/resolver/usd/omniverse/resources
+
 ENV PATH=/app/.venv/bin:${PATH}
 ENV PYTHONUNBUFFERED=1
 
@@ -121,10 +166,19 @@ FROM nvcr.io/nvidia/base/ubuntu:noble-20260217 AS runtime
 #   python3.12       — interpreter + standard library. Ubuntu noble ships CPython 3.12
 #                      natively; its shared-lib deps (libssl3, libffi8, libsqlite3-0, …)
 #                      arrive as Depends, so --no-install-recommends still pulls them.
+#   libpython3.12t64 — the actual libpython3.12.so.1.0 runtime library. python3.12 does
+#                      NOT depend on it (the interpreter binary itself doesn't need it),
+#                      but the prebuilt pxr (USD) bindings in /opt/omni-usd-stack link
+#                      against it directly, so graph-builder's `from pxr import Tf`
+#                      fails with "ImportError: libpython3.12.so.1.0: cannot open shared
+#                      object file" without it.
 #   ca-certificates  — TLS trust store for Nucleus / S3 / outbound HTTPS.
+#   openssl, libssl3t64 — listed explicitly so already-installed copies are upgraded
+#                      to the latest security patch (CVE scan gate).
 # No compilers, headers, pip, or venv tooling — the .venv is built in `builder`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3.12 ca-certificates \
+    && apt-get install -y --no-install-recommends python3.12 libpython3.12t64 ca-certificates \
+        openssl libssl3t64 \
     && apt-get autoremove \
     && rm -rf /var/lib/apt/lists/*
 
@@ -136,18 +190,30 @@ RUN ln -s /usr/bin/python3.12 /usr/local/bin/python3.12 \
     && ln -s /usr/bin/python3.12 /usr/local/bin/python3 \
     && ln -s /usr/bin/python3.12 /usr/local/bin/python
 
-# Non-root runtime user at UID/GID 1000 (matches the previous distroless `nvs`). Ubuntu
-# noble ships a default `ubuntu` user/group at 1000 — remove it first to free the IDs.
+# Non-root runtime user, default UID/GID 1000 (matches the previous distroless `nvs`).
+# Override USER_ID/GROUP_ID/USER_NAME when the host requires a specific uid/gid (e.g.
+# scripts/build_graph_builder_custom_user.sh). Ubuntu noble ships a default `ubuntu`
+# user/group at 1000 — remove it first to free the IDs.
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG USER_NAME=nvs
 RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu; fi \
     && if getent group ubuntu >/dev/null 2>&1; then groupdel ubuntu; fi \
-    && groupadd -g 1000 nvs \
-    && useradd -u 1000 -g nvs -m -d /home/nvs -s /usr/sbin/nologin nvs
+    && groupadd -g ${GROUP_ID} ${USER_NAME} \
+    && useradd -u ${USER_ID} -g ${USER_NAME} -m -d /home/${USER_NAME} -s /usr/sbin/nologin ${USER_NAME}
 
 WORKDIR /app
 
-# Bring in the prepared virtualenv and the logging config. Owned by `nvs` (UID 1000).
-COPY --from=builder --chown=nvs:nvs /app/.venv /app/.venv
+# Bring in the prepared virtualenv and the logging config. Owned by the runtime user.
+COPY --from=builder --chown=${USER_ID}:${GROUP_ID} /app/.venv /app/.venv
 COPY --from=builder /logging.yml /logging.yml
+
+# Kitless remote asset resolution for the graph-builder service. graph_builder.service
+# prepends this stack onto the usd_deps subprocess env only; other services that share
+# this image never load it. Empty when built without OMNI_USD_STOCK_URL (local paths only).
+COPY --from=usd-stack --chown=${USER_ID}:${GROUP_ID} /opt/omni-usd-stack /opt/omni-usd-stack
+ENV OMNI_USD_STACK_HOME=/opt/omni-usd-stack
+ENV OMNI_USD_RESOLVER_PLUGIN_PATH=/opt/omni-usd-stack/resolver/usd/omniverse/resources
 # tools/openapi-merge ships in its own image (docker/Dockerfile.openapi-merge);
 # it must NOT leak into this runtime image — its deps (httpx, pyyaml,
 # openapi-spec-validator) are dev/CI-only.
@@ -159,13 +225,18 @@ ENTRYPOINT []
 ENV PATH=/app/.venv/bin:${PATH}
 ENV PYTHONUNBUFFERED=1
 
-USER nvs
+# Writable on-disk asset cache for the graph-builder (omni.client cache_root,
+# CACHE_LOCATION defaults to /cache); the non-root user cannot create it at runtime.
+RUN mkdir -p /cache && chown ${USER_ID}:${GROUP_ID} /cache
+
+USER ${USER_ID}:${GROUP_ID}
 
 # No default CMD — override per service at runtime or via docker-compose:
 #
 #   deepsearch-api      uvicorn deepsearch_api.main:app --host 0.0.0.0 --port 8000
 #   info-endpoint       uvicorn info_endpoint.src.main:app --host 0.0.0.0 --port 8000
 #   asset-graph         uvicorn asset_graph_service.api:app --host 0.0.0.0 --port 8000
+#   graph-builder       uvicorn graph_builder.service:app --host 0.0.0.0 --port 8000
 #   deepsearch-crawler  python -m deepsearch_crawler.main
 #   deepsearch-monitor  python -m monitor.src.monitor_worker
 #   storage             python -m storage.src.run_cron

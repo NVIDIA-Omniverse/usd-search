@@ -84,8 +84,8 @@ runtime via `GET /llm_parse/fields`.
 
 ### A field definition
 
-Each entry declares a filter (the example below is from the opt-in
-[SimReady catalog](#simready--physics-filters-opt-in)):
+Each entry declares a filter (the example below is one of the
+[opt-in physics fields](#physics-and-dataset-filters-opt-in)):
 
 ```yaml
 fields:
@@ -101,6 +101,7 @@ fields:
       kind: property_exists
       property: "physics:rigidBodyEnabled"
       property_env: USDSEARCH_LLM_PARSING_RIGID_BODY_PROPERTY   # optional env override
+    group: Physics                    # optional, UI-only: the collapsible rail section
 ```
 
 - **`name` / `type` / `operators` / `description` / `examples`** are what the
@@ -115,6 +116,17 @@ fields:
   field at *your* corpus's property key without editing the file, set its
   **`map.property_env`** environment variable
   (e.g. `USDSEARCH_LLM_PARSING_RIGID_BODY_PROPERTY=myCorp:isDynamic`).
+- **`label` / `group`** (optional, flat siblings of `name:`/`map:`) are UI-only
+  presentation hints served through `GET /llm_parse/fields`: `label` overrides the
+  humanized field name in the Explorer rail, `group` names the collapsible rail
+  section the control renders under (property-backed fields without a `group`
+  share a default "USD Properties" section). Neither is shown to the LLM. The
+  Explorer builds its rail controls from these entries by `map.kind`:
+  `property_match` becomes a multi-select value facet (top-5 values with a
+  filter box and "Show 5 more" paging) and `property_exists` a toggle — each
+  shown only when the indexed corpus actually carries the property. Numeric
+  and bbox fields get no rail control; they stay reachable through
+  natural-language queries and the Advanced drawer.
 
 To **add** a filter, append a new entry. To **remove** one, delete its entry. To
 re-target an existing field's USD property, change `map.property` (or set its
@@ -184,18 +196,32 @@ Combine clauses with commas (AND), or use `filter_by_properties_include_any`
 (OR) and `exclude_filter_by_properties` (NOT); numeric ranges go through
 `filter_by_properties_numeric` (e.g. `__polygon_count<5000`).
 
-### SimReady / physics filters (opt-in)
+### Physics and dataset filters (opt-in)
 
-Filters tied to SimReady-style USD properties — `physics_rigid_body`,
-`has_collider`, `object_class`, `physics_mass`, `physics_density` — are **not**
-part of the default catalog: they only return results on corpora indexed with
-those property conventions. A complete ready-to-use catalog including them
-ships next to the default as
-[`search_fields.simready.yaml`](../services/deepsearch_api/deepsearch_api/llm_parse/search_fields.simready.yaml).
-Enable it (or your own variant) per deployment:
+**Physics filters are SimReady/Isaac-only — not in the default catalog.**
+`physics_rigid_body`, `has_collider`, `physics_mass`, and `physics_density`
+only make sense for corpora that index the canonical `physics:`-prefixed
+USD-schema properties (SimReady / Isaac content), so they ship opt-in — the
+same way as the dataset-specific filters below — rather than by default. When
+enabled they use the canonical `physics:`-prefixed property keys, and the
+Explorer **corpus-gates** each control (via `GET /search/stats/usd_properties`)
+under a collapsible "Physics" rail group: an index that carries no physics
+metadata simply never shows the group — no dead filters.
+
+**Opt-in filters live in a per-deployment catalog.** Physics fields and fields
+tied to a corpus's own metadata conventions (`object_class`, categories,
+profiles, …) only return results where the corpus carries those properties, so
+they belong in a per-deployment catalog. A complete example (physics + SimReady
+fields) ships next to the default as
+[`search_fields.simready.yaml`](../services/deepsearch_api/deepsearch_api/llm_parse/search_fields.simready.yaml);
+the recommended path is **generating** one against your index with the
+[`/usd-property-catalog` skill's filter-intent mode](#discovering-your-corpuss-properties),
+which also fixes up the physics keys when your corpus spells them differently
+(e.g. bare `mass` instead of `physics:mass`). Enable a custom catalog per
+deployment:
 
 - **Env** (e.g. docker-compose): point `USDSEARCH_LLM_PARSING_FIELDS_FILEPATH` at
-  the file (it ships in the application image).
+  the file (the example ships in the application image).
 - **Helm**: set the catalog inline via
   `ngsearch.microservices.search_rest_api.llm_parsing.fields` (the chart mounts
   it and sets the env var automatically).
@@ -203,9 +229,11 @@ Enable it (or your own variant) per deployment:
   USD property key (e.g. `USDSEARCH_LLM_PARSING_RIGID_BODY_PROPERTY`), so the
   same catalog can be re-pointed at your corpus's property names.
 
-When this catalog is loaded, these filters are discoverable in the Explorer's
-**Add filter** picker, editable in the advanced (raw) filter fields, and driven
-from natural-language queries. Each writes a real `/search_hybrid` filter
+Catalog filters are discoverable in the Explorer's **Add filter** picker,
+editable in the advanced (raw) filter fields, driven from natural-language
+queries, and rendered as filter-rail controls (grouped by their `group:` key;
+ungrouped property fields share the default "USD Properties" section; all
+groups start collapsed). Each writes a real `/search_hybrid` filter
 (e.g. `filter_by_properties: physics:rigidBodyEnabled=`) using the catalog's
 resolved `property`, so it behaves like a typed filter: it shows as a removable
 chip and re-runs the search. Other catalog filters (e.g. `polygon_count`) work
@@ -222,6 +250,45 @@ carry — which varies per corpus. **`GET /search/stats/usd_properties`** return
 the full inventory: every USD property key, every value, and every `key=value`
 pair, each with the number of assets that carry it (`asset_count`), sorted by
 coverage. (It requires aggregations enabled; returns `403` otherwise.)
+
+#### Scoping the inventory to part of the corpus
+
+The endpoint takes the same **filter** parameters as `/search` — `search_path`,
+`file_name`, `file_extension_include`, `filter_by_properties`, `filter_by_tags`,
+`filter_by_properties_numeric`, `filter_url_regexp`, the date / size / user
+filters, the bbox dimensions, `vision_metadata`, and `search_in_scene`. Passing
+none inventories the whole corpus, exactly as before.
+
+```bash
+# What do the vehicle assets carry?
+curl "$API/search/stats/usd_properties?search_path=/Projects/Vehicles/&file_extension_include=usd*"
+
+# Which properties co-occur with class=vehicle?
+curl "$API/search/stats/usd_properties?filter_by_properties=class%3Dvehicle"
+
+# What is in this scene?
+curl "$API/search/stats/usd_properties?search_in_scene=s3://bucket/scene.usd"
+```
+
+Three things worth knowing:
+
+- **Counts stay exact.** This is an aggregation over everything the filter
+  matched, not a summary of one page of search results, so the numbers are the
+  real totals for that subset however large it is.
+- **Filtering is asset-scoped.** `filter_by_properties=class=vehicle` returns
+  *every* property those assets carry, not just `class` — which is what makes it
+  useful for drill-down ("given these assets, what else can I filter on?").
+- **Search-only parameters are rejected** with a `422`. An aggregation has no
+  ranking, so `description`, image/vector queries, `limit` and `offset` have
+  nothing to apply to; failing loudly beats returning corpus-wide numbers that
+  look filtered. Filter names are checked too, so a typo is a `422` rather than a
+  silently ignored parameter.
+
+Results describe the index, not the caller's readable subset: unlike `/search`,
+these numbers are **not** access-filtered (with or without filters), since
+visibility is resolved per asset against the storage backend and an aggregation
+cannot consult it. Deployments that cannot accept that should set
+`enable_aggregations=false`, which turns the endpoint off entirely (`403`).
 
 The **`/usd-property-catalog` skill**
 ([`skills/usd-property-catalog/SKILL.md`](../skills/usd-property-catalog/SKILL.md))
@@ -264,16 +331,26 @@ shipped in the Explorer today; documented here as an integration point.)
 
 - **`GET /llm_parse/fields`** — returns the catalog this deployment supports as
   `[{name, value_type, operators, description, examples, params, comma_join, kind,
-  property}]`, where `params` is the request-field key(s) each filter maps to,
-  `comma_join` flags whether those accumulate (union) rather than overwrite,
-  `kind` is the `map.kind` builder behind the field, and `property` is the
+  property, label, group}]`, where `params` is the request-field key(s) each
+  filter maps to, `comma_join` flags whether those accumulate (union) rather than
+  overwrite, `kind` is the `map.kind` builder behind the field, `property` is the
   resolved USD property key (env override applied) for property-backed fields
-  (`null` otherwise). Static metadata; works even when the LLM extractor is
+  (`null` otherwise), and `label`/`group` are the optional UI presentation hints
+  (`null` when unset). Static metadata; works even when the LLM extractor is
   disabled. This is what the Explorer fetches to populate the dropdown, drive its
-  filter merge, and build the left-rail controls' filter tokens.
+  filter merge, and generate the left-rail controls (grouped by `group`, one
+  control per property-backed field the corpus carries).
 - **`POST /llm_parse/query`** — body `{"query": "<free text + filter phrases>"}`;
   returns the structured interpretation plus the mapped search-request parameters.
   Returns `503` if the LLM query parser is not enabled or the LLM call fails.
+
+> **Generated clients:** `interpreted_query.filters[].field` (and
+> `dropped_filters[].filter.field`) is typed as a plain **string**, not an enum,
+> because the field names are per-deployment configuration — a closed enum in the
+> published spec would bake one deployment's catalog into every generated client
+> and break deserialization against any other. Statically-typed clients should
+> match on the string and enumerate the valid names at runtime from
+> `GET /llm_parse/fields`.
 
 ### When the LLM query parser is offline
 
@@ -285,6 +362,37 @@ phrases are applied as plain keywords in the text search instead of structured
 filters (the Explorer shows "Query parsing offline. Manual filters are still
 available."). Structured filtering resumes automatically
 once `/llm_parse/query` responds again.
+
+## URL-shaped filters on a deployment that publishes rewritten URLs
+
+If a deployment publishes public asset URLs (`global.url_mapping`, see
+[configuration-map.md](configuration-map.md#public-asset-urls) — e.g. `https://`
+instead of `s3://`), most filters are unaffected: they match names, paths,
+properties and dates, none of which carry a URL scheme. Two are worth knowing
+about, because both are evaluated against the asset's **internal** storage URL:
+
+- **`filter_url_regexp`** — translated for you *only* when the pattern begins
+  with a **literal** public prefix. `https://assets.example.com/Vehicles/.*`
+  works (escaped spellings like `https://assets\.example\.com/Vehicles/.*` too);
+  `https://assets\..*/Vehicles/.*` does not, because a pattern has no single
+  prefix to translate, and it will simply match nothing. The internal prefix is
+  regexp-escaped when substituted, so a bucket name containing `.` stays literal.
+  A whole-pattern exclusion is unwrapped and translated inside the complement, so
+  `~(https://assets.example.com/temp/.*)` excludes what it says it does.
+- **`search_path`** / **`exclude_search_path`** — scheme-less directory paths, so
+  they are unaffected in the usual case. The exception is a rule that strips or
+  adds a path prefix (publishing `s3://bucket/published/v3/` as
+  `https://assets.example.com/`): the path stays relative to the *internal*
+  layout, so filter on `/published/v3/Vehicles/`, not `/Vehicles/`.
+
+The safe habit either way is to write URL filters without a scheme/host prefix
+(`.*[/]Vehicles[/].*`), which behaves identically on every deployment.
+
+Everywhere else — `search_in_scene`, `asset_url` on `/images`, `/download/asset`
+and `/vlm_validate/search_result`, `root_node_url` on the dependency-graph
+endpoints, and asset URLs inside `image_similarity_search` / `vector_queries` —
+both URL forms are accepted, so a URL copied straight out of a search response
+always works.
 
 ## "More like this" / image similarity
 

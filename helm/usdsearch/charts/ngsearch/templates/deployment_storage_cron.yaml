@@ -48,6 +48,7 @@ spec:
       hostname: {{ $fullName }}
       subdomain: {{ $fullName }}-subdomain
       volumes:
+      {{- include "deepsearch-global.storageBackendVolumes" . | nindent 6 }}
       - name: logging-config
         configMap:
           name: {{ $fullName }}-logging
@@ -76,6 +77,7 @@ spec:
           - containerPort: 8007
             name: metrics
           volumeMounts:
+          {{- include "deepsearch-global.storageBackendVolumeMounts" . | nindent 10 }}
           - mountPath: /logging.yaml
             name: logging-config
             subPath: logging.yaml

@@ -19,7 +19,7 @@ import json
 # standard modules
 import logging
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # third party modules
 import aiohttp
@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 class ContentType(BaseModel):
     path: str = Field(..., title="URL of the asset that is being loaded")
     content: str = Field(..., title="serialized content of rendered data")
+    exception: Optional[str] = Field(default=None, title="exception message")
+    traceback: Optional[str] = Field(default=None, title="traceback of the exception")
 
 
 class ResponsePayload(BaseModel):
@@ -65,7 +67,7 @@ async def ws_send(url: str, content: ResponsePayload, n_retries: int = 20) -> Di
     for _ in range(n_retries):
         try:
             async with websockets.connect(url) as ws:
-                await ws.send(json.dumps(content.dict()))
+                await ws.send(json.dumps(content.model_dump()))
 
             return {"status": ResponseStatus.ok}
         except websockets.exceptions.ConnectionClosedError as exc_info:
@@ -100,7 +102,7 @@ async def http_send(url: str, content: ResponsePayload, n_retries: int = 20) -> 
     for _ in range(n_retries):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=content.dict()) as resp:
+                async with session.post(url, json=content.model_dump()) as resp:
                     if resp.status == 413:
                         return {
                             "status": ResponseStatus.payload_to_large,
@@ -137,7 +139,7 @@ async def redis_send(url: str, content: ResponsePayload, n_retries: int = 20) ->
             connection = Redis.from_url(url)
             res = dict(
                 status=ResponseStatus.ok,
-                response=await connection.set(content.url, json.dumps(content.dict())),
+                response=await connection.set(content.url, json.dumps(content.model_dump())),
             )
             await connection.close()
             return res

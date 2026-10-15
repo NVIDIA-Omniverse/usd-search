@@ -36,7 +36,12 @@ async def process_asset(
     refresh_metadata: bool = True,
     refresh_tags: bool = False,
     refresh_plugins: bool = True,
-):
+) -> bool:
+    """Submit one asset to the info endpoint. True when it was accepted.
+
+    The return value lets a caller count what got through; `reindex_assets` walks a
+    whole path and reports per-asset failures as it goes, so it ignores it.
+    """
     async with api_semaphore:
         async with httpx.AsyncClient() as client:
             request_params = dict(
@@ -63,6 +68,8 @@ async def process_asset(
 
             if response.status_code != 200:
                 print(f"Error {response.status_code}: {response.text}")
+                return False
+            return True
 
 
 async def reindex_assets(

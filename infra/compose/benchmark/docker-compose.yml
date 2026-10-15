@@ -34,6 +34,20 @@ services:
       # benchmark is trivially gameable. See benchmark/README.md.
       - ../../..:/home/agent/workspace
       - /home/agent/workspace/benchmark
+      # Same idea for ./search-results/: the skills write their hits,
+      # thumbnails and manifests there, so a leftover host run of the
+      # same query would let the agent read off an answer instead of
+      # searching. Masked, so each sandbox starts with an empty one.
+      #
+      # tmpfs rather than an anonymous volume because the agent has to
+      # WRITE here: an anonymous volume is created root-owned, and the
+      # `agent` user (uid 1000) then burns a turn recovering from the
+      # failed mkdir. mode 1777 keeps it writable and it vanishes with
+      # the container either way.
+      - type: tmpfs
+        target: /home/agent/workspace/search-results
+        tmpfs:
+          mode: 01777
       # Claude config + credentials. ~/.claude.json holds the OAuth
       # token / primaryApiKey plus per-project state; ~/.claude/ holds
       # settings, skills, memory, etc. Without these mounts Claude
@@ -57,12 +71,14 @@ services:
       - ${CLAUDE_JSON_HOST:-${HOME}/.claude.json}:/home/agent/.claude.json
 
   codex-sandbox:
-    image: docker/sandbox-templates:codex-docker
+    build:
+      context: .
+      dockerfile: Dockerfile.codex
     container_name: usdsearch-benchmark-codex-sandbox
-    # Pure upstream image — the sibling of docker/sandbox-templates:claude-code.
-    # Bundles the codex CLI (on PATH via npm-global) and already runs as user
-    # `agent` (uid 1000), workdir /home/agent/workspace, entrypoint `tini --`,
-    # CMD `codex`. No local build needed; `docker compose pull` grabs the latest.
+    # Locally extends docker/sandbox-templates:codex-docker via
+    # Dockerfile.codex so the benchmark uses the requested Codex CLI version.
+    # The base image runs as user `agent` (uid 1000), with workdir
+    # /home/agent/workspace, entrypoint `tini --`, and CMD `codex`.
     tty: true
     stdin_open: true
     environment:
@@ -75,9 +91,16 @@ services:
       # data-leakage guarantee as the claude-code-sandbox service:
       # `./benchmark/` (ground truth + scoring code + cache) is masked
       # from the sandboxed agent. Any future agent added to this file
-      # MUST replicate these two lines verbatim. See benchmark/README.md.
+      # MUST replicate these lines verbatim. See benchmark/README.md.
       - ../../..:/home/agent/workspace
       - /home/agent/workspace/benchmark
+      # ./search-results/ masked too — a leftover host run of the same
+      # query is an answer key. tmpfs so the agent can still write it;
+      # see the claude-code-sandbox comment.
+      - type: tmpfs
+        target: /home/agent/workspace/search-results
+        tmpfs:
+          mode: 01777
       # Codex auth + per-session state lives in ~/.codex/ (auth.json,
       # sessions/, history, etc.). CODEX_HOME_HOST mirrors the
       # CLAUDE_JSON_HOST pattern: the benchmark driver snapshots

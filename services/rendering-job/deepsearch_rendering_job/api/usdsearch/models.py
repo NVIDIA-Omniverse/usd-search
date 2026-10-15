@@ -23,8 +23,13 @@ class RenderingPostRequest(BaseModel):
     force_render: bool = Field(default=False, description="Force render the asset")
     enable_caching: bool = Field(default=True, description="Enable caching")
     asset_rendering_timeout: Optional[float] = Field(default=None, description="Asset rendering timeout")
-    kit_worker_memory_limit: Optional[int] = Field(default=None, description="Kit worker memory limit in MB")
+    kit_worker_memory_limit: Optional[int] = Field(default=None, description="Render worker memory limit in MB")
     storage_api_url: Optional[str] = Field(
         default=None,
-        description="Storage API gRPC endpoint to open the asset from (Storage API backend only)",
+        description="Storage API endpoint to open the asset from (Storage API backend only)",
+    )
+    discovery_url: Optional[str] = Field(
+        default=None,
+        description="Discovery Service base URL that advertises the Storage API; "
+        "optional for open Storage API endpoints that do not require it",
     )

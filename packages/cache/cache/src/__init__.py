@@ -15,7 +15,7 @@
 
 # standard modules
 from enum import Enum
-from typing import Any, List, Optional, TypedDict, Union
+from typing import Any, Dict, List, Optional, TypedDict, Union
 
 # third party modules
 from pydantic import BaseModel, Field, field_validator
@@ -31,11 +31,24 @@ class JobItemType(str, Enum):
     none = "none"
 
 
+class AssetData(TypedDict):
+    """Bookkeeping applied once a result has been written.
+
+    ``plugins`` names the plugin that owns the result - always exactly one, since a
+    worker runs a single plugin per job. It decides whose cache entries the writer
+    updates, and whose status history records a result that cannot be written.
+    """
+
+    #: Owning plugin, mapped to whatever its producer wants to note about it - only
+    #: the key is read.
+    plugins: Dict[str, Any]
+
+
 class ResultItem(TypedDict):
     uri: str
     hash_value: str
     prediction: dict
-    asset_data: dict
+    asset_data: AssetData
     retry_count: NotRequired[int]
     asset_status: NotRequired[Any]
 

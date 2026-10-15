@@ -31,9 +31,6 @@ IMAGE_MAGIC_TO_MIME: dict[bytes, str] = {
     GIF89_MAGIC_BYTES: "image/gif",
 }
 
-# Maximum number of images accepted per VLM validation call.
-MAX_IMAGES_PER_VALIDATION = 8
-
 # Internal route URIs (used by tests against the live app).
 HEALTH_URI = "health"
 METRICS_URI = "metrics"

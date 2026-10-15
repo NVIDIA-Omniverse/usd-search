@@ -80,6 +80,10 @@ class AvailableSerializers(str, Enum):
 
 class OSBackendSettings(BaseSettings):
     os_serializer: AvailableSerializers = Field(default=AvailableSerializers.orjson)
+    # gzip request/response bodies. Controllable via the ``OS_HTTP_COMPRESS`` env var
+    # so it can be disabled when an intermediary (proxy / LB / service mesh) mangles the
+    # gzip payload and OpenSearch responds with ``not_x_content_exception``.
+    os_http_compress: bool = Field(default=True)
 
 
 def get_serializer(serializer: str):
@@ -129,7 +133,7 @@ class OSBackend(ESBackend):
             timeout=ES_TIMEOUT,
             max_retries=ES_MAX_RETRIES,
             retry_on_timeout=True,
-            http_compress=True,
+            http_compress=os_backend_settings.os_http_compress,
             serializer=get_serializer(os_backend_settings.os_serializer),
         )
         async_transport_kwargs = {}
@@ -142,12 +146,16 @@ class OSBackend(ESBackend):
             timeout=ES_TIMEOUT,
             max_retries=ES_MAX_RETRIES,
             retry_on_timeout=True,
-            http_compress=True,
+            http_compress=os_backend_settings.os_http_compress,
             serializer=get_serializer(os_backend_settings.os_serializer),
             **async_transport_kwargs,
         )
 
-        logger.info("Using serializer: %s", os_backend_settings.os_serializer.value)
+        logger.info(
+            "Using serializer: %s (http_compress=%s)",
+            os_backend_settings.os_serializer.value,
+            os_backend_settings.os_http_compress,
+        )
 
         self.observability = es_observability
         self.helpers = helpers

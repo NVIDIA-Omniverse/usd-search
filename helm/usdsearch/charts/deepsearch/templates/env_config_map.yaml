@@ -60,5 +60,7 @@ data:
   NON_FARM_JOB_AUTOCLAIM_MIN_IDLE_TIME: {{ .non_farm_job_autoclaim_min_idle_time | quote }}
   RESULTS_AUTOCLAIM_MIN_IDLE_TIME: {{ .results_autoclaim_min_idle_time | quote }}
   JOB_AUTOCLAIM_N_RETRIES: {{ .job_autoclaim_n_retries | quote }}
+  RESULTS_AUTOCLAIM_N_RETRIES: {{ .results_autoclaim_n_retries | quote }}
+  REDIS_STREAM_REQUEUE_FAILED_ITEMS: {{ .requeue_failed_items | quote }}
   {{- end }}
   LOGGING_CONFIG: /logging.yaml

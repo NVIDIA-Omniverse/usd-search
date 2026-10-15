@@ -45,8 +45,8 @@ hssc:
   #
   # URI of the HSSC server.
   # @notationType -- yaml
-  uri: 
-  
+  uri:
+
   # -- (bool)
   # @raw
   #
@@ -89,7 +89,14 @@ securityContext:
     drop:
     - ALL
   privileged: false
-  readOnlyRootFilesystem: true
+  # NOT readOnlyRootFilesystem: true - ovrtx writes its texture cache and MDL
+  # extension search path to hardcoded locations under its own install dir
+  # (e.g. .../ovrtx/bin/cache/texturecache/<N>, .../ovrtx/bin/mdl/omniverse_exts),
+  # not just OVRTX_SHADER_CACHE_DIR/OVRTX_USD_CACHE_DIR below. A read-only root
+  # blocks those writes outright (HydraEngine init failure, every render then
+  # fails with 500). k8s_renderer's securityContext
+  # (charts/deepsearch/values.yaml) runs the same ovrtx binary without this
+  # restriction for the same reason.
 
 # This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
 service:
@@ -99,14 +106,14 @@ service:
   port: 8000
 
 settings:
-  # It is possible to increase the number of parallel Kit workers that would process 
+  # It is possible to increase the number of parallel Kit workers that would process
   # assets on a single GPU
   n_parallel_kit_workers: 1
-  
-  # It is possible to specify the number of assets that are processed by a Kit worker, 
+
+  # It is possible to specify the number of assets that are processed by a Kit worker,
   # before it is being re-created.
-  # 
-  # Setting this parameter to a negative value will make all items to be processed by 
+  #
+  # Setting this parameter to a negative value will make all items to be processed by
   # a single Kit worker
   n_assets_per_worker: 1
 
@@ -114,8 +121,8 @@ settings:
   # @raw
   #
   # Memory limit for a Kit worker in MB.
-  # @notationType -- yaml 
-  kit_worker_memory_limit: 
+  # @notationType -- yaml
+  kit_worker_memory_limit:
 
   # -- (int)
   # @raw
@@ -123,21 +130,21 @@ settings:
   # Limit the number of waiting requests that can be processed by the rendering service to avoid the situation, when a lot of requests are hanging in the queue while rendering service is processing an asset. If the number of waiting requests is greater or equal to this value, the rendering service will start to reject new requests with 429 status code.
   #
   # Setting this parameter to a negative value will disable this functionality and all incoming requests will be stored in the queue and processed in the order of arrival.
-  # @notationType -- yaml 
-  n_allowed_waiting_requests: 
+  # @notationType -- yaml
+  n_allowed_waiting_requests:
 
   # -- (list)
   # @raw
   #
   # Extra arguments for the Kit worker.
   #
-  # By default the Kit worker is configured to use the local data store with a 
-  # large chunk disk budget of 30GB. Depending on the available disk space of the node 
-  # this can be adjusted by setting the 
+  # By default the Kit worker is configured to use the local data store with a
+  # large chunk disk budget of 30GB. Depending on the available disk space of the node
+  # this can be adjusted by setting the
   # /UJITSO/datastore/localDataStore/largeChunkDiskBudgetMB argument.
   #
   # @notationType -- yaml
-  kit_extra_args: 
+  kit_extra_args:
     /UJITSO/enabled: true
     /UJITSO/geometry: true
     /UJITSO/textures: true
@@ -149,6 +156,27 @@ settings:
   #
   # When set to ``True`` and the USD asset being rendered has a default prim defined, the asset is referenced into the default scene rather than opened as a sublayer. If the USD asset does not have a default prim, the system falls back to loading the entire USD scene as a sublayer.
   load_asset_as_reference: true
+
+  # -- (bool)
+  # @raw
+  #
+  # When set to ``True`` (default), each asset is auto-framed like the former Kit renderer: the camera is re-centered on the asset's silhouette (top and side views) and zoomed in to fill about 75% of the view. Set to ``False`` to frame by the asset's 3D bounding box only. Requests can still opt out with ``render_settings.adjust_camera_multiplier``.
+  adjust_framing: true
+
+  # ovrtx's compiled-shader (UJITSO) and USD/asset resolver caches. Both are unmounted
+  # by default and fall back to ephemeral paths inside the container, so every pod
+  # restart recompiles shaders and re-downloads referenced layers from scratch. Pointing
+  # them at the cacheVolumes below persists them across restarts and (for shaders) across
+  # replicas sharing the same volume.
+  usd_cache:
+    # Caps the resolver cache's on-disk footprint (bytes). Keep this comfortably under
+    # cacheVolumes.cache's emptyDir sizeLimit so the client library's own cleanup trips
+    # before Kubernetes hits the volume's hard limit.
+    max_size_bytes: "85899345920"  # 80Gi, under the 100Gi cacheVolumes.cache default
+    # Fraction of max_size_bytes that triggers cache eviction.
+    cleanup_threshold: 0.8
+    # How often (seconds) the resolver checks whether cleanup_threshold is exceeded.
+    garbage_collection_interval_seconds: 300
 
 # --
 # extra environment variables
@@ -241,6 +269,12 @@ extraVolumes: []
 extraVolumeMounts: []
 
 nodeSelector: {}
+
+# Optional RuntimeClass for the rendering-service pod. Empty (default) leaves the
+# field unset so the cluster's default RuntimeClass applies. Set it (e.g.
+# "nvidia") to force a specific GPU RuntimeClass when multiple are defined
+# (see `kubectl get runtimeclass`).
+runtimeClassName: ""
 
 tolerations:
   - key: "nvidia.com/gpu"

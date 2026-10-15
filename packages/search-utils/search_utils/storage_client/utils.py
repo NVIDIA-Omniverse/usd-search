@@ -167,7 +167,7 @@ async def cancell_task(task, msg: str = ""):
     try:
         await asyncio.wait_for(task, timeout=0.1)
     except asyncio.TimeoutError:
-        logger("Timeout exception")
+        logger.warning("Timeout waiting for the cancelled task to finish")
     except asyncio.CancelledError:
         pass
     return None

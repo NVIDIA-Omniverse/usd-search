@@ -43,13 +43,13 @@ version: 0.0.0-dev
 # Derived from git tags matching `images-X.Y.Z` — defaults to the latest
 # published image set so local installs pull real tags from NGC.
 # CI overrides this at package time via helm/scripts/version.sh.
-appVersion: "1.4.0"
+appVersion: "1.5.0"
 
 # Home page for the documentation of DeepSearch
 home: https://github.com/NVIDIA-omniverse/usd-search
 
 # Chart icon shown in chart repository UIs (e.g. NGC).
-icon: https://docs.omniverse.nvidia.com/services/latest/_images/usdsearch-hero.jpg
+icon: https://raw.githubusercontent.com/NVIDIA-Omniverse/usd-search/main/docs/logo/logo.png
 
 dependencies:
   # @ignore
@@ -65,18 +65,18 @@ dependencies:
     version: "1.0.0"
   - name: opensearch
     condition: opensearch_deployment.enabled
-    version: "3.3.2"
+    version: "3.8.0"
     repository: "https://opensearch-project.github.io/helm-charts/"
   - name: opensearch-dashboards
     condition: opensearch_dashboards_deployment.enabled
     version: "3.5.0"
     repository: "https://opensearch-project.github.io/helm-charts/"
   - name: redis
-    version: 25.3.2
+    version: 28.2.3
     condition: redis_deployment.enabled
     repository: "oci://registry-1.docker.io/bitnamicharts"
   - name: neo4j
-    version: 2026.1.4
+    version: 2026.9.0
     condition: neo4j_deployment.enabled
     repository: "https://helm.neo4j.com/neo4j"
   - name: asset-graph-service

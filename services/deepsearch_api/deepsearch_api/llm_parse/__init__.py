@@ -23,14 +23,24 @@ frontend merges the mapped params into its existing search request, so all
 existing search plumbing (vector queries, RRF, VLM validation) is reused.
 
 A single field registry (``fields.py``) is the source of truth for the IR field
-enum, the grounding system prompt, the validator, and the mapper.
+enum, the grounding system prompt, the validator, and the mapper. That enum is
+deployment-specific, so it is confined to the ``Constrained*`` models used for
+decoding — the wire models (and hence the OpenAPI schema) carry ``field`` as a
+plain string; see ``models.py``.
 """
 
 from .config import LLMParseSettings
 from .extractor import LLMParseExtractionError, LLMParseExtractor
 from .fields import REGISTRY, IRFieldName, Operator
 from .mapper import ir_to_request_params, map_ir
-from .models import DroppedFilter, DroppedFilterReason, IRFilter, SearchIR
+from .models import (
+    ConstrainedIRFilter,
+    ConstrainedSearchIR,
+    DroppedFilter,
+    DroppedFilterReason,
+    IRFilter,
+    SearchIR,
+)
 
 __all__ = [
     "LLMParseSettings",
@@ -43,6 +53,8 @@ __all__ = [
     "map_ir",
     "IRFilter",
     "SearchIR",
+    "ConstrainedIRFilter",
+    "ConstrainedSearchIR",
     "DroppedFilter",
     "DroppedFilterReason",
 ]

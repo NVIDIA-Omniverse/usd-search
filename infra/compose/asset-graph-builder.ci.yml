@@ -17,6 +17,6 @@ services:
   kit-worker:
     build:
       cache_from:
-        - type=registry,ref=${CI_REGISTRY_IMAGE}/kit:cache
+        - type=registry,ref=${CI_REGISTRY_IMAGE}/usdsearch-graph-builder:cache
       cache_to:
-        - type=registry,ref=${CI_REGISTRY_IMAGE}/kit:cache,mode=max
+        - type=registry,ref=${CI_REGISTRY_IMAGE}/usdsearch-graph-builder:cache,mode=max

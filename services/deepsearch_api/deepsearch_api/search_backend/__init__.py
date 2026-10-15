@@ -13,4 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# OpenSearch's `index.max_result_window` — the hard ceiling on how deep any
+# from/size search can reach.
+#
+# MIRRORED IN THE UI: services/explorer/src/utils/pagination.js
+# (MAX_RESULT_WINDOW) hardcodes this to tell users how deep a search can go and
+# why paging stopped. A divergence is silent — the Explorer keeps quoting the old
+# number — so change both together.
 OPENSEARCH_MAX_RESULT_WINDOW = 10000

@@ -93,7 +93,25 @@ class SigLIP2OnnxExporter:
             tokenizer=self.tokenizer,
             output_dir=tokenizer_output_path,
         )
+        self._sync_client_package_tokenizer(os.path.join(tokenizer_output_path, "tokenizer.json"))
         return tokenizer
+
+    @staticmethod
+    def _sync_client_package_tokenizer(exported_tokenizer_json: str) -> None:
+        """Mirror the exported tokenizer into the client package; the copies must stay identical."""
+        client_copy = (
+            Path(__file__).resolve().parents[3]
+            / "packages"
+            / "siglip2-triton-client"
+            / "siglip2_triton_client"
+            / "tokenizer"
+            / "tokenizer.json"
+        )
+        if not client_copy.exists():
+            print(f"⚠ Client tokenizer copy not found at {client_copy}; skipping sync")
+            return
+        shutil.copyfile(exported_tokenizer_json, client_copy)
+        print(f"✓ Synced tokenizer to {client_copy}")
 
     def export_image_processor(self):
         image_processor_output_path = os.path.join(

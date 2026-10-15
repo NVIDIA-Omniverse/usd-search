@@ -20,6 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 preprocessing = [
     "transformers>=4.57.1",
+    # security floor for a transitive dep (transformers -> huggingface-hub), GHSA-27vj-qcqg-25rc
+    "fsspec>=2026.9.0",
     "pillow>=12.0.0",
 ]
 test = [

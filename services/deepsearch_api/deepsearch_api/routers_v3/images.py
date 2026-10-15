@@ -19,19 +19,25 @@ from typing import Annotated, Optional
 
 from deepsearch_api._constants import IMAGE_MAGIC_TO_MIME
 from deepsearch_api.auth import http_api_key, http_basic, http_bearer
+from deepsearch_api.cache import RedisImageResolutionCache
 from deepsearch_api.routers_v2 import dependencies
+from deepsearch_api.routers_v2.models import AssetUrl
 from deepsearch_api.routers_v2.service import check_acl
 from deepsearch_api.search_backend.filtered import FilteredSearchClient
 from deepsearch_api.search_backend.image_loader import BaseImageLoader
-from deepsearch_api.search_backend.main import SearchBackendClientV2
+from deepsearch_api.search_backend.main import (  # noqa: F401  (patched by tests via this module path)
+    SearchBackendClientV2,
+)
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasicCredentials
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
+from prometheus_client import Counter
 from starlette.requests import Request
 
 from search_utils.storage_client import RemoteFileUri, StorageClient
+from search_utils.url_mapping import to_public_url
 
 router = APIRouter(
     tags=["Images"],
@@ -39,6 +45,22 @@ router = APIRouter(
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+# asset_url -> image_id[] resolution cache outcome, labelled "hit" / "miss". Only
+# counted when a resolution cache is configured. Lazily created once per process
+# so the module can be imported repeatedly (tests) without a duplicate registration.
+_IMAGE_CACHE_EVENTS: Optional[Counter] = None
+
+
+def _image_cache_events() -> Counter:
+    global _IMAGE_CACHE_EVENTS
+    if _IMAGE_CACHE_EVENTS is None:
+        _IMAGE_CACHE_EVENTS = Counter(
+            "image_resolution_cache_events_total",
+            "Image resolution cache (asset_url -> image_id[]) lookups by outcome (hit/miss).",
+            ["outcome"],
+        )
+    return _IMAGE_CACHE_EVENTS
 
 
 async def load_image_by_key(image_key: str, image_loader: BaseImageLoader) -> str:
@@ -52,6 +74,56 @@ async def load_image_by_key(image_key: str, image_loader: BaseImageLoader) -> st
     return image_data_base64
 
 
+async def _resolve_image_ids(
+    asset_url: str,
+    search_backend_v2: FilteredSearchClient,
+    resolution_cache: Optional[RedisImageResolutionCache],
+) -> list[str]:
+    """Return the asset's ordered per-view image ids (``base_key -> [image_id, ...]``).
+
+    Served from the Redis resolution cache when available; on a miss it runs the
+    OpenSearch ``search`` and populates the cache. Raises 404 when the asset is
+    not indexed. Callers MUST have already performed the ACL check — this hop is
+    cached and does no authorization.
+    """
+    index_name = search_backend_v2.search_client.index_name
+
+    if resolution_cache is not None:
+        cached = await resolution_cache.get(index_name, asset_url)
+        if cached is not None:
+            _image_cache_events().labels(outcome="hit").inc()
+            return cached
+        _image_cache_events().labels(outcome="miss").inc()
+
+    # With URL mapping on, the asset may be indexed under its public URL rather than the internal form the request
+    # was normalized to (a corpus crawled from https URLs on a deployment that maps s3:// <-> https://: every lookup
+    # missed). Look it up under both, preferring the internal form; with mapping off this is the one exact term.
+    public_url = to_public_url(asset_url)
+    candidates = [asset_url] if public_url in (None, asset_url) else [asset_url, public_url]
+    search_query = {
+        "query": {"term": {"base_key": asset_url}} if len(candidates) == 1 else {"terms": {"base_key": candidates}},
+        "_source": ["siglip2-embedding"] if len(candidates) == 1 else ["siglip2-embedding", "base_key"],
+        "size": len(candidates),
+    }
+    with tracer.start_as_current_span("images.resolve_by_asset_url.search"):
+        search_response = await search_backend_v2.search_client.client.search(index=index_name, body=search_query)
+
+    hits = search_response.get("hits", {}).get("hits") or []
+    if not hits:
+        raise HTTPException(status_code=404, detail=f"Asset with URL '{asset_url}' not found")
+
+    hit = next((h for h in hits if h.get("_source", {}).get("base_key") == asset_url), hits[0])
+    siglip2_embeddings = hit.get("_source", {}).get("siglip2-embedding", [])
+    image_ids = [emb.get("image") for emb in siglip2_embeddings]
+
+    # Only cache a real resolution — a not-yet-rendered asset may gain thumbnails
+    # later, so don't pin an empty list (and let the TTL bound staleness anyway).
+    if resolution_cache is not None and image_ids:
+        await resolution_cache.set(index_name, asset_url, image_ids)
+
+    return image_ids
+
+
 async def resolve_image_by_asset_url(
     asset_url: str,
     storage_client: StorageClient,
@@ -59,8 +131,9 @@ async def resolve_image_by_asset_url(
     storage_require_auth: bool,
     image_loader: BaseImageLoader,
     img_offset: int = 0,
+    resolution_cache: Optional[RedisImageResolutionCache] = None,
 ) -> str:
-    """ACL-check the asset, look up its image_id in OpenSearch, then load from cache."""
+    """ACL-check the asset, resolve its image_id (Redis-cached), then load bytes from cache."""
     with tracer.start_as_current_span("images.resolve_by_asset_url", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("asset_url", asset_url)
         span.set_attribute("img_offset", img_offset)
@@ -75,34 +148,20 @@ async def resolve_image_by_asset_url(
         else:
             logger.debug("Access control disabled")
 
-        search_query = {
-            "query": {"term": {"base_key": asset_url}},
-            "_source": ["siglip2-embedding"],
-            "size": 1,
-        }
-        with tracer.start_as_current_span("images.resolve_by_asset_url.search"):
-            search_response = await search_backend_v2.search_client.client.search(
-                index=search_backend_v2.search_client.index_name, body=search_query
-            )
+        image_ids = await _resolve_image_ids(asset_url, search_backend_v2, resolution_cache)
 
-        if not search_response.get("hits", {}).get("hits"):
-            raise HTTPException(status_code=404, detail=f"Asset with URL '{asset_url}' not found")
-
-        hit = search_response["hits"]["hits"][0]
-        siglip2_embeddings = hit.get("_source", {}).get("siglip2-embedding", [])
-
-        if not siglip2_embeddings:
+        if not image_ids:
             raise HTTPException(status_code=404, detail=f"No images found for asset '{asset_url}'")
-        if len(siglip2_embeddings) <= img_offset:
+        if len(image_ids) <= img_offset:
             raise HTTPException(
                 status_code=404,
                 detail=(
                     f"Image offset {img_offset} not available for asset '{asset_url}' "
-                    f"(only {len(siglip2_embeddings)} images available)"
+                    f"(only {len(image_ids)} images available)"
                 ),
             )
 
-        image_id = siglip2_embeddings[img_offset].get("image")
+        image_id = image_ids[img_offset]
         if not image_id:
             raise HTTPException(
                 status_code=404,
@@ -208,11 +267,12 @@ async def get_image(
     basic_auth: Annotated[HTTPBasicCredentials, Depends(http_basic)],
     api_key_auth: Annotated[str, Depends(http_api_key)],
     image_loader: Annotated[BaseImageLoader, Depends(dependencies.image_loader)],
-    search_backend_v2: Annotated[FilteredSearchClient, Depends(dependencies.search_backend_client_v2)],
     request: Request,
+    # Also the auth gate for the image_key path (401 on a bad API key or missing
+    # Nucleus credentials), so it stays a declared dependency on both paths.
     storage_client: Annotated[StorageClient, Depends(dependencies.storage_client)],
     asset_url: Annotated[
-        Optional[str],
+        Optional[AssetUrl],
         Query(
             description="The complete URL of the asset to fetch image data for. Must be a valid asset URL that the user has access to.",
         ),
@@ -291,6 +351,19 @@ async def get_image(
     if image_key:
         image_data_base64 = await load_image_by_key(image_key=image_key, image_loader=image_loader)
     else:
+        # Only the asset_url path needs the search backend, so it is resolved here
+        # rather than as a dependency every thumbnail request would pay for. The
+        # shared asset-graph client is passed because None would fall back to
+        # ApiClient.get_default(), a separate session that is never closed; this
+        # path never calls the asset graph itself.
+        search_client = request.app.search_backend_client
+        await search_client.ensure_mappings_verified()
+        search_backend_v2 = FilteredSearchClient(
+            search_client=search_client,
+            ags_client=await dependencies.shared_ags_client(request.app),
+            storage_client=storage_client,
+            validate_access=request.app.global_settings.storage_require_auth,
+        )
         image_data_base64 = await resolve_image_by_asset_url(
             asset_url=asset_url,
             img_offset=img_offset,
@@ -298,6 +371,7 @@ async def get_image(
             search_backend_v2=search_backend_v2,
             storage_require_auth=request.app.global_settings.storage_require_auth,
             image_loader=image_loader,
+            resolution_cache=getattr(request.app, "image_resolution_cache", None),
         )
 
     # Decode base64 image data to binary
@@ -315,4 +389,15 @@ async def get_image(
 
     # identifier = image_key if image_key else asset_url
     # logger.info(f"Successfully loaded image for {identifier}, content_type: {content_type}")
-    return Response(content=image_data_binary, media_type=content_type)
+    #
+    # Thumbnails are content-addressed (image id is a sha256 of the bytes) and
+    # therefore immutable, so let the caller's browser cache them and stop
+    # re-fetching on every render/scroll. "private" (not "public") because the
+    # asset_url path is access-controlled per user — only the end user's own
+    # browser may cache, never a shared proxy/CDN. This overrides the global
+    # no-store security header (see security_headers_middleware).
+    return Response(
+        content=image_data_binary,
+        media_type=content_type,
+        headers={"Cache-Control": "private, max-age=86400, immutable"},
+    )

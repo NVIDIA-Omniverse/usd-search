@@ -17,6 +17,6 @@ services:
   renderer:
     build:
       cache_from:
-        - type=registry,ref=${CI_REGISTRY_IMAGE}/kit:cache
+        - type=registry,ref=${CI_REGISTRY_IMAGE}/usdsearch-kit-workflows:cache
       cache_to:
-        - type=registry,ref=${CI_REGISTRY_IMAGE}/kit:cache,mode=max
+        - type=registry,ref=${CI_REGISTRY_IMAGE}/usdsearch-kit-workflows:cache,mode=max

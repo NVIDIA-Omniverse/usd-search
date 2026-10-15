@@ -21,7 +21,7 @@ from .. import logger
 
 
 def embedding_liveness_check() -> bool:
-    triton_server_url = SigLIP2Config().triton_server_url
+    triton_server_url = SigLIP2Config.from_env().triton_server_url
     logger.info("Connecting to inference service at: %s", triton_server_url)
 
     while True:

@@ -83,14 +83,19 @@ class FarmWebsocketServer:
             await asyncio.get_running_loop().create_future()  # run until cancelled
 
     def websocket_server(self):
-        # Schedule the server only when a loop is already running (the in-process
-        # FarmClient case). Constructed from a sync context (tests) or before
-        # run() starts the loop, there is no running loop yet — run() owns it then.
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return None
-        self._server_task = loop.create_task(self._serve_forever())
+        # FarmClient (the in-process case) constructs this from a synchronous
+        # __init__ — MonitorWorker.init_clients() runs before run()'s
+        # loop.run_until_complete() ever starts a loop, so there is no
+        # *running* loop yet here. asyncio.get_running_loop() would raise and
+        # (previously) silently drop the server: nothing later ever retried
+        # scheduling it, so the websocket listener never came up and every
+        # rendering job's result delivery failed with connection-refused.
+        # asyncio.ensure_future(), used the same way by this class's own
+        # batch_rendering_task_instance right below in FarmClient.__init__,
+        # schedules onto the current (not-necessarily-running) event loop and
+        # actually starts executing once that loop's run_until_complete /
+        # run_forever begins — exactly what's needed here too.
+        self._server_task = asyncio.ensure_future(self._serve_forever())
         return self._server_task
 
     def run(self):

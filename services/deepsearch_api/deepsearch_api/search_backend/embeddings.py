@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import Any, List, Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
 from prometheus_client import Counter, Summary
 from siglip2_triton_client import SigLIP2, SigLIP2Config
 
@@ -152,6 +152,10 @@ class USDSearchEmbeddingClient(BaseEmbeddingInterface):
                 pil_image = Image.open(io.BytesIO(base64.b64decode(b64_data.encode())))
             else:
                 pil_image = Image.open(io.BytesIO(base64.b64decode(image.encode())))
+            # Honor EXIF orientation before encoding: user-uploaded query photos
+            # often carry a rotation tag, and embedding the un-rotated pixels
+            # silently degrades image-similarity matches.
+            pil_image = ImageOps.exif_transpose(pil_image)
             if pil_image.mode != "RGB":
                 pil_image = pil_image.convert("RGB")
             pil_images.append(pil_image)

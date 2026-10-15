@@ -14,15 +14,13 @@
 # limitations under the License.
 
 services:
-  # Rendering service — built from docker/Dockerfile.kit.
+  # Rendering service — built from docker/Dockerfile.rendering-job (ovrtx).
   # Runs as a FastAPI service; also used as the test-runner container via `docker compose run`.
   # minio.yml must be included alongside this file for test data.
   renderer:
     build:
-      context: ../../services/rendering-job
-      dockerfile: ../../docker/Dockerfile.kit
-      additional_contexts:
-        graph-builder: ../../services/asset-graph-builder
+      context: ../..
+      dockerfile: docker/Dockerfile.rendering-job
     container_name: deepsearch-render
     environment:
       - OV_USERNAME=${OV_USERNAME:-}
@@ -40,9 +38,15 @@ services:
       - KIT_WORKER_SETTINGS_N_WORKERS=1
       - KIT_WORKER_SETTINGS_BATCH_SIZE=1
       - RENDERING_SERVICE_SETTINGS_KIT_WORKER_MEMORY_LIMIT=25600
+      - RENDER_ADJUST_FRAMING=${RENDER_ADJUST_FRAMING:-true}
       - MINIO_ENDPOINT=http://minio:9000
       - HOME=/home/ubuntu
       - LOGGING_CONFIG=/logging.yml
+      # /cache is created and chowned to the runtime user in docker/Dockerfile.rendering-job;
+      # container-local only (not bind-mounted), so it's lost on `down`/rebuild but
+      # persists across requests within a single container's lifetime.
+      - OVRTX_SHADER_CACHE_DIR=/cache/shaders
+      - OVRTX_USD_CACHE_DIR=/cache/usd
     depends_on:
       createbuckets:
         condition: service_completed_successfully
@@ -65,5 +69,4 @@ services:
               capabilities: [gpu]
     volumes:
       - /usr/share/nvidia/nvoptix.bin:/usr/share/nvidia/nvoptix.bin:ro
-      - ../../cache/shadercache:/root/.cache/ov/shaders
       - ../../services/rendering-job/deepsearch_rendering_job/logging.yml:/logging.yml:ro

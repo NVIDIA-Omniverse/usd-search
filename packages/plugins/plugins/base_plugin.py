@@ -30,7 +30,8 @@ from pydantic_settings import BaseSettings
 from search_utils.log_utils import set_simple_logger
 from search_utils.storage_client import StorageClient
 
-from .models import GenericPluginErrorItem, PluginProcessingResult
+from .metrics import get_phase_metrics
+from .models import GenericPluginErrorItem, PluginPhaseMetrics, PluginProcessingResult
 
 tracer = trace.get_tracer(__name__)
 
@@ -66,10 +67,36 @@ class BasePlugin(ABC):
         self._config = config if config else BasePluginConfig()
         self.active = self._config.active
         self._batch_data_field = "data"
+        self._phase_metrics: Optional[PluginPhaseMetrics] = None
 
     @property
     def batch_data_field(self) -> str:
         return self._batch_data_field
+
+    @property
+    def phase_metrics(self) -> Optional[PluginPhaseMetrics]:
+        """Where to report per-phase timings, or None when nothing is collecting.
+
+        Falls back to the process-wide sink the worker registers, because plugin
+        instances are disposable: ``Plugins.get_plugin()`` builds a new one on
+        every call, so a sink set on one instance is invisible to the next. The
+        per-instance override exists for tests.
+        """
+        return self._phase_metrics if self._phase_metrics is not None else get_phase_metrics()
+
+    @phase_metrics.setter
+    def phase_metrics(self, sink: Optional[PluginPhaseMetrics]) -> None:
+        self._phase_metrics = sink
+
+    @phase_metrics.deleter
+    def phase_metrics(self) -> None:
+        """Drop the per-instance override, falling back to the process sink.
+
+        Needed for more than symmetry: `mock.patch.object` restores an attribute
+        it did not find in the instance's ``__dict__`` by deleting it, so without
+        this every test that patches this attribute fails on exit.
+        """
+        self._phase_metrics = None
 
     @property
     def config(self) -> BasePluginConfig:

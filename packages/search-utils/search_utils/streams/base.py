@@ -20,6 +20,7 @@ from typing import AsyncIterator, Dict, List, TypedDict, Union
 
 import orjson
 from pydantic_settings.main import BaseSettings
+from typing_extensions import NotRequired
 
 
 class StreamGroupStatistics(TypedDict):
@@ -41,6 +42,11 @@ class StreamConfig(BaseSettings):
 
 class StreamItem(TypedDict):
     content: Union[str, bytes]
+    #: Number of times this entry has been requeued after a failed processing
+    #: attempt. Kept as a stream *entry* field rather than inside ``content`` so
+    #: that it is readable without knowing the payload schema, and so that a
+    #: consumer written before this field existed simply ignores it.
+    attempts: NotRequired[int]
 
 
 class AnyDict(TypedDict): ...

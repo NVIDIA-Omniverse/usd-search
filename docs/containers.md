@@ -9,9 +9,10 @@ start here.
 
 | Image | Dockerfile | Build context | What it is | CI build job |
 |---|---|---|---|---|
-| `usdsearch` | `docker/Dockerfile.usdsearch` | repo root | Combined Python image — every workspace service (deepsearch-api, info-endpoint, monitor / plugin workers, asset-graph-service, deepsearch-crawler, ngsearch indexers, …) **except** `rendering-job`, `asset-graph-builder`, `siglip2-triton`. CMD is overridden per service. | `build-usdsearch` |
+| `usdsearch` | `docker/Dockerfile.usdsearch` | repo root | Combined Python image — every workspace service (deepsearch-api, info-endpoint, monitor / plugin workers, asset-graph-service, asset-graph-builder, deepsearch-crawler, ngsearch indexers, …) **except** `rendering-job` and `siglip2-triton`. CMD is overridden per service. | `build-usdsearch` |
 | `siglip2-triton` | `docker/Dockerfile.siglip2-triton` | `services/siglip2-triton` | Triton Inference Server with the SigLIP2 ONNX model bundled (7.2 GB of weights from Git LFS). | `build-siglip2-triton` |
-| `usdsearch-kit-workflows` | `docker/Dockerfile.kit` | `services/rendering-job` (+ `graph-builder` build-context) | GPU-accelerated Omniverse Kit image. Reused for both the renderer and the asset-graph-builder sidecar (`MODE=graph-builder`). | `build-rendering-job` |
+| `usdsearch-kit-workflows` | `docker/Dockerfile.rendering-job` | repo root | GPU-accelerated renderer — FastAPI service rendering USD and MDL thumbnails with the ovrtx RTX renderer (`MODE=api`). | `build-rendering-job` |
+| `usdsearch-graph-builder` | `docker/Dockerfile.usdsearch` | repo root | The `usdsearch` image built with `OMNI_USD_STOCK_URL` so it carries the packman resolver stack; runs `uvicorn graph_builder.service:app` — a plain-Python worker that emits a USD stage's dependency graph (no Kit, no GPU). | `build-graph-builder` |
 | `usdsearch-explorer` | `docker/Dockerfile.explorer` | repo root | Explorer React SPA, built and served as a **static bundle on bitnami nginx** (`/app`, port `:8080`, non-root). | `build-explorer` |
 
 ## Registry & tagging
@@ -25,9 +26,9 @@ Two registries are involved:
    this commit" without waiting for a release.
 
 2. **Publish stage → NGC** (`PUBLISH_REGISTRY`, currently
-   `nvcr.io/omniverse/deeptag-internal`). The `publish-*` jobs re-tag the
+   `nvcr.io/m3sujtetvf5w/usdsearch`). The `publish-*` jobs re-tag the
    SHA image and push:
-   `nvcr.io/omniverse/deeptag-internal/<name>:<version>`
+   `nvcr.io/m3sujtetvf5w/usdsearch/<name>:<version>`
    - `<version>` = the git tag if the pipeline is a tag push (e.g. `images-X.Y.Z`),
      otherwise `<VERSION.md>-<short-sha>`.
    - `:latest` is also pushed on the default branch.
@@ -38,7 +39,7 @@ Published image names: `usdsearch`, `siglip2-triton`, `usdsearch-kit-workflows`,
 `usdsearch-explorer`.
 
 To pull a published image you need NGC credentials with read access to
-`omniverse/deeptag-internal`; for the GitLab-registry SHA images you need a
+`m3sujtetvf5w/usdsearch`; for the GitLab-registry SHA images you need a
 `docker login` to the GitLab container registry.
 
 ## Explorer in depth
@@ -94,7 +95,7 @@ serves the SPA at `/ui` and routes the APIs.
 ## Building & pushing manually
 
 ```bash
-REG=nvcr.io/omniverse/deeptag-internal
+REG=nvcr.io/m3sujtetvf5w/usdsearch
 VERSION=1.3.3
 echo "$NGC_API_KEY" | docker login nvcr.io -u '$oauthtoken' --password-stdin
 

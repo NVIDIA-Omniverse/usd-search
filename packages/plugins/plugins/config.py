@@ -16,6 +16,7 @@
 from typing import List, Optional
 
 from deepsearch_utils.image_processing_utils import GifSamplingMode
+from pydantic import Field, field_validator
 
 # local / proprietary modules
 from .base_plugin import BasePluginConfig
@@ -24,6 +25,31 @@ from .base_plugin import BasePluginConfig
 class VisionMetadataPluginConfig(BasePluginConfig):
     vlm_agenerate_timeout: float = 60 * 60  # 60 minutes
     use_embedding_client: bool = False
+    # Cap on images per VLM request (evenly sampled when exceeded). Guards
+    # against request-body blowups (e.g. a 512-frame GIF, now PNG-encoded);
+    # hub-served open models also cap around 10-16 images per request.
+    vlm_max_images: int = Field(default=16, gt=0)
+    # Max pixel edge for VLM input images (env VLM_IMAGE_MAX_PX). Shrink-only:
+    # smaller sources pass through at native size — upscaling adds no
+    # information, only payload bytes.
+    vlm_image_max_px: int = Field(default=512, gt=0)
+    # Upper bound for the complete image portion of a VLM request, including
+    # conservative fixed and per-image serialization overhead.
+    vlm_max_request_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
+    # Optional output-contract revision (env VLM_METADATA_REVISION). Empty, the
+    # default, keeps the legacy asset-only cache identity: upgrading never
+    # reprocesses unchanged assets on its own, and earlier metadata stays
+    # searchable. Any non-empty value opts the deployment in: the revision and
+    # the three request limits above then join the cache identity, and changing
+    # any of them (e.g. bumping the revision after a model, prompt or schema
+    # change) makes unchanged assets eligible for reprocessing.
+    vlm_metadata_revision: str = ""
+
+    @field_validator("vlm_metadata_revision")
+    @classmethod
+    def normalize_vlm_metadata_revision(cls, value: str) -> str:
+        # Whitespace-only means "not set"; surrounding whitespace never re-keys.
+        return value.strip()
 
 
 class ImageToEmbeddingConfig(BasePluginConfig):

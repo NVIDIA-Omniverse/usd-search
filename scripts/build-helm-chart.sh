@@ -29,9 +29,9 @@ CHART_DIR="$REPO_ROOT/helm/usdsearch"
 CHART_FILE="$CHART_DIR/Chart.yaml"
 VALUES_FILE="$CHART_DIR/values.yaml"
 
-DEFAULT_REGISTRY="omniverse/deeptag-internal"
-DEFAULT_ORG="omniverse"
-DEFAULT_TEAM="deeptag-internal"
+DEFAULT_REGISTRY="m3sujtetvf5w/usdsearch"
+DEFAULT_ORG="m3sujtetvf5w"
+DEFAULT_TEAM="usdsearch"
 DEFAULT_DEST="$REPO_ROOT/_charts"
 
 usage() {
@@ -56,9 +56,9 @@ Flags:
                        helm/scripts/push_to_ngc.sh.
   --overwrite          When pushing, replace an existing chart of the
                        same version (passed as OVERWRITE=true).
-  --registry <r>       NGC registry path (default: omniverse/deeptag-internal).
-  --org <o>            NGC org (default: omniverse).
-  --team <t>           NGC team (default: deeptag-internal).
+  --registry <r>       NGC registry path (default: m3sujtetvf5w/usdsearch).
+  --org <o>            NGC org (default: m3sujtetvf5w).
+  --team <t>           NGC team (default: usdsearch).
   --dest <dir>         Output directory for the .tgz (default: _charts/
                        at the repo root).
   --skip-readme        Skip regenerating helm/usdsearch/README.md (the

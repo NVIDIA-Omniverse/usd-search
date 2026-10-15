@@ -38,6 +38,15 @@ spec:
       {{- $globalImagePullSecrets | nindent 6 }}
       restartPolicy: "OnFailure"
       automountServiceAccountToken: false
+      {{- with .Values.global.checks.storage_backend.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $storageBackendVolumes := include "deepsearch-global.storageBackendVolumes" . }}
+      {{- if trim $storageBackendVolumes }}
+      volumes:
+        {{- $storageBackendVolumes | nindent 8 }}
+      {{- end }}
       containers:
         - name: connection-check
           {{- $apiImg := .Values.ngsearch.microservices.search_rest_api.image }}
@@ -78,5 +87,10 @@ spec:
             {{- include "deepsearch-global.azureComplete" . | nindent 12 }}
           {{- else if eq .Values.global.storage_backend_type "storage_api" }}
             {{- include "deepsearch-global.storageApiComplete" . | nindent 12 }}
+          {{- end }}
+          {{- $storageBackendVolumeMounts := include "deepsearch-global.storageBackendVolumeMounts" . }}
+          {{- if trim $storageBackendVolumeMounts }}
+          volumeMounts:
+            {{- $storageBackendVolumeMounts | nindent 12 }}
           {{- end }}
 {{- end }}

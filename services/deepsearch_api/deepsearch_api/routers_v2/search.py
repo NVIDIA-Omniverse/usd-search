@@ -19,11 +19,12 @@ from typing import Annotated, List, Optional
 
 # local / proprietary modules
 from asset_graph_service_client.api_client import ApiClient
+from asset_graph_service_client.exceptions import ApiException, NotFoundException
 from deepsearch_api.auth import http_api_key, http_basic, http_bearer
 from deepsearch_api.telemetry_decorator import telemetry_track_search
 
 # third party modules
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.params import Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasicCredentials
@@ -37,14 +38,20 @@ from ..search_backend.compat import convert_search_response
 from ..search_backend.filtered import FilteredSearchClient
 from ..search_backend.image_loader import BaseImageLoader
 from ..search_backend.main import EmbeddingType, SearchBackendClientV2
-from ..search_backend.models import DeepSearchSearchRequestV2
+from ..search_backend.models import DeepSearchSearchRequestV2, SearchResponse
+from ..search_backend.pagination import PaginationError
 from ..search_backend.utils import (
     get_default_telemetry_context,
     get_telemetry_extra_fields,
 )
 from ..validation import SearchResultValidator
 from . import dependencies
-from .models import QueryRelevanceValidationResult, SearchMethod, SearchResult
+from .models import (
+    QueryRelevanceValidationResult,
+    SearchMethod,
+    SearchResult,
+    UsdPropertyStatsFilters,
+)
 
 search_prefix = "deepsearch"
 router = APIRouter(
@@ -56,6 +63,47 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
+def _set_pagination_headers(response: Response, results: SearchResponse) -> None:
+    """Expose pagination state on a v2 response.
+
+    Both v2 endpoints return a bare ``List[SearchResult]``: ``convert_search_response``
+    flattens the envelope and drops the totals outright, so there is nowhere in the
+    body for ``next_cursor``/``has_more``/``paginable_total``, and adding an envelope
+    would break every existing client. Headers are purely additive — clients that do
+    not know them ignore them.
+    """
+    if results.next_cursor:
+        response.headers["X-Next-Cursor"] = results.next_cursor
+    response.headers["X-Has-More"] = "true" if results.has_more else "false"
+    if results.paginable_total is not None:
+        response.headers["X-Paginable-Total"] = str(results.paginable_total)
+    # Browsers hide non-safelisted response headers from cross-origin JavaScript
+    # unless they are exposed, so without this a CORS client could not page.
+    # Set here rather than in each gateway so every deployment's gateway passes
+    # it through (nvbug 6899406).
+    response.headers["Access-Control-Expose-Headers"] = ", ".join(PAGINATION_RESPONSE_HEADERS)
+
+
+# v2 returns a bare array, so pagination cannot ride in the body — it ships as
+# response headers. Declared here as well as set at runtime, so the OpenAPI spec
+# (and anything generated from it) describes the v2 pagination contract instead
+# of only mentioning it in prose.
+PAGINATION_RESPONSE_HEADERS = {
+    "X-Next-Cursor": {
+        "description": "Opaque cursor for the next page. Absent on the last page.",
+        "schema": {"type": "string"},
+    },
+    "X-Has-More": {
+        "description": "Whether another page exists (`true`/`false`). Authoritative — a full page does not imply more.",
+        "schema": {"type": "string", "enum": ["true", "false"]},
+    },
+    "X-Paginable-Total": {
+        "description": "How many results paging can reach. Not a corpus count; see `paginable_total` on the v3 response.",
+        "schema": {"type": "integer"},
+    },
+}
+
+
 @router.get(
     "/search",
     response_model_exclude_none=True,
@@ -63,6 +111,7 @@ tracer = trace.get_tracer(__name__)
         200: {
             "description": "Search results",
             "content": {"application/json": {"example": [SearchResult.Config.schema_extra["examples"][0]]}},
+            "headers": PAGINATION_RESPONSE_HEADERS,
         }
     },
 )
@@ -74,6 +123,7 @@ async def search(
     async_ags_client: Annotated[ApiClient, Depends(dependencies.async_ags_client)],
     search_backend_v2: Annotated[FilteredSearchClient, Depends(dependencies.search_backend_client_v2)],
     image_loader: Annotated[BaseImageLoader, Depends(dependencies.image_loader)],
+    response: Response,
     description: Annotated[
         str,
         Query(
@@ -644,6 +694,28 @@ async def search(
             le=10000,
         ),
     ] = 32,
+    offset: Annotated[
+        int,
+        Query(
+            description=(
+                "Number of results to skip. Prefer the `cursor` below, which pins the ranking so pages do "
+                "not overlap or skip. Depth depends on the query shape: filter-only is unbounded, a text "
+                "query is capped by pagination_max_offset, a multi-leg query by the RRF fusion window. "
+                "Cannot be combined with validate_results=true."
+            ),
+            ge=0,
+        ),
+    ] = 0,
+    cursor: Annotated[
+        Optional[str],
+        Query(
+            description=(
+                "Opaque cursor from the previous response's `X-Next-Cursor` header. Takes precedence over "
+                "`offset`. The query must stay identical while paging; `limit` and the `return_*` flags may "
+                "change. Cannot be combined with validate_results=true."
+            ),
+        ),
+    ] = None,
     vision_metadata: Annotated[
         Optional[str],
         Query(
@@ -672,6 +744,15 @@ async def search(
     efficiently. Furthermore, when integrated with the Asset Graph Service, USD Search API extends its capabilities to
     include searches based on USD properties and spatial dimensions of 3D model bounding boxes, enhancing the ability
     to find assets that meet specific requirements.
+
+    **Pagination:** pass `offset`, or better, the previous response's `X-Next-Cursor` header back as
+    `cursor` — it pins the ranking so pages do not overlap or skip. Because this endpoint returns a
+    bare JSON array, the pagination state travels in response headers rather than the body:
+    `X-Next-Cursor`, `X-Has-More` (`true`/`false`) and `X-Paginable-Total` (the page-count basis).
+    How deep you can go depends on the query shape: filter-only queries are unbounded, a text query
+    is capped by the deployment's `pagination_max_offset`, and a multi-leg query is capped by the RRF
+    fusion window. `validate_results=true` is single-page and cannot be combined with `offset`/`cursor`.
+    The richer envelope — including why paging stopped — is on `POST /v3/deepsearch/search`.
     """
     telemetry_context = get_default_telemetry_context()
     telemetry_extra_fields = None
@@ -758,6 +839,9 @@ async def search(
             return_in_scene_instances_prims=return_in_scene_instances_prims,
             embedding_knn_search_method=embedding_knn_search_method,
             limit=limit,
+            offset=offset,
+            cursor=cursor,
+            validate_results=validate_results,
             vision_metadata=vision_metadata,
             return_vision_generated_metadata=return_vision_generated_metadata,
             return_inner_hits=return_inner_hits or effective_return_images,
@@ -778,6 +862,9 @@ async def search(
         results = await search_backend_v2.search(search_request)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PaginationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    _set_pagination_headers(response, results)
     search_results = await convert_search_response(
         results,
         search_request,
@@ -788,7 +875,9 @@ async def search(
     # Perform VLM validation if requested
     if validate_results and vlm_validator:
         query_text = description if description else None
-        query_image = image_similarity_search[0] if image_similarity_search else None
+        # Read the image off the parsed request, not the raw query param: that copy
+        # has been normalized to the internal URL form when it names an asset.
+        query_image = search_request.image_similarity_search[0] if search_request.image_similarity_search else None
 
         if query_text or query_image:
             images = [r.image for r in search_results]
@@ -816,6 +905,7 @@ def parse_arg_input_and_or(input_str: str) -> list[list[str]]:
         200: {
             "description": "Search results",
             "content": {"application/json": {"example": [SearchResult.Config.schema_extra["examples"][0]]}},
+            "headers": PAGINATION_RESPONSE_HEADERS,
         }
     },
 )
@@ -828,6 +918,7 @@ async def search_post(
     req: DeepSearchSearchRequestV2,
     search_backend_v2: Annotated[FilteredSearchClient, Depends(dependencies.search_backend_client_v2)],
     image_loader: Annotated[BaseImageLoader, Depends(dependencies.image_loader)],
+    response: Response,
     vlm_validator: Annotated[Optional[SearchResultValidator], Depends(dependencies.vlm_validator)] = None,
     request: Request = None,
 ) -> List[SearchResult]:
@@ -840,6 +931,15 @@ async def search_post(
     efficiently. Furthermore, when integrated with the Asset Graph Service, USD Search API extends its capabilities to
     include searches based on USD properties and spatial dimensions of 3D model bounding boxes, enhancing the ability
     to find assets that meet specific requirements.
+
+    **Pagination:** pass `offset`, or better, the previous response's `X-Next-Cursor` header back as
+    `cursor` — it pins the ranking so pages do not overlap or skip. Because this endpoint returns a
+    bare JSON array, the pagination state travels in response headers rather than the body:
+    `X-Next-Cursor`, `X-Has-More` (`true`/`false`) and `X-Paginable-Total` (the page-count basis).
+    How deep you can go depends on the query shape: filter-only queries are unbounded, a text query
+    is capped by the deployment's `pagination_max_offset`, and a multi-leg query is capped by the RRF
+    fusion window. `validate_results=true` is single-page and cannot be combined with `offset`/`cursor`.
+    The richer envelope — including why paging stopped — is on `POST /v3/deepsearch/search`.
     """
     # Force return_images when validate_results=True (images are needed for validation)
     if req.validate_results:
@@ -850,6 +950,9 @@ async def search_post(
             results = await search_backend_v2.search(req)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except PaginationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    _set_pagination_headers(response, results)
     with tracer.start_as_current_span("routers_v2.convert_search_response"):
         search_results = await convert_search_response(
             results,
@@ -887,11 +990,46 @@ async def stats_usd_properties(
     api_key_auth: Annotated[str, Depends(http_api_key)],
     search_backend_v2: Annotated[SearchBackendClientV2, Depends(dependencies.search_backend_client_v2)],
     aggregations_enabled: Annotated[SearchBackendClientV2, Depends(dependencies.aggregations_access_check)],
+    # Bound from query params; FastAPI always constructs it, so an unfiltered
+    # call arrives here as a model with every field at its default.
+    filters: Annotated[UsdPropertyStatsFilters, Query()],
 ) -> response_models.StatsResponse:
     """
     Inventory of USD properties across the indexed corpus: every unique property key, every unique
     value, and every unique key=value pair — each with the number of assets that carry it
     (``asset_count``), sorted by coverage. The full lists (not just counts) power property discovery;
     see the ``/usd-property-catalog`` skill, which turns this into a local catalog + filter config.
+
+    **Filtering.** Pass any of the filter parameters that `/search` accepts (`search_path`,
+    `file_extension_include`, `filter_by_properties`, `filter_by_tags`, dates, bbox dimensions,
+    `search_in_scene`, …) to inventory a subset of the corpus instead — "which properties do the
+    assets under /Projects/Vehicles carry?". Passing none inventories everything, as before.
+
+    Counts stay **exact** for whatever subset is selected: this is an aggregation over the whole
+    matching set, not a summary of one page of search results. Filtering is asset-scoped, so
+    `filter_by_properties=class=vehicle` returns *every* property those assets carry, not just
+    `class` — which is what makes drill-down work.
+
+    Search-only parameters (`description`, vector/image queries, `limit`, `offset`) are rejected
+    with a 422: an aggregation has no ranking to apply them to, and silently ignoring them would
+    return corpus-wide numbers that look filtered.
+
+    **Not access-filtered.** Results describe the index itself, not the subset of assets the
+    caller could download — with or without filters. Deployments that cannot accept that should
+    turn aggregations off (`enable_aggregations=false`), which makes this endpoint return 403.
     """
-    return await search_backend_v2.get_usd_properties_stats()
+    try:
+        return await search_backend_v2.get_usd_properties_stats(filters)
+    except NotFoundException as e:
+        # Unknown search_in_scene — the only 404 this endpoint can produce.
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except ValueError as e:
+        # e.g. vision_metadata on an index carrying no VLM-generated fields.
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ApiException as e:
+        # search_in_scene needs the Asset Graph Service; degrade on that parameter
+        # alone rather than taking the unfiltered inventory down with it.
+        raise HTTPException(
+            status_code=503,
+            detail=f"Asset Graph Service is unavailable, which 'search_in_scene' requires: {e}",
+        ) from e

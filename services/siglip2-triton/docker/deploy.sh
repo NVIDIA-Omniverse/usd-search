@@ -32,7 +32,7 @@ else
     VERSION=""
 fi
 
-export REPO=nvcr.io/omniverse/deeptag-internal
+export REPO=nvcr.io/m3sujtetvf5w/usdsearch
 
 IMAGE_NAME="${REPO}/siglip2-triton:${VERSION}"
 CONTAINER_NAME="siglip2-triton-server-${VERSION}"
@@ -64,7 +64,7 @@ docker run -d \
     -p $TRITON_HTTP_PORT:8000 \
     -p $TRITON_GRPC_PORT:8001 \
     -p $TRITON_METRICS_PORT:8002 \
-    $IMAGE_NAME 
+    $IMAGE_NAME
 
 # Print server logs
 # docker logs -f $CONTAINER_NAME

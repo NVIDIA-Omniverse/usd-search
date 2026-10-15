@@ -28,6 +28,11 @@ loggers:
     level: WARN
     handlers:
       - default
+  deepsearch_rendering_job.api.usdsearch.render:
+    level: INFO
+    handlers:
+      - default
+    propagate: no
   uvicorn.access:
     level: WARN
     handlers:

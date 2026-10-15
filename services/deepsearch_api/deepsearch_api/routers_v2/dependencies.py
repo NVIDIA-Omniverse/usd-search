@@ -20,21 +20,19 @@ import time
 from enum import Enum
 from typing import Annotated, Dict, Optional, Tuple
 
+import aiohttp
 from asset_graph_service_client.api_client import ApiClient
 from asset_graph_service_client.configuration import Configuration
 from deepsearch_api.auth import http_api_key, http_basic, http_bearer
 from deepsearch_api.exceptions import AuthenticationError
-from deepsearch_api.search_backend.embeddings import (
-    EmbeddingType,
-    USDSearchEmbeddingClient,
-)
+from deepsearch_api.search_backend.embeddings import USDSearchEmbeddingClient
 from deepsearch_api.search_backend.filtered import FilteredSearchClient
 from deepsearch_api.search_backend.image_loader import (
     BaseImageLoader,
     MockImageLoader,
     OpenSearchImageLoader,
 )
-from deepsearch_api.search_backend.main import SearchBackendClientV2, SearchSettings
+from deepsearch_api.search_backend.main import SearchSettings
 from deepsearch_api.utils import ags_client_with_headers
 from deepsearch_api.validation import SearchResultValidator
 from fastapi import Depends, HTTPException, Request
@@ -196,6 +194,42 @@ async def _cached_storage_connection(
         return authenticated_client
 
 
+def build_ags_api_client(asset_graph_service_url: str) -> ApiClient:
+    """Build the asset-graph client. It owns an aiohttp session, so it is built ONCE
+    (see ``shared_ags_client``) and must be created on a running event loop."""
+    client = ApiClient(Configuration(host=asset_graph_service_url))
+    # The generated transport's session keeps aiohttp's default cookie jar. Shared by
+    # every request, it would replay a Set-Cookie from one caller's response (an auth
+    # proxy's session, ingress affinity) on other callers' requests, so swap in a
+    # cookie-less session on the same connector. detach() hands the connector over
+    # without closing it. No retries are configured, so no retry_client wraps the old
+    # session.
+    rest_client = client.rest_client
+    session = rest_client.pool_manager
+    rest_client.pool_manager = aiohttp.ClientSession(
+        connector=session.connector,
+        trust_env=session.trust_env,
+        cookie_jar=aiohttp.DummyCookieJar(),
+    )
+    session.detach()
+    return client
+
+
+async def shared_ags_client(app) -> ApiClient:
+    """Return the process-wide asset-graph client.
+
+    Built once in the app lifespan and stored on ``app.ags_api_client``, so requests
+    don't each pay for (and leak) an SSL context and aiohttp session. Falls back to
+    lazily building + memoizing one if the app was started without the lifespan
+    (e.g. some test setups); async so that happens on the running loop, which
+    aiohttp's connector requires."""
+    client = getattr(app, "ags_api_client", None)
+    if client is None:
+        client = build_ags_api_client(app.global_settings.deepsearch_backend_asset_graph_service_url)
+        app.ags_api_client = client
+    return client
+
+
 async def async_ags_client(request: Request) -> ApiClient:
     headers = {
         "X-Request-ID": request.headers["X-Request-ID"],
@@ -205,10 +239,11 @@ async def async_ags_client(request: Request) -> ApiClient:
     if "Authorization" in request.headers:
         headers["Authorization"] = request.headers["Authorization"]
 
-    logger.debug("Creating AGS client with headers: %s", headers)
+    # Header names only: the values are credentials.
+    logger.debug("Scoping AGS client with headers: %s", sorted(headers))
 
     async with ags_client_with_headers(
-        client=ApiClient(Configuration(host=request.app.global_settings.deepsearch_backend_asset_graph_service_url)),
+        client=await shared_ags_client(request.app),
         headers=headers,
     ) as async_ags_client:
         yield async_ags_client
@@ -295,18 +330,28 @@ async def storage_client(
     current_span = trace.get_current_span()
     username = None
 
-    # Extract username from different auth sources
-    if backend_type == AvailableStorageClients.nucleus:
-        # Extract username from JWT token
-        from deepsearch_api.telemetry_decorator import (
-            extract_telemetry_user_id_from_jwt,
-        )
+    # Extract username from different auth sources, in order: bearer token,
+    # basic auth, admin key. Every backend can be addressed with a bearer token,
+    # not just Nucleus — without the second branch a Storage API / S3 deployment
+    # records every caller as "anonymous" in search and download telemetry.
+    from deepsearch_api.telemetry_decorator import (
+        extract_telemetry_user_id_from_jwt,
+    )
 
+    if backend_type == AvailableStorageClients.nucleus:
         username = extract_telemetry_user_id_from_jwt(authenticated_client.connection.auth.auth_token)
-    elif basic_auth and basic_auth.username:
-        username = basic_auth.username
-    elif role == Role.ADMIN:
-        username = "admin_access"
+    elif token_auth and token_auth.credentials:
+        username = extract_telemetry_user_id_from_jwt(token_auth.credentials)
+
+    # "unknown" means the token carried no identity claim we recognise — fall
+    # through to the other sources rather than recording it as the username.
+    if not username or username == "unknown":
+        if basic_auth and basic_auth.username:
+            username = basic_auth.username
+        elif role == Role.ADMIN:
+            username = "admin_access"
+        else:
+            username = None
 
     if username and current_span:
         current_span.set_attribute("user.name", username)
@@ -330,49 +375,64 @@ async def siglip2_embedding_client(request: Request) -> USDSearchEmbeddingClient
 
 async def search_backend_client_v2(
     request: Request,
-    siglip2_embedding_client: Annotated[USDSearchEmbeddingClient, Depends(siglip2_embedding_client)],
     async_ags_client: Annotated[ApiClient, Depends(async_ags_client)],
     storage_client: Annotated[StorageClient, Depends(storage_client)],
 ) -> FilteredSearchClient:
-    embedding_backends = {EmbeddingType.SIGLIP2_EMBEDDING: siglip2_embedding_client}
-    async with SearchBackendClientV2(
-        request.app.search_backend_settings, embedding_clients=embedding_backends
-    ) as search_backend_client_v2:
-        yield FilteredSearchClient(
-            search_client=search_backend_client_v2,
-            ags_client=async_ags_client,
-            storage_client=storage_client,
-            validate_access=request.app.global_settings.storage_require_auth,
-        )
+    # Reuse the process-wide search client (built once in the app lifespan); only
+    # the per-request auth wrapper below is new each request. The OpenSearch
+    # connection pool is shared, so searches no longer pay connection + TLS setup
+    # per request. ensure_mappings_verified() is a no-op after the first success.
+    search_client = request.app.search_backend_client
+    await search_client.ensure_mappings_verified()
+    yield FilteredSearchClient(
+        search_client=search_client,
+        ags_client=async_ags_client,
+        storage_client=storage_client,
+        validate_access=request.app.global_settings.storage_require_auth,
+    )
+
+
+def build_image_loader(settings: SearchSettings) -> BaseImageLoader:
+    """Build the image loader for the given search settings.
+
+    The ``OpenSearchImageLoader`` owns its own ``AsyncOpenSearch`` client (a
+    connection pool), so it is built ONCE at startup and reused — see the
+    ``image_loader`` dependency. MOCK_IMAGES=true swaps in an in-memory stub.
+    """
+    from search_utils.misc_utils import str2bool
+
+    if str2bool(os.getenv("MOCK_IMAGES", "False")):
+        return MockImageLoader()
+
+    from opensearchpy import AsyncOpenSearch
+
+    client = AsyncOpenSearch(
+        hosts=[settings.opensearch_host],
+        http_auth=(
+            (settings.opensearch_username, settings.opensearch_password)
+            if settings.opensearch_username and settings.opensearch_password
+            else None
+        ),
+        timeout=settings.opensearch_timeout,
+        use_ssl=settings.opensearch_use_ssl,
+        verify_certs=settings.opensearch_verify_certs,
+    )
+    return OpenSearchImageLoader(client=client, image_cache_index=settings.opensearch_image_cache_index_name)
 
 
 async def image_loader(request: Request) -> BaseImageLoader:
-    """Create an image loader based on environment settings."""
-    from search_utils.misc_utils import str2bool
+    """Return the process-wide image loader.
 
-    # Check if we should use mock image loader (useful for testing)
-    mock_images = str2bool(os.getenv("MOCK_IMAGES", "False"))
-
-    if mock_images:
-        return MockImageLoader()
-    else:
-        # Create OpenSearch client with same settings as search backend
-        settings: SearchSettings = request.app.search_backend_settings
-        from opensearchpy import AsyncOpenSearch
-
-        client = AsyncOpenSearch(
-            hosts=[settings.opensearch_host],
-            http_auth=(
-                (settings.opensearch_username, settings.opensearch_password)
-                if settings.opensearch_username and settings.opensearch_password
-                else None
-            ),
-            timeout=settings.opensearch_timeout,
-            use_ssl=settings.opensearch_use_ssl,
-            verify_certs=settings.opensearch_verify_certs,
-        )
-
-        return OpenSearchImageLoader(client=client, image_cache_index=settings.opensearch_image_cache_index_name)
+    Built once in the app lifespan and stored on ``app.image_loader``; reused
+    across requests so we don't create (and leak) a new OpenSearch connection
+    pool per ``/images`` call. Falls back to lazily building + memoizing one if
+    the app was started without the lifespan (e.g. some test setups)."""
+    loader = getattr(request.app, "image_loader", None)
+    if loader is not None:
+        return loader
+    loader = build_image_loader(request.app.search_backend_settings)
+    request.app.image_loader = loader
+    return loader
 
 
 async def aggregations_access_check(request: Request) -> None:

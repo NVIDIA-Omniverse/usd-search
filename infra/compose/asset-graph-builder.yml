@@ -14,32 +14,35 @@
 # limitations under the License.
 
 services:
-  # Kit-worker — built from docker/Dockerfile.kit (unified Kit image shared with rendering-job).
-  # Run with MODE=graph-builder to start the graph-builder FastAPI service.
-  # Layer asset-graph-service.yml and minio.yml alongside this file,
-  # then add asset-graph-builder.deps.yml to wire up the service dependencies.
+  # Graph-builder — built from the usdsearch image's test-runner stage
+  # (docker/Dockerfile.usdsearch), which ships graph_builder + pxr, the packman
+  # resolver stack, and the pytest toolchain. Runs the FastAPI server by default
+  # (the asset_graph_generation plugin tests POST to it); run_tests_asset_graph_builder.sh
+  # instead scales it to 0 and drives a one-off pytest via `docker compose run`.
+  # Layer asset-graph-service.yml and minio.yml alongside this file, then add
+  # asset-graph-builder.deps.yml to wire up the service dependencies.
   kit-worker:
     build:
-      context: ../../services/rendering-job
-      dockerfile: ../../docker/Dockerfile.kit
-      additional_contexts:
-        graph-builder: ../../services/asset-graph-builder
-      # Runtime user baked into the image. Defaults match docker/Dockerfile.kit
-      # (the base image's `ubuntu`); override to exercise the graph-builder with
-      # a different container user, e.g. the NVPark settings:
-      #   KIT_USER_ID=27489 KIT_GROUP_ID=27489 KIT_USER_NAME=appuser \
-      #     ci/asset-graph-builder/run_tests_asset_graph_builder.sh
+      context: ../..
+      dockerfile: docker/Dockerfile.usdsearch
+      target: test-runner
       args:
-        USER_ID: ${KIT_USER_ID:-1000}
-        GROUP_ID: ${KIT_GROUP_ID:-1000}
-        USER_NAME: ${KIT_USER_NAME:-ubuntu}
+        # Public packman CDN archive; gates the ABI-matched resolver stack
+        # (resolver + client default to the same CDN in the Dockerfile).
+        OMNI_USD_STOCK_URL: ${OMNI_USD_STOCK_URL:-https://d4i3qtqj3r0z5.cloudfront.net/openusd@0.25.11-9-manylinux_2_35_x86_64-dynamic-release-py312.no_imaging.7z}
     container_name: kit-worker
+    command: ["uvicorn", "graph_builder.service:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8100:8000"
     environment:
-      MODE: graph-builder
       ACCEPT_EULA: "Y"
       TEST_GRAPH_BUILDER: "True"
+      # Opt-in sidecar/package-metadata ingestion (graph_builder/sidecar_metadata.py),
+      # enabled here with the shipped example catalog so the tests that exercise this
+      # compose stack (test_graph_builder_sidecar_metadata,
+      # test_asset_graph_generation_sidecar_metadata) see it wired through a real
+      # worker. The test-runner stage keeps the workspace source on disk.
+      SIDECAR_METADATA_CONFIG_PATH: /app/services/asset-graph-builder/graph_builder/sidecar_metadata.simready.yaml
       AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
       AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
       OV_SERVER: ${OV_SERVER:-localhost}

@@ -112,6 +112,10 @@ so we deliberately go through `global.appVersion` instead.
 {{ .Values.global.registry }}/{{ .Values.global.image.rendering_job.repository }}:{{ .Values.global.image.rendering_job.tag | default (include "deepsearch-global.unifiedImageTag" .) }}
 {{- end -}}
 
+{{- define "deepsearch-global.graphBuilderImage" -}}
+{{ .Values.global.registry }}/{{ .Values.global.image.graph_builder.repository }}:{{ .Values.global.image.graph_builder.tag | default (include "deepsearch-global.unifiedImageTag" .) }}
+{{- end -}}
+
 {{- define "deepsearch-global.imagePullPolicy" -}}
 {{ .Values.global.image.pullPolicy | default "IfNotPresent" }}
 {{- end -}}
@@ -150,11 +154,8 @@ Usage: {{ include "deepsearch-global.storageApiAuth" . }}
 {{- if eq .Values.global.storage_backend_type "storage_api" }}
 {{- if .Values.global.storage_api.authentication.enabled }}
 {{- if eq .Values.global.storage_api.authentication.type "token" }}
-- name: STORAGE_API_TOKEN
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.global.storage_api.authentication.secret_name }}
-      key: {{ .Values.global.storage_api.authentication.secret_key }}
+- name: STORAGE_API_TOKEN_FILE
+  value: {{ printf "%s/%s" .Values.global.storage_api.authentication.mount_path .Values.global.storage_api.authentication.secret_key | quote }}
 {{- else if eq .Values.global.storage_api.authentication.type "openid" }}
 - name: STORAGE_API_OPENID_TOKEN_URL
   value: "{{ ( required "Please input OpenID Token URL: --set global.storage_api.authentication.openid.token_url=<OPENID TOKEN URL>" .Values.global.storage_api.authentication.openid.token_url) }}"
@@ -176,6 +177,10 @@ Usage: {{ include "deepsearch-global.storageApiAuth" . }}
       name: {{ .Values.global.storage_api.authentication.secret_name }}
       key: {{ .Values.global.storage_api.authentication.openid.scope_secret_key }}
 {{- end }}
+{{- if .Values.global.storage_api.authentication.token_refresh_interval }}
+- name: STORAGE_API_TOKEN_REFRESH_INTERVAL
+  value: {{ .Values.global.storage_api.authentication.token_refresh_interval | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -190,8 +195,14 @@ Usage: {{ include "deepsearch-global.storageApiConfig" . }}
 {{- if eq .Values.global.storage_backend_type "storage_api" }}
 - name: STORAGE_API_GRPC_ENDPOINT
   value: "{{ .Values.global.storage_api.grpc_endpoint }}"
+{{- if .Values.global.storage_api.base_uri }}
 - name: STORAGE_API_BASE_URI
   value: "{{ .Values.global.storage_api.base_uri }}"
+{{- end }}
+{{- if .Values.global.storage_api.allowed_top_level_addresses }}
+- name: STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES
+  value: {{ .Values.global.storage_api.allowed_top_level_addresses | toJson | quote }}
+{{- end }}
 - name: STORAGE_API_SSL
   value: "{{ .Values.global.storage_api.ssl }}"
 - name: STORAGE_API_NOTIFICATION_SUBSCRIPTION_ENABLED
@@ -208,6 +219,8 @@ Usage: {{ include "deepsearch-global.storageApiConfig" . }}
 - name: STORAGE_API_THUMBNAIL_METADATA_FIELDS
   value: {{ .Values.global.storage_api.thumbnail_metadata_fields | toJson | quote }}
 {{- end }}
+- name: STORAGE_API_THUMBNAIL_STYLE
+  value: {{ .Values.global.storage_api.thumbnail_style | default "storage_api" | quote }}
 - name: OV_USERNAME
   value: ""
 - name: OV_PASSWORD
@@ -224,6 +237,119 @@ Usage: {{ include "deepsearch-global.storageApiComplete" . }}
 {{- include "deepsearch-global.storageApiConfig" . }}
 {{- include "deepsearch-global.storageApiAuth" . }}
 {{- end }}
+
+{{/*
+Storage Backend Volumes
+Emits the pod `volumes:` entries required by the active storage backend, or nothing for
+backends that need none. Included once under a pod `volumes:` list, mirroring how
+`storageApiComplete` abstracts the backend env vars. Extend with a new backend branch when
+another backend needs a volume.
+Usage: {{ include "deepsearch-global.storageBackendVolumes" . }}
+*/}}
+{{- define "deepsearch-global.storageBackendVolumes" -}}
+{{- if eq .Values.global.storage_backend_type "storage_api" }}
+{{- if and .Values.global.storage_api.authentication.enabled (eq .Values.global.storage_api.authentication.type "token") }}
+- name: storage-api-token
+  secret:
+    secretName: {{ .Values.global.storage_api.authentication.secret_name }}
+    items:
+      - key: {{ .Values.global.storage_api.authentication.secret_key }}
+        path: {{ .Values.global.storage_api.authentication.secret_key }}
+{{- if include "deepsearch-global.storageApiTokenRefresherEnabled" . }}
+      - key: {{ include "deepsearch-global.storageApiTokenRefreshedAtKey" . }}
+        path: {{ include "deepsearch-global.storageApiTokenRefreshedAtKey" . }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Storage Backend Volume Mounts
+Emits the container `volumeMounts:` entries required by the active storage backend, or
+nothing for backends that need none. For the Storage API token secret the mount is a
+directory (no subPath) so kubelet refreshes the file on rotation.
+Usage: {{ include "deepsearch-global.storageBackendVolumeMounts" . }}
+*/}}
+{{- define "deepsearch-global.storageBackendVolumeMounts" -}}
+{{- if eq .Values.global.storage_backend_type "storage_api" }}
+{{- if and .Values.global.storage_api.authentication.enabled (eq .Values.global.storage_api.authentication.type "token") }}
+- name: storage-api-token
+  mountPath: {{ .Values.global.storage_api.authentication.mount_path }}
+  readOnly: true
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Storage API token refresher — enablement guard.
+Returns the string "true" only when all four gates hold: the storage_api backend
+is selected, its authentication is enabled, the auth type is "token", and the
+token_refresher is enabled. Empty (falsy) otherwise. Keeps the four-way
+condition in one place for the refresher Deployment, seed hook and RBAC.
+Usage: {{ if include "deepsearch-global.storageApiTokenRefresherEnabled" . }}
+*/}}
+{{- define "deepsearch-global.storageApiTokenRefresherEnabled" -}}
+{{- if and (eq .Values.global.storage_backend_type "storage_api") .Values.global.storage_api.authentication.enabled (eq .Values.global.storage_api.authentication.type "token") .Values.global.storage_api.authentication.token_refresher.enabled -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Base name for the storage API token refresher objects.
+Usage: {{ include "deepsearch-global.storageApiTokenRefresherName" . }}
+*/}}
+{{- define "deepsearch-global.storageApiTokenRefresherName" -}}
+{{- printf "%s-storage-api-token-refresher" (include "deepsearch-global.releaseName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+ServiceAccount name for the (long-running) storage API token refresher Deployment.
+Honors an explicit override, otherwise derives from the base name.
+Usage: {{ include "deepsearch-global.storageApiTokenRefresherServiceAccountName" . }}
+*/}}
+{{- define "deepsearch-global.storageApiTokenRefresherServiceAccountName" -}}
+{{- $tr := .Values.global.storage_api.authentication.token_refresher -}}
+{{- if $tr.serviceAccount.name -}}
+{{- $tr.serviceAccount.name -}}
+{{- else -}}
+{{- include "deepsearch-global.storageApiTokenRefresherName" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Secret data key that holds the UTC timestamp of the last token refresh, written
+alongside the token by the syncer (search_utils.storage_client.storage_api.token_refresher).
+Projected into service pods (see storageBackendVolumes) so the mounted Secret's
+freshness can be observed in-pod. Kept in one place so the volume projection, the
+seed placeholder and the container env all agree.
+Usage: {{ include "deepsearch-global.storageApiTokenRefreshedAtKey" . }}
+*/}}
+{{- define "deepsearch-global.storageApiTokenRefreshedAtKey" -}}
+{{- printf "%s_refreshed_at" .Values.global.storage_api.authentication.secret_key -}}
+{{- end -}}
+
+{{/*
+Container spec (as a one-item list, for `toYaml`) for the token-vending sidecar.
+Takes the user-supplied raw `sidecar` spec and injects a default name plus the
+shared token volumeMount, so the vendor need only be told where to write. When
+`native` is true it also sets `restartPolicy: Always` (native sidecar init
+container form, used by the seed Job so it can complete).
+Usage: {{ include "deepsearch-global.storageApiTokenVendorContainer" (dict "ctx" . "native" false) }}
+*/}}
+{{- define "deepsearch-global.storageApiTokenVendorContainer" -}}
+{{- $ctx := .ctx -}}
+{{- $tr := $ctx.Values.global.storage_api.authentication.token_refresher -}}
+{{- if not $tr.sidecar -}}
+{{- fail "global.storage_api.authentication.token_refresher.enabled=true requires a token-vending sidecar: set global.storage_api.authentication.token_refresher.sidecar (a container spec that writes the token to <token_dir>/<secret_key>)" -}}
+{{- end -}}
+{{- $sidecar := deepCopy $tr.sidecar -}}
+{{- $mounts := $sidecar.volumeMounts | default list -}}
+{{- $mounts = append $mounts (dict "name" "storage-api-token-file" "mountPath" $tr.token_dir) -}}
+{{- $_ := set $sidecar "volumeMounts" $mounts -}}
+{{- if not $sidecar.name -}}{{- $_ := set $sidecar "name" "token-vendor" -}}{{- end -}}
+{{- if .native -}}{{- $_ := set $sidecar "restartPolicy" "Always" -}}{{- end -}}
+{{- toYaml (list $sidecar) -}}
+{{- end -}}
 
 {{/*
 S3 Storage Authentication Environment Variables
@@ -403,6 +529,10 @@ Usage: {{ include "deepsearch-global.searchBackendConfig" . }}
 {{- with .Values.global.search_backend_config }}
 - name: OS_SERIALIZER
   value: {{ .serializer | default "orjson" | quote }}
+- name: OS_HTTP_COMPRESS
+  value: {{ .http_compress | default false | quote }}
+- name: OS_REFRESH_INTERVAL
+  value: {{ .refresh_interval | default "60s" | quote }}
 - name: ES_HOST
   value: {{ .host | quote }}
 - name: ES_PORT
@@ -531,6 +661,11 @@ Usage: {{- include "deepsearch-global.searchBackendCheck" (dict "ctx" . "image" 
     {{- include "deepsearch-global.storageApiComplete" $ctx | nindent 4 }}
   {{- end }}
     {{- include "deepsearch-global.searchBackendComplete" $ctx | nindent 4 }}
+  {{- $storageBackendVolumeMounts := include "deepsearch-global.storageBackendVolumeMounts" $ctx }}
+  {{- if trim $storageBackendVolumeMounts }}
+  volumeMounts:
+    {{- $storageBackendVolumeMounts | nindent 4 }}
+  {{- end }}
   resources:
     requests:
       cpu: 200m
@@ -548,4 +683,54 @@ Usage: {{ include "deepsearch-global.dataLoaderOutputURL" . }}
 {{- define "deepsearch-global.dataLoaderOutputURL" -}}
 {{- $baseURL := printf "%s://%s:%s" .Values.global.search_backend_config.schema .Values.global.search_backend_config.host (toString .Values.global.search_backend_config.port) -}}
 {{- $baseURL -}}
+{{- end }}
+
+{{/*
+Public/internal asset-URL translation env (USDSEARCH_URL_MAPPING_*).
+
+Rendered into every service that answers on the public API surface —
+deepsearch-api, asset-graph-service and info-endpoint — so all three speak the
+same URLs. Emits nothing when global.url_mapping.mode is unset or "off", which
+is the default: no env, no translation, byte-identical responses.
+
+Usage: {{- include "deepsearch-global.urlMappingEnv" . | nindent 12 }}
+*/}}
+{{- define "deepsearch-global.urlMappingEnv" -}}
+{{- $mapping := .Values.global.url_mapping | default dict -}}
+{{- $mode := $mapping.mode | default "off" -}}
+{{- if ne $mode "off" }}
+- name: USDSEARCH_URL_MAPPING_MODE
+  value: {{ $mode | quote }}
+{{- if and (eq $mode "s3_https") (eq .Values.global.storage_backend_type "s3") }}
+{{- /* The bucket's identity, so every service derives the same https prefix —
+       including asset-graph-service, which has no storage client of its own.
+       No credentials here: the bucket name, region and endpoint are not secrets. */}}
+- name: USDSEARCH_URL_MAPPING_S3_BUCKET
+  value: {{ .Values.global.s3.bucket_name | quote }}
+{{- if .Values.global.s3.region_name }}
+- name: USDSEARCH_URL_MAPPING_S3_REGION
+  value: {{ .Values.global.s3.region_name | quote }}
+{{- end }}
+{{- if .Values.global.s3.aws_endpoint_url }}
+- name: USDSEARCH_URL_MAPPING_S3_ENDPOINT
+  value: {{ .Values.global.s3.aws_endpoint_url | quote }}
+{{- end }}
+{{- end }}
+{{- if $mapping.rules }}
+- name: USDSEARCH_URL_MAPPING_RULES
+  value: {{ toJson $mapping.rules | quote }}
+{{- end }}
+{{- if $mapping.filepath }}
+- name: USDSEARCH_URL_MAPPING_FILEPATH
+  value: {{ $mapping.filepath | quote }}
+{{- end }}
+{{- if $mapping.inbound_only }}
+- name: USDSEARCH_URL_MAPPING_INBOUND_ONLY
+  value: {{ $mapping.inbound_only | quote }}
+{{- end }}
+{{- if $mapping.encode_public_paths }}
+- name: USDSEARCH_URL_MAPPING_ENCODE_PUBLIC_PATHS
+  value: {{ $mapping.encode_public_paths | quote }}
+{{- end }}
+{{- end }}
 {{- end }}

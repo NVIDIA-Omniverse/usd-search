@@ -108,9 +108,10 @@ If the user picks **B (Custom S3)**, follow up asking for:
 
 **s3proxy auth-proxy (automatic for custom endpoints + GPU):** When a
 custom S3 endpoint URL is provided AND GPU plugins are enabled (L3),
-**automatically add** `docker-compose.s3proxy-auth.yml` to the compose
-chain. Do not ask — this is required. Kit's native client library
-cannot authenticate to non-AWS S3 endpoints (hostnames not matching
+**automatically add** `docker-compose.s3proxy-auth.yml` and
+`docker-compose.s3proxy-auth.gpu.yml` to the compose chain. Do not ask —
+this is required. Kit's native client library cannot authenticate to
+non-AWS S3 endpoints (hostnames not matching
 `*.s3.*.amazonaws.com` fall back to the base HTTP provider which
 ignores credentials). The overlay deploys s3proxy as a credential-
 translating reverse proxy: it authenticates to the upstream using the
@@ -168,11 +169,17 @@ If the user picks **D (Storage API)**, follow up asking for:
   `extra_hosts: ["host.docker.internal:host-gateway"]`, which the base
   compose does not set — prefer the host's LAN IP or an external DNS
   `host:port` to avoid that caveat). For an external service, use its
-  real hostname/IP and port.
+  real hostname/IP and port. A scheme (`http://…`, `https://…`) is
+  rejected at startup — TLS is chosen by `STORAGE_API_SSL`, below.
 - **Base URI** (`STORAGE_API_BASE_URI`) — optional but recommended. It
   sets the prefix that crawler paths resolve against and the key shown by
   `/info/backend/storage` (unset → the key serializes as `null`).
 - **SSL** (`STORAGE_API_SSL`) — optional `true`/`false` (default false).
+  Set it to match the server: it steers both the Python gRPC channel and
+  the endpoint form handed to Kit (graph-builder / rendering), which
+  otherwise attempts a TLS handshake against a plaintext deployment. A
+  plaintext server on port **443** is unreachable from Kit whatever this
+  is set to (the config warns about it) — serve it on another port.
 - **Auth (optional).** Never ask for raw secret values — only env-var
   **names** (same rule as the Custom-S3 / VLM credential pattern). Offer
   two mutually exclusive modes:
@@ -276,9 +283,12 @@ chain in L5 and set `WEB_UI=on` for the smoke step in L6.
 | Base (always) | `docker-compose.yml` |
 | WebUI enabled | `+ docker-compose.web-ui.yml` |
 | GPU plugins | `+ docker-compose.gpu-plugins.yml` |
-| Custom S3 endpoint + GPU plugins | `+ docker-compose.s3proxy-auth.yml` |
+| Custom S3 endpoint + GPU plugins | `+ docker-compose.s3proxy-auth.yml` `+ docker-compose.s3proxy-auth.gpu.yml` |
 | VLM plugins | `+ docker-compose.vlm-plugins.yml` |
-| Local filesystem overlay (last) | `+ docker-compose.local-fs.yml` |
+| Local filesystem overlay | `+ docker-compose.local-fs.yml` |
+| Local filesystem + GPU plugins (last) | `+ docker-compose.local-fs.gpu.yml` |
+
+Each `.gpu.yml` companion is only valid alongside `docker-compose.gpu-plugins.yml`.
 
 **Final command pattern:**
 ```bash
@@ -286,8 +296,10 @@ docker compose -f docker-compose.yml \
   [-f docker-compose.web-ui.yml] \
   [-f docker-compose.gpu-plugins.yml] \
   [-f docker-compose.s3proxy-auth.yml] \
+  [-f docker-compose.s3proxy-auth.gpu.yml] \
   [-f docker-compose.vlm-plugins.yml] \
   [-f docker-compose.local-fs.yml] \
+  [-f docker-compose.local-fs.gpu.yml] \
   up -d --build
 ```
 

@@ -17,17 +17,17 @@
 # Upload the chart README to the NGC registry.
 #
 # Environment variables:
-#   REGISTRY - NGC registry path (default: omniverse/deeptag-internal)
-#   ORG      - NGC org (default: omniverse)
-#   TEAM     - NGC team (default: deeptag-internal)
+#   REGISTRY - NGC registry path (default: m3sujtetvf5w/usdsearch)
+#   ORG      - NGC org (default: m3sujtetvf5w)
+#   TEAM     - NGC team (default: usdsearch)
 #
 set -eux
 DIR="$(cd "$(dirname "$0")" && pwd -P)"
 CHART_DIR="$DIR/../usdsearch"
 
-registry=${REGISTRY:-"omniverse/deeptag-internal"}
-org=${ORG:-"omniverse"}
-team=${TEAM:-"deeptag-internal"}
+registry=${REGISTRY:-"m3sujtetvf5w/usdsearch"}
+org=${ORG:-"m3sujtetvf5w"}
+team=${TEAM:-"usdsearch"}
 
 ngc registry chart update "${registry}/usdsearch" \
     --overview-filename "$CHART_DIR/README.md" \

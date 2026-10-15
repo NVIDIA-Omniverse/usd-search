@@ -266,7 +266,22 @@ Service Annotations template
 {{- end }}
 
 {{/*
-VLM API Key Secret Fields template
+Vision metadata request limits and output identity. Kept global because one
+monitor-crawler computes cache hashes for every metadata plugin.
+*/}}
+{{- define "deepsearch.template.vlm.metadataOutputConfig" -}}
+- name: VLM_IMAGE_MAX_PX
+  value: {{ .input.max_px | int | quote }}
+- name: VLM_MAX_IMAGES
+  value: {{ .input.max_images | int | quote }}
+- name: VLM_MAX_REQUEST_BYTES
+  value: {{ .input.max_request_bytes | int64 | quote }}
+- name: VLM_METADATA_REVISION
+  value: {{ .metadata_revision | quote }}
+{{- end -}}
+
+{{/*
+Shared VLM provider connection settings
 */}}
 {{- define "deepsearch.template.vlm.config" -}}
 {{- $outer := . -}}

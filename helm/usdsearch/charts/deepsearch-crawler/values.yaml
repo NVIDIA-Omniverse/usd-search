@@ -68,9 +68,14 @@ podSecurityContext:
   runAsNonRoot: true
 
 crawler:
+  # `path` accepts either a single string (one crawler Deployment) or a list
+  # of strings (one Deployment per path, all sharing every other `crawler.*`
+  # / chart setting):
+  #   path: "/"
+  #   path: ["/foo", "/bar"]
   path: "/"
 
-  extraConfig: 
+  extraConfig:
     # include_patterns:
     # - ".*include_path_pattern_1.*"
     # - ".*include_path_pattern_2.*"
@@ -78,7 +83,7 @@ crawler:
     # - ".*exclude_path_pattern_1.*"
     # - ".*exclude_path_pattern_2.*"
 
-resources: 
+resources:
   limits:
     cpu: 1
     memory: 5Gi
@@ -87,7 +92,7 @@ resources:
     memory: 5Gi
 
 # Enable liveness check before container start-up. This liveness checks verifies that
-# all resources that microservice depends on a ready before initialization. These 
+# all resources that microservice depends on a ready before initialization. These
 # resources include:
 #  * Redis
 enableLivenessChecks: true

@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import logging
-from typing import Any, List
+from typing import Any, List, Optional
 
 from asset_graph_service_client.api.ags_scene_graph_api import AGSSceneGraphApi
 from asset_graph_service_client.api_client import ApiClient
@@ -39,15 +39,34 @@ from search_utils.storage_client import (
     VerifyBatchAccessResponse,
 )
 from search_utils.telemetry_utils import AsyncIteratorWrapper
+from search_utils.url_mapping import normalize_upstream_document
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
-async def check_acl(urls: list[RemoteFileUri], storage_client: StorageClient) -> list[str]:
+#: Why a URL was excluded from a result set. `no_access_or_missing` is for
+#: backends that cannot tell the two apart (Nucleus; see the TODOs in
+#: `check_access`); keeping it distinct from `not_found` stops a data defect from
+#: reading as a permissions problem.
+SKIP_NOT_FOUND = "not_found"
+SKIP_ACCESS_DENIED = "access_denied"
+SKIP_NO_ACCESS_OR_MISSING = "no_access_or_missing"
+SKIP_DELETED = "deleted"
+SKIP_RESOLVED_ELSEWHERE = "resolved_elsewhere"
+
+
+async def check_access(
+    urls: list[RemoteFileUri], storage_client: StorageClient
+) -> dict[str, VerifyBatchAccessResponse]:
+    """Per-URL reachability verdicts, keyed by URL; unanswered URLs are absent.
+
+    The detailed form of :func:`check_acl`, for callers that must explain an
+    exclusion rather than just filter it out.
+    """
     max_requests = 500
 
-    results = []
+    verdicts: dict[str, VerifyBatchAccessResponse] = {}
 
     logger.debug("Checking ACLs for: %s", urls)
     res: list[VerifyBatchAccessResponse]
@@ -61,23 +80,28 @@ async def check_acl(urls: list[RemoteFileUri], storage_client: StorageClient) ->
         logger.debug("ACL batch check raw results: %s", res)
         # TODO: r.exists id broken in nucleus - returns true for items that do not exist
         # TODO: verify that r.exists is =False when acl check fails
-        results.extend([r.uri for r in res if r.exists])
+        for r in res:
+            verdicts[r.uri] = r
         if logger.getEffectiveLevel() <= logging.DEBUG:
-            for r in res:
-                acl_ok = []
-                acl_denied = []
-                if not r.exists:
-                    acl_denied.append(r.uri)
-                else:
-                    acl_ok.append(r.uri)
-                logger.debug(
-                    "ACL batch check results: \nallowed: %s \ndenied: %s",
-                    acl_ok,
-                    acl_denied,
-                )
+            logger.debug(
+                "ACL batch check results: \nallowed: %s \ndenied: %s",
+                [r.uri for r in res if r.exists],
+                [r.uri for r in res if not r.exists],
+            )
 
+    return verdicts
+
+
+def skip_reason(verdict: Optional[VerifyBatchAccessResponse]) -> str:
+    """One access verdict as a reason string from the vocabulary above."""
+    if verdict is None or verdict.access_denied is None:
+        return SKIP_NO_ACCESS_OR_MISSING
+    return SKIP_ACCESS_DENIED if verdict.access_denied else SKIP_NOT_FOUND
+
+
+async def check_acl(urls: list[RemoteFileUri], storage_client: StorageClient) -> list[str]:
+    results = [url for url, verdict in (await check_access(urls, storage_client)).items() if verdict.exists]
     logger.debug("ACL check results: %s", results)
-
     return results
 
 
@@ -137,6 +161,11 @@ async def get_instance_prims_from_search_results(
     # TODO: As a potential performance optimization, we could consider using a single call to get_prims_asset_graph_usd_prims_get
     # and then parsing the data in memory.
     for result, instance_prims in zip(search_results, prims):
+        # A prim carries `scene_url` and `source_asset_url`, which AGS has already
+        # put in the public form where the deployment publishes one. Normalize so
+        # these match the internal URLs the rest of the result is built from; the
+        # response rewrite at the router makes the whole payload public together.
+        instance_prims = normalize_upstream_document(instance_prims)
         result.in_scene_instance_prims = [Prim(**prim.model_dump()) for prim in instance_prims]
 
     return search_results

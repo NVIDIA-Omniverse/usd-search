@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import asyncio
+import logging
 import os
 from typing import Annotated, List, Optional
 
@@ -31,20 +32,35 @@ from plugins import BasePlugin, Plugins
 from storage.src.client import NGSearchStorageClient, Status, StorageClientInput
 from storage.src.services.config import NGSearchStorageSearchBackendConfig
 
+from search_utils.asset_uri import uri_path_spellings
 from search_utils.storage_client import PathType, StorageClient
+from search_utils.url_mapping import AssetUrl
 
 from ..config import INFOEndpointServiceConfig
 from .clients import get_storage_client
 from .exceptions import (
     AssetNotFoundError,
-    EmptyPluginList,
     InvalidURL,
     NGSearchStorageConnectionError,
 )
 from .models import AssetProcessingResponse, ProcessingStatus
 from .utils import get_plugin_names_with_descriptions
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/process")
+
+
+async def _existing_spelling(storage_client: StorageClient, url: str) -> Optional[str]:
+    """``url``, else its percent-decoded spelling, whichever exists on the storage backend."""
+    # Original first: a key may really contain "%20" (same rule as /download/asset).
+    for spelling in uri_path_spellings(url):
+        exists, _ = await storage_client.check_if_exists(spelling)
+        if exists:
+            if spelling != url:
+                logger.info("Processing percent-encoded asset URL under its stored spelling: %s", spelling)
+            return spelling
+    return None
 
 
 @router.get(
@@ -73,7 +89,7 @@ this USD Search instance could be retrieved using **/info/plugins** endpoint.
 async def submit_for_processing(
     request: Request,
     url: Annotated[
-        str,
+        AssetUrl,
         Query(description="Asset URL which should be submitted for priority processing"),
     ],
     plugins: Annotated[
@@ -100,16 +116,17 @@ async def submit_for_processing(
         plugins_to_be_reset = [plugin_name for plugin_name in plugins_to_be_reset if plugin_name in plugins]
 
     if refresh_plugins and len(plugins_to_be_reset) == 0:
-        raise EmptyPluginList("Empty list of plugins that require to be reset")
+        logger.warning("No plugins were passed for re-indexing of asset URL: %s", url)
 
     # check if URL is valid
     if not storage_client.is_valid_uri(url):
         raise InvalidURL(f"Invalid URL: '{url}'")
 
     # check if asset exists on the storage backend
-    exists, _ = await storage_client.check_if_exists(url)
-    if not exists:
+    resolved_url = await _existing_spelling(storage_client, url)
+    if resolved_url is None:
         raise AssetNotFoundError(f"Asset with URL: {url} is missing on the storage backend")
+    url = resolved_url
 
     path_item: PathType = await anext(storage_client.list_items(uri_list=[url]))
 

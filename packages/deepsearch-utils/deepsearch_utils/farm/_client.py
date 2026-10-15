@@ -303,6 +303,19 @@ class FarmClient:
         else:
             await self.output_dict.delete(uri)
 
+    @staticmethod
+    def _content_or_raise(r: ProcessedItemContent) -> dict:
+        """Return the rendered content of ``r``, or raise the exception matching its error status."""
+        if r["status"] == ResponseStatus.empty_scene:
+            raise EmptyScene(r["response"])
+        if r["status"] == ResponseStatus.load_error:
+            raise LoadError(r["response"])
+        if r["status"] == ResponseStatus.timeout:
+            raise FarmTimeoutError(r["response"])
+        if r["status"] != ResponseStatus.ok:
+            raise RenderingError(r["response"])
+        return r["content"]
+
     def _process_item_content(
         self, item_content, task_id: Optional[str], uri: str, fields: List[str] = []
     ) -> ProcessedItemContent:
@@ -313,7 +326,9 @@ class FarmClient:
             )
         elif item_content == ServerResponses.rendering_error.value:
             return ProcessedItemContent(status=ResponseStatus.error, response={"task_id": task_id, "uri": uri})
-        elif item_content == "" or (
+        elif item_content == ServerResponses.timeout.value:
+            return ProcessedItemContent(status=ResponseStatus.timeout, response={"task_id": task_id, "uri": uri})
+        elif item_content in (ServerResponses.empty.value, ServerResponses.empty_scene.value) or (
             isinstance(item_content, dict) and all([len(v) == 0 for v in item_content.values()])
         ):
             return ProcessedItemContent(
@@ -593,7 +608,13 @@ class FarmClient:
                     )
                 await asyncio.sleep(10)
 
-            if self.ds_renderer_config.pending_job_limit >= 0:
+            # pending_job_limit == 0 is a self-contradicting throttle: dispatching
+            # anything immediately makes pending >= 1, which can never satisfy
+            # "0 pending allowed" again through normal operation - the worker
+            # would block forever after its very first dispatch. Treat 0 (and
+            # negative) the same as "disabled", matching pending_job_limit's own
+            # documented default of -1.
+            if self.ds_renderer_config.pending_job_limit > 0:
                 pending_jobs = await self.get_pending_jobs()
                 while len(pending_jobs) > self.ds_renderer_config.pending_job_limit:
                     farm_utils_logger.warning(
@@ -736,14 +757,13 @@ class FarmClient:
                 # if await self.check_data(uri):
                 try:
                     item_content = await self.get_data(uri)
-                    if item_content == "":
-                        raise EmptyScene({"uri": uri})
-                    elif item_content == "load_error":
-                        raise LoadError({"uri": uri})
-                    else:
-                        return self.filter_dict(item_content, fields)
                 except KeyError:
                     pass
+                else:
+                    # cached results can be error sentinels too, so map them exactly like fresh ones
+                    return self._content_or_raise(
+                        self._process_item_content(item_content=item_content, task_id=None, uri=uri, fields=fields)
+                    )
 
                 # send rendering request
                 if uri not in self.uri_to_task_mapping.keys():
@@ -773,21 +793,7 @@ class FarmClient:
                     timeout=timeout * req["batch_size"],
                     status_check_timeout=status_check_timeout,
                 )
-                if r["status"] == ResponseStatus.empty_scene:
-                    raise EmptyScene(r["response"])
-
-                elif r["status"] == ResponseStatus.load_error:
-                    raise LoadError(r["response"])
-
-                elif r["status"] == ResponseStatus.timeout:
-                    raise FarmTimeoutError(r["response"])
-
-                elif r["status"] != ResponseStatus.ok:
-                    raise RenderingError(r["response"])
-
-                # return content
-                content = r["content"]
-                return content
+                return self._content_or_raise(r)
 
             finally:
                 # update batch counter

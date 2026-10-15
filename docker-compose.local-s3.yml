@@ -35,7 +35,7 @@
 #
 #   # With GPU plugins (rendering + thumbnail generation):
 #   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml \
-#     -f docker-compose.local-s3.yml up --build
+#     -f docker-compose.local-s3.yml -f docker-compose.local-s3.gpu.yml up --build
 #
 # Environment variables (all optional):
 #   LOCAL_S3_DATA_DIR   — host path to your assets (default: ./local-assets)
@@ -54,7 +54,7 @@ services:
   # ─── MinIO (S3-compatible local storage) ─────────────────────────────────
 
   minio:
-    image: minio/minio:latest
+    image: gitlab-master.nvidia.com:5005/omniverse/deeptag/usdsearch/minio:latest
     container_name: usdsearch-minio
     restart: unless-stopped
     ports:
@@ -79,7 +79,7 @@ services:
       start_period: 5s
 
   minio-init:
-    image: minio/mc:latest
+    image: gitlab-master.nvidia.com:5005/omniverse/deeptag/usdsearch/mc:latest
     container_name: usdsearch-minio-init
     depends_on:
       minio:
@@ -151,20 +151,6 @@ services:
     depends_on:
       minio-init:
         condition: service_completed_successfully
-
-  # ─── GPU plugin worker overrides (active only when gpu-plugins overlay is also used) ─
-
-  rendering-job:
-    environment:
-      - S3_STORAGE_AWS_ENDPOINT_URL=http://minio:9000
-
-  monitor-worker-thumbnail-generation:
-    environment:
-      <<: *local-s3-env
-
-  monitor-worker-rendering-to-embedding:
-    environment:
-      <<: *local-s3-env
 
 volumes:
   minio-data:

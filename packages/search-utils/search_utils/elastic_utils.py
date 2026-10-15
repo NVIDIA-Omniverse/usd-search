@@ -44,6 +44,9 @@ ES_MAX_INNER_RESULT_WINDOW = int(os.getenv("ES_MAX_INNER_RESULT_WINDOW", "100"))
 
 ES_TIMEOUT = float(os.getenv("ES_TIMEOUT", "30"))
 ES_MAX_RETRIES = int(os.getenv("ES_MAX_RETRIES", "5"))
+# gzip request/response bodies. Disable via ``ES_HTTP_COMPRESS=false`` if an intermediary
+# mangles the compressed payload (see OSBackendSettings.os_http_compress).
+ES_HTTP_COMPRESS = str2bool(os.getenv("ES_HTTP_COMPRESS", "True"))
 
 tracer = trace.get_tracer(__name__)
 EXTENDED_TRACING = str2bool(os.getenv("EXTENDED_TRACING", "False"))
@@ -112,14 +115,14 @@ class ESBackend:
             timeout=ES_TIMEOUT,
             max_retries=ES_MAX_RETRIES,
             retry_on_timeout=True,
-            http_compress=True,
+            http_compress=ES_HTTP_COMPRESS,
         )
         self.async_es = AsyncElasticsearch(
             **self.es_args,
             timeout=ES_TIMEOUT,
             max_retries=ES_MAX_RETRIES,
             retry_on_timeout=True,
-            http_compress=True,
+            http_compress=ES_HTTP_COMPRESS,
         )
         self.observability = es_observability
         self.helpers = helpers

@@ -13,33 +13,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-
 from fastapi import APIRouter, Request
 
+from ..utils import TrackingSemaphore
 from .models import HealthResponse, HealthStatus, ReadinessResponse, ReadinessStatus
 
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health")
+@router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(status=HealthStatus.OK)
 
 
-@router.get("/readyz")
+@router.get("/readyz", response_model=ReadinessResponse)
 async def readyz(
     fastapi_request: Request = None,
 ) -> ReadinessResponse:
-    kit_semaphore: asyncio.Semaphore = fastapi_request.app.state.semaphore
-    n_waiters = len(kit_semaphore._waiters) if kit_semaphore._waiters is not None else 0
-    if (
-        fastapi_request.app.state.kit_worker_settings.n_allowed_waiting_requests < 0
-        or n_waiters <= fastapi_request.app.state.kit_worker_settings.n_allowed_waiting_requests
-    ):
+    semaphore: TrackingSemaphore = fastapi_request.app.state.semaphore
+    n_waiters = semaphore.waiters
+    n_allowed = fastapi_request.app.state.worker_settings.n_allowed_waiting_requests
+    if n_allowed < 0 or n_waiters <= n_allowed:
         return ReadinessResponse(status=ReadinessStatus.OK)
-    else:
-        return ReadinessResponse(
-            status=ReadinessStatus.NOT_READY,
-            reason=f"Too many waiting requests: {n_waiters} > {fastapi_request.app.state.kit_worker_settings.n_allowed_waiting_requests}",
-        )
+    return ReadinessResponse(
+        status=ReadinessStatus.NOT_READY,
+        reason=f"Too many waiting requests: {n_waiters} > {n_allowed}",
+    )

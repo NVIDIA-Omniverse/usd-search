@@ -40,7 +40,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-export REPO=nvcr.io/omniverse/deeptag-internal
+export REPO=nvcr.io/m3sujtetvf5w/usdsearch
 
 # Dependencies are installed inside the image directly from
 # docker/pyproject.toml + docker/uv.lock by the Dockerfile (uv export at build

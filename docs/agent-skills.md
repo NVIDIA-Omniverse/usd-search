@@ -8,8 +8,8 @@ without them.
 Both agents share one source of truth at [`skills/`](../skills/);
 `.claude/skills` and `.codex/skills` are compat symlinks pointing at it.
 The skill bodies are written agent-neutrally — Codex's `AGENTS.md`
-runtime notes map the generic verbs (e.g. "inspect the thumbnails") onto
-Codex-specific mechanics like `codex exec --image`.
+runtime notes map generic verbs such as "inspect the thumbnails" onto the
+main agent's native `view_image` tool.
 
 <p align="center">
   <img src="quickstart-user-journey.svg" alt="USD Search /quickstart — first-time user journey" width="80%">

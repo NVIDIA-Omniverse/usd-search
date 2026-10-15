@@ -9,6 +9,36 @@ graphs, and on-demand processing.
 - Text / image / hybrid search with plain-language filters and a VLM Validated / Lower relevance split.
 - Asset modal with a zoomable image preview (wheel-zoom + drag-pan) and a zoomable, pannable dependency graph.
 - Queued download manager for assets and their dependencies.
+- Paged results with a "Load more" button, and an explanation of why paging stopped when it stops early.
+
+### How many results you can page through
+
+A hybrid (multi-leg) search fuses its legs inside the API process over a bounded
+candidate window, so **the window is the reachable result set** — the default 200
+is not the corpus size, and no amount of paging sees past it. The bar above the
+results shows "Showing X of N results" — with the loaded count in brand green —
+and an info icon that explains where N comes from and names the setting that lifts
+it. The icon is there from the first page, not only once "Load more" disappears;
+hover it, and the panel stays open long enough to click through to the setting.
+
+Two controls:
+
+- **Per page** — in the results bar, beside the count. How many results each page
+  fetches (the `limit` request field). Changing it **does not re-run the search**:
+  the server keeps `limit` out of the query fingerprint so a cursor survives a
+  resize, and the next "Load more" simply fetches a bigger page from where the
+  walk left off. Everything already on screen stays put.
+- **Window size** — Advanced scoring → Reciprocal Rank Fusion. How many results
+  are reachable in total (`scoring_config.rrf_config.window_size`). Presets are
+  100 / 200 / 500 with a custom ceiling of 1000. This one **does** restart the
+  search, because the window is pinned into the cursor for consistency.
+
+Raising the window is not free — every leg fetches that many documents per query,
+and the similarity dedup sweep is quadratic in it — which is why the UI stops well
+short of the server's own 10,000 ceiling. To change the default for everyone
+instead, set Helm `pagination.default_window` (env `PAGINATION_DEFAULT_WINDOW`) on
+the search REST API; `DEFAULT_WINDOW` in `src/utils/pagination.js` mirrors it and
+should be updated to match.
 
 ## Quick start (with the rest of the stack)
 

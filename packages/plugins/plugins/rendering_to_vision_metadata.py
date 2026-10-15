@@ -41,8 +41,6 @@ from PIL import Image
 # local/proprietary modules
 from storage.src.client import NGSearchStorageHelper, Result, StorageClientInput
 
-from search_utils.misc_utils import image_to_base64
-
 from .base_plugin import BasePlugin, PLuginBatchItem
 from .config import VisionMetadataPluginConfig
 from .image_to_vision_metadata import ImageToVisionMetadata
@@ -73,9 +71,6 @@ class RenderingToVisionMetadata(ImageToVisionMetadata, BasePlugin):
         self.asset_load_timeout = 600
         self.field_name = "images_meta"
         self._metadata_generation: Optional[MetadataGeneration] = None
-
-    def asset_state_hash(self, hash_value: str) -> str:
-        return BasePlugin.asset_state_hash(self, hash_value)
 
     @property
     def config(self) -> VisionMetadataPluginConfig:
@@ -128,13 +123,20 @@ class RenderingToVisionMetadata(ImageToVisionMetadata, BasePlugin):
             with ThreadPoolExecutor(1) as pool:
 
                 def fn():
-                    return [[Image.fromarray(im).convert("RGB") for im in b[self.field_name]] for b in batch_data]
+                    previews = []
+                    for b in batch_data:
+                        images = []
+                        for im in b[self.field_name]:
+                            image = Image.fromarray(im).convert("RGB")
+                            images.append(image)
+                        previews.append(images)
+                    return previews
 
                 previews = await loop.run_in_executor(pool, fn)
 
             base64_images_list = []
             for sample_preview in previews:
-                base64_images_list.append([image_to_base64(im) for im in sample_preview])
+                base64_images_list.append(self.encode_vlm_images(sample_preview))
 
             output_dict = await self.get_os_content(base64_images_list)
 

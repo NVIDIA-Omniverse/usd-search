@@ -149,7 +149,6 @@ async def render(
 
     # If not in cache, render the asset
     with TemporaryDirectory() as temp_dir:
-
         if mdl_template_url is None and mdl_stdin is None and base_object_type is not None:
             if base_object_type == BaseObjectType.shaderknob:
                 mdl_template_url = "/data/usd/scene.usd"
@@ -171,7 +170,7 @@ async def render(
             ),
             auth=auth,
             semaphore=fastapi_request.app.state.semaphore,
-            worker_settings=fastapi_request.app.state.kit_worker_settings,
+            worker_settings=fastapi_request.app.state.worker_settings,
         )
 
         # Read the data from the file that was written by the rendering service

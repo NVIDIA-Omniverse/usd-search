@@ -16,3 +16,14 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Standalone uv project, excluded from the root workspace (see the root
+# pyproject's `exclude`): as a member, its deps would land in the usdsearch
+# image and THIRD_PARTY_NOTICE.md, neither of which ships the watcher.
+[dependency-groups]
+test = ["pytest>=8.0"]
+
+# Stops pytest's inifile search here, so the workspace-root addopts (coverage,
+# reruns, timeout plugins) don't apply to this env.
+[tool.pytest.ini_options]
+addopts = "-vv -ra"

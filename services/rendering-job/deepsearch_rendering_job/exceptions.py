@@ -55,5 +55,5 @@ class ProcessLimitReachedError(ExceptionWithTraceback):
     pass
 
 
-class KitOutOfMemoryError(ExceptionWithTraceback):
+class OutOfMemoryError(ExceptionWithTraceback):
     pass

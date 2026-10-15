@@ -61,7 +61,31 @@ microservices:
       prometheus.io/port: "8000"
       prometheus.io/scrape: "true"
 
-    # liveness probe configuration
+    # Pod scheduling. Left unset, the deployment gets built-in *preferred* pod
+    # affinities: strongly toward the Redis node (weight 50) and weakly toward the
+    # api-gateway node (weight 10). Redis holds the RRF ranking cache, which every
+    # paged search reads and every first page writes, so a cross-node Redis puts a
+    # network round trip on the request path.
+    #
+    # Setting this REPLACES those defaults wholesale rather than merging — copy the
+    # block from templates/deployment_search_rest_api.yaml if you want to keep them.
+    # affinity: {}
+
+    # startup probe configuration. Gates the liveness and readiness probes until
+    # the app finishes its lifespan startup (OpenSearch mapping check, Redis
+    # caches, VLM + LLM capability probes against remote endpoints). Those remote
+    # probes can take tens of seconds, which would otherwise exhaust the liveness
+    # budget and restart the pod just as it becomes ready. Set to null to disable.
+    startupProbe:
+      httpGet:
+        path: /health
+        port: http
+      periodSeconds: 5
+      timeoutSeconds: 5
+      failureThreshold: 24
+    # liveness probe configuration. When startupProbe is enabled, this does not
+    # run until the startup probe first succeeds (initialDelaySeconds is then
+    # counted from that point).
     livenessProbe:
       httpGet:
         path: /health
@@ -134,13 +158,99 @@ microservices:
       concurrency: null
       # Concurrent HEAD requests for the size-only (pre-flight) preview (default 16).
       size_check_concurrency: null
-      # Max total bundle size in bytes. 0 = unlimited (default); a positive value
-      # rejects oversized bundles with HTTP 413.
-      max_bundle_bytes: null
-      # Directory used to assemble the ZIP on disk. null = system default. On
-      # Kubernetes, point this at a mounted emptyDir{medium: Memory} / tmpfs volume
-      # to assemble in RAM without consuming the container's heap.
+      # Max bundle size in bytes (413 above it). Keep max_concurrent ×
+      # max_bundle_bytes under downloadTmpDir's sizeLimit.
+      max_bundle_bytes: 2147483648
+      # Bundle assemblies in flight per pod (0 = unlimited); bounds downloadTmpDir use.
+      max_concurrent: 4
+      # Seconds to wait for a slot before 503. Keep below the gateway's 300s timeout.
+      queue_timeout: 60
+      # Where the ZIP is assembled and served from. null = the downloadTmpDir
+      # volume. Must be disk-backed, NOT medium: Memory (see docs/asset-download.md).
       temp_dir: null
+      # "auto" (default) deflates everything except already-compressed members;
+      # "deflate" compresses everything, "stored" nothing.
+      compression: null
+      # Extensions stored uncompressed under compression: auto.
+      # null = the built-in list (images, video, archives; not USD).
+      stored_extensions: null
+      # Span per bundle member (null = true) — shows storage body-transfer time.
+      trace_files: null
+
+    # Persistent cache of the asset_url -> image_id[] resolution (Redis). Serving a
+    # thumbnail via GET /images normally costs an OpenSearch lookup to map the asset
+    # to its per-view image ids; this cache memoizes that hop so repeat thumbnail
+    # requests skip it. Connection comes from REDIS_URL (always set by the chart's
+    # env config map); keys are separated by prefix, not a dedicated DB. TTL-bounded:
+    # a re-indexed asset's thumbnails are picked up within ttl_seconds, and the ACL
+    # check still runs on every request.
+    image_resolution_cache:
+      # Master switch. The cache also needs REDIS_URL (always provided), so leaving
+      # this true is enough to enable it.
+      enabled: true
+      # Per-entry TTL in seconds. Bounds staleness and cache size. Must be > 0.
+      ttl_seconds: 3600
+
+    # Paging past the first page of search results. Nothing here is mandatory:
+    # cursors are unsigned and self-describing, so any replica can continue a
+    # cursor issued by any other with no shared secret and nothing to keep in sync.
+    pagination:
+      # How deep `offset`/`cursor` may reach for a text query or a multi-leg
+      # (hybrid) query. NOT applied to filter-only queries, which page to arbitrary
+      # depth over a unique keyword sort — the "browse everything matching these
+      # filters" case. Multi-leg queries are additionally capped by the RRF fusion
+      # window, since fusion happens in the API process over a bounded pool.
+      # Raising this above OpenSearch's index.max_result_window (10000) only helps
+      # shapes that can use search_after.
+      max_offset: 10000
+      # Fusion window pinned for a multi-leg query that does not set
+      # scoring_config.rrf_config.window_size. When paging, the window IS the
+      # reachable result set — a client can never see past it — so this doubles as
+      # "how many hybrid results are reachable at all". It is not free: every leg
+      # fetches this many documents per request, and the similarity sweep (when
+      # similarity_threshold is set) is O(window^2). 200 gives 10 pages at a page
+      # size of 20; raise it per request via scoring_config.rrf_config.window_size
+      # rather than here if only some callers need depth.
+      #
+      # The Explorer UI mirrors this value (DEFAULT_WINDOW in
+      # services/explorer/src/utils/pagination.js) to label its window-size presets.
+      # Changing it here does not break the UI — reachable totals are read live from
+      # the response — but the Explorer will keep calling 200 the default, so check
+      # the UI when you tune this.
+      default_window: 200
+      # Cursor lifetime in seconds. Bounds how long a cursor may describe an index
+      # that has moved on underneath it; an expired cursor is a clean 400 telling
+      # the client to re-issue the search. 0 disables expiry. Clamped down to
+      # ranking_cache.ttl_seconds when that cache is enabled.
+      cursor_ttl_seconds: 900
+      # Storage access filtering runs after a page is cut, so pages are topped
+      # back up to the requested size. overfetch_factor is how much extra each
+      # attempt fetches (3x fills a page in one round trip for a caller who can
+      # see a third of the corpus); max_fetches bounds what the rest cost, after
+      # which the caller gets a short page plus has_more=true rather than a
+      # request that walks the index looking for something visible. Raise
+      # max_fetches for deployments where users can see only a small slice.
+      access_filter:
+        overfetch_factor: 3
+        max_fetches: 4
+      # Persistent cache of RRF-fused result orderings (Redis). Multi-leg queries
+      # are fused in the API process, so OpenSearch cannot page them: without this,
+      # every page re-runs every leg (including kNN) and re-fuses the whole window
+      # just to slice out one page. A cache, never a session — the cursor carries
+      # everything needed to recompute, so a miss, an expiry or a Redis outage
+      # falls back to re-running the legs. Only the order is stored (ids + scores),
+      # never document bodies, so it cannot serve a stale _source.
+      ranking_cache:
+        # Master switch. The cache also needs REDIS_URL (always provided by the
+        # chart's env config map), so leaving this true is enough to enable it.
+        enabled: true
+        # Per-ranking TTL in seconds. Unlike the verdict cache this MUST expire: a
+        # ranking is a snapshot of a mutating index.
+        ttl_seconds: 900
+        # Approximate upper bound on cached rankings, enforced app-side via a ZSET
+        # LRU index (never instance maxmemory, which would evict the indexing
+        # pipeline's Streams data). 0 disables the cap.
+        max_entries: 2000
 
     # In order to verify that client application has access to view certain assets
     # all search results are verified with the Storage backend. While this functionality
@@ -205,8 +315,41 @@ microservices:
     validation:
       # Enable validation of search results
       enabled: false
+      # What the server does with verdicts: filter (drop explicit non-matches) | rerank (reorder, keep all) | annotate (attach only, pre-modes behavior)
+      mode: "filter"
+      # How each verdict is produced: generative (structured JSON verdict) | logprob (short one-word Yes/No judge question, read from first-token log-probs; provider must return top_logprobs). Same provider + model.
+      method: "generative"
+      # Tuning for method: logprob (ignored otherwise). cover_min: min Yes/No mass to trust a verdict; abstain_as_no: false = no verdict on abstain (fail-open), true = is_match=false; top_logprobs (<=20); max_tokens: judge completion cap; domain_context: true = send the domain_context below alone as the judge system prompt (default false: the bare question, no system prompt; changes the verdict cache identity); asset_facts: the facts a text query's judge reads from each request (any of path, vlm_metadata_caption; [] = off, the rendered views alone; changes the verdict cache identity); asset_path_roots: regexes for a path's content root, the path fact keeps what follows the first match ([] = the whole path); asset_path_max_chars / asset_caption_max_chars: the path fact keeps its last N characters, the caption fact its first N; image_text_query: true (default) = an image + text query with one asset view asks whether the candidate matches both (false: the text is named in the image question, which passes unrelated assets more often; part of the verdict cache identity when true).
+      logprob:
+        cover_min: 0.2
+        abstain_as_no: false
+        top_logprobs: 20
+        max_tokens: 6
+        domain_context: false
+        asset_facts: []
+        asset_path_roots: []
+        asset_path_max_chars: 300
+        asset_caption_max_chars: 200
+        image_text_query: true
       # maximum number of concurrent requests to the VLM service
       max_concurrent_requests: 50
+      # Attempts per verdict call (1 = no retry; a transient provider error then fails the whole validated request with a retryable 503). 2 = one backoff retry on transient errors only; needed against a vLLM engine, whose 5 s idle keep-alive races a verdict burst that starts about 5 s after the previous one. Part of the verdict cache identity.
+      max_tries: 1
+      # Asset views sent to the VLM per verdict (highest-ranked unique views first)
+      max_images_per_validation: 1
+      # --
+      # @raw
+      #
+      # Longest edge (px) of every image sent to the VLM (-> USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX); larger images are shrunk (LANCZOS, never enlarged). 0 = stored size (the 1024-px thumbnail); 448 = the evaluated view (~250 instead of 1,077 prompt tokens per verdict). Part of the verdict cache identity when > 0. Only emitted when non-zero.
+      #
+      # @notationType -- yaml
+      image_max_px: 0
+      # Extra OpenAI request-body fields merged into every validation call, as a
+      # JSON object (-> USDSEARCH_VISION_VALIDATION_EXTRA_BODY). Empty by default;
+      # the env is only emitted when set. Use it for provider knobs the OpenAI
+      # schema doesn't cover — e.g. disabling thinking on a vLLM-served Qwen:
+      # `{"chat_template_kwargs": {"enable_thinking": false}}`.
+      extra_body: {}
       # --
       # @raw
       #
@@ -220,9 +363,25 @@ microservices:
         env_prefix: "USDSEARCH_LLM_"
         base_url: "https://inference-api.nvidia.com"
       # Model used for per-result validation, on the provider above.
-      model: "gcp/google/gemini-3.5-flash"
+      model: "gcp/google/gemini-3.1-flash-lite"
 
-      # Domain context to use for validation
+      # Persistent verdict cache (Redis L2). Identical validations (same config,
+      # query, and asset images) reuse a cached verdict instead of re-calling the
+      # VLM, and verdicts survive restarts / are shared across replicas. The
+      # connection comes from REDIS_URL (always set by the chart's env config map);
+      # keys are separated by prefix, not a dedicated DB.
+      cache:
+        # Master switch. The cache also needs REDIS_URL (always provided), so
+        # leaving this true is enough to enable it.
+        enabled: true
+        # Per-entry TTL in seconds. Empty = no expiry (default); cache size is
+        # bounded by max_entries, not TTL.
+        ttl_seconds: ""
+        # Approximate LRU cap on cached verdicts (~2 GB at ~2 KB/entry). 0 = unbounded.
+        max_entries: 1000000
+
+      # Domain context for validation. Always rendered into the generative system prompt;
+      # sent to the logprob judge only with logprob.domain_context: true above.
       domain_context: |
         You are validating search results for a 3D asset search engine used by professional 3D artists and developers.
 
@@ -266,9 +425,12 @@ microservices:
       requests:
         cpu: 1
         memory: 1Gi
+        # Declared so the scheduler accounts for downloadTmpDir.
+        ephemeral-storage: 10Gi
       limits:
         cpu: 2
         memory: 2Gi
+        ephemeral-storage: 12Gi
 
     loggingConfig:
       version: 1
@@ -399,6 +561,10 @@ microservices:
       # (-> USDSEARCH_LLM_PARSING_MAX_TOKENS, only set when non-empty). Raise this
       # if structured output gets truncated on large field catalogs.
       max_tokens: 1536
+      # Extra OpenAI request-body fields merged into every parser call, as a JSON
+      # object (-> USDSEARCH_LLM_PARSING_EXTRA_BODY). Empty by default; the env is
+      # only emitted when set — same purpose as the validation/metadata extra_body.
+      extra_body: {}
       # Optional SEARCH-LLM-specific OpenAI-compatible endpoint. Leave base_url
       # and api_key empty to share the connection configured for validation /
       # vision_endpoint. A non-empty base_url and/or api_key overrides just that
@@ -495,8 +661,8 @@ microservices:
       # fall back to the in-image copy
       # (services/deepsearch_api/.../llm_parse/search_fields.yaml). Kept in sync
       # with that copy by ci/helm/tests/unit/test_llm_parsing_defaults_sync.sh
-      # (CI fails on drift). SimReady physics filters are an opt-in extra (note
-      # below); the default catalog is the 11 fields listed here.
+      # (CI fails on drift). The default catalog is the 11 fields listed here;
+      # the Physics filters are opt-in (note below).
       fields:
         - name: file_type
           type: array
@@ -563,16 +729,6 @@ microservices:
             kind: property_numeric
             property: "__polygon_count"
             property_env: USDSEARCH_LLM_PARSING_POLYGON_COUNT_PROPERTY
-        # --- Deployment-specific fields (not enabled by default) -------------------
-        # Filters tied to SimReady-style USD properties — rigid-body physics
-        # (physics_rigid_body), colliders (has_collider), object class
-        # (object_class), mass (physics_mass), density (physics_density) — are NOT
-        # part of the default catalog: they only return results on corpora indexed
-        # with those property conventions. A complete ready-to-use catalog that
-        # includes them ships next to search_fields.yaml as
-        # `search_fields.simready.yaml`; point USDSEARCH_LLM_PARSING_FIELDS_FILEPATH
-        # at it (helm: this `fields` list) or copy the entries you need. See
-        # docs/search-filters.md.
         - name: dimension
           type: number
           operators: [gt, gte, lt, lte]
@@ -581,6 +737,10 @@ microservices:
             - '"small objects under 1 meter" -> dimension lt 1'
             - '"large props over 3m" -> dimension gt 3'
           map: {kind: bbox}
+        # Physics filters (rigid body, collider, mass, density) are SimReady/Isaac-only
+        # and are NOT in the default catalog. Enable per deployment: use
+        # search_fields.simready.yaml (next to this file) or generate one with the
+        # /usd-property-catalog skill (see docs/search-filters.md).
 
     # Configuration of the temporary directory for the service. By default it is
     # set to use Memory medium
@@ -588,6 +748,12 @@ microservices:
       emptyDir:
         medium: Memory
         sizeLimit: 256Mi
+
+    # Backing volume for download bundles, mounted at download.temp_dir. Disk-backed
+    # on purpose. Size for max_concurrent × max_bundle_bytes plus headroom.
+    downloadTmpDir:
+      emptyDir:
+        sizeLimit: 10Gi
 
     ## Hybrid Search default configuration ################
     hybrid_search:
@@ -712,6 +878,14 @@ microservices:
             weight: 1
             field_name: siglip2-embedding.embedding
             dimension: 1536
+        # The name vote: one more RRF vote for hits whose name or path holds every query word, as whole words
+        # (read from the hits the legs returned, no extra query). Fused requests of min_words words or more, and
+        # one-word queries whose word at most rare_word_hits returned hits hold.
+        name_match:
+          enabled: True
+          weight: 1.0
+          min_words: 2
+          rare_word_hits: 1
 
   # Metadata Indexing service
   indexing_cron:

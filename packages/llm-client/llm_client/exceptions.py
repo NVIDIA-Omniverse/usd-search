@@ -28,5 +28,31 @@ class LLMLengthException(LLMException):
     """
 
 
+class LLMBadRequestException(LLMException):
+    """The provider rejected the request as malformed/unsupported (HTTP 4xx).
+
+    Deterministic and permanent for a given config — retrying cannot succeed
+    (e.g. the model does not support ``logprobs``, or an unsupported parameter
+    was sent). Callers should surface a configuration error, not a transient
+    "service unavailable". ``status_code`` carries the provider's HTTP status
+    when known.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class ParsingException(RuntimeError):
     """Raised when the model output cannot be parsed into the expected schema."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        validation_errors: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        super().__init__(message)
+        # Safe, structured (field location, error type) pairs for a repair prompt.
+        # The human-readable exception message must never be assumed prompt-safe.
+        self.validation_errors = validation_errors

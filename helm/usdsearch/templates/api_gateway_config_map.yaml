@@ -14,7 +14,15 @@
 # limitations under the License.
 
 {{ $apiGateway := ( index .Values "api-gateway" ) }}
-{{ $cors := printf "\"%s\"" (join " " $apiGateway.extraSettings.cors.allowedOrigins) -}}
+{{- $corsOrigins := list -}}
+{{- range $apiGateway.extraSettings.cors.allowedOrigins }}
+{{- $corsOrigins = append $corsOrigins (trimSuffix "/" .) -}}
+{{- end }}
+{{- /* Access-Control-Allow-Origin takes one origin or "*", never a list: with a
+     wildcard in the allowlist send "*", otherwise echo the request's Origin back
+     only when it is allowlisted (see the map below). */ -}}
+{{- $corsWildcard := has "*" $corsOrigins }}
+{{ $cors := ternary "\"*\"" "$usdsearch_cors_allow_origin" $corsWildcard -}}
 
 {{- if .Values.api_gateway_deployment.enabled }}
 
@@ -24,6 +32,17 @@ metadata:
   name: {{ $apiGateway.existingServerBlockConfigmap | default "deepsearch-api-gateway-config" }}
 data:
   nginx.conf: |
+    {{- if and $apiGateway.extraSettings.cors.enabled (not $corsWildcard) }}
+    # Echo the request's Origin only when it is on the allowlist. Other origins
+    # map to "", and nginx skips an add_header whose value is empty, so they get
+    # no Access-Control-Allow-Origin at all.
+    map $http_origin $usdsearch_cors_allow_origin {
+      default "";
+      {{- range $corsOrigins }}
+      {{ . | quote }} $http_origin;
+      {{- end }}
+    }
+    {{- end }}
     server {
       listen 0.0.0.0:8080;
       http2 on;
@@ -46,6 +65,7 @@ data:
           if ($request_method = OPTIONS) {
             {{ if $apiGateway.extraSettings.cors.enabled }}
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -58,6 +78,7 @@ data:
 
       {{ if $apiGateway.extraSettings.cors.enabled }}
         add_header Access-Control-Allow-Origin {{ $cors }} always;
+        add_header Vary Origin always;
         add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
         add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
       {{ end }}
@@ -66,11 +87,13 @@ data:
         location /asset_graph/usd/scene_summary/ {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -93,11 +116,13 @@ data:
         location /asset_graph/usd/scene_summary {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -119,11 +144,13 @@ data:
         location /asset_graph/usd/prims {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -145,11 +172,13 @@ data:
         location /dependency_graph {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -172,11 +201,13 @@ data:
         location /search {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -198,11 +229,13 @@ data:
       location /search_hybrid {
         {{ if $apiGateway.extraSettings.cors.enabled }}
           add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Vary Origin always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -224,11 +257,13 @@ data:
       location /vlm_validate/search_result {
         {{ if $apiGateway.extraSettings.cors.enabled }}
           add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Vary Origin always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -250,11 +285,13 @@ data:
       location /llm_parse/ {
         {{ if $apiGateway.extraSettings.cors.enabled }}
           add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Vary Origin always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -276,11 +313,13 @@ data:
       location /download {
         {{ if $apiGateway.extraSettings.cors.enabled }}
           add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Vary Origin always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -304,11 +343,13 @@ data:
       location /images {
         {{ if $apiGateway.extraSettings.cors.enabled }}
           add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Vary Origin always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -329,11 +370,13 @@ data:
       location /metrics {
         {{ if $apiGateway.extraSettings.cors.enabled }}
           add_header Access-Control-Allow-Origin {{ $cors }} always;
+          add_header Vary Origin always;
           add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
           add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
           if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -353,11 +396,13 @@ data:
         location /info {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -377,11 +422,13 @@ data:
         location /process {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -401,11 +448,13 @@ data:
         location /docs {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -425,11 +474,13 @@ data:
         location /ui {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;
@@ -450,11 +501,13 @@ data:
         location /static/ {
           {{ if $apiGateway.extraSettings.cors.enabled }}
             add_header Access-Control-Allow-Origin {{ $cors }} always;
+            add_header Vary Origin always;
             add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
             add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
 
             if ($request_method = OPTIONS) {
               add_header Access-Control-Allow-Origin {{ $cors }} always;
+              add_header Vary Origin always;
               add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
               add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
               add_header Access-Control-Max-Age 3600 always;

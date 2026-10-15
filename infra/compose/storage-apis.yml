@@ -15,9 +15,7 @@
 
 services:
   storage-api:
-    # image: nvcr.io/omniverse/deeptag-internal/storage-api-local-filesystem:0.14.0
-    # image: gitlab-master.nvidia.com:5005/omniverse/deeptag/ci-cd-storage-backends/sample-storage-api:0.0.2
-    image: nvcr.io/omniverse/deeptag-internal/sample-storage-api:0.0.2
+    image: nvcr.io/m3sujtetvf5w/usdsearch/sample-storage-api:0.0.2
     container_name: storage-api-local-filesystem
     environment:
       - FILESERVICE_STATIC_DIR=/data

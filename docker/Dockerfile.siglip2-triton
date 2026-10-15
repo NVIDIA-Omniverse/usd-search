@@ -34,7 +34,7 @@ COPY model_repo/tokenizer /models/tokenizer
 # build time avoids a separately-maintained requirements.txt that can drift out
 # of sync, and lets `docker build` work without a pre-build export step.
 COPY docker/pyproject.toml docker/uv.lock /workspace/
-RUN pip install --no-cache-dir uv \
+RUN pip install --no-cache-dir uv==0.12.23 \
     && uv export --frozen --no-hashes --directory /workspace -o /workspace/requirements.txt \
     && pip install --no-cache-dir -r /workspace/requirements.txt \
     && rm /workspace/requirements.txt
@@ -49,8 +49,9 @@ RUN rm -rf /usr/local/cuda-13.2/NsightSystems-cli-2026.2.1
 
 # vulnerability bugfixes
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssl  \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends openssl libssl3t64 \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --upgrade virtualenv==21.14.5
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \

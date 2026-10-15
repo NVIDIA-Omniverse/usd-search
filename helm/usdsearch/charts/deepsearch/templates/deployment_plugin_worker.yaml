@@ -36,6 +36,7 @@
 {{- $loggingConfigMap := include (print $.Template.BasePath "/logging_config_map.yaml") . }}
 {{- $RenderingJobTemplateConfigMap := include (print $.Template.BasePath "/rendering_job_template.yaml") . }}
 {{- $visionMetadataConfigMap := include (print $.Template.BasePath "/vision_metadata_config.yaml") . }}
+{{- $sidecarMetadataConfigMap := include (print $.Template.BasePath "/sidecar_metadata_config.yaml") . }}
 
 
 {{- if not .Values.global.maintenance_mode }}
@@ -82,6 +83,9 @@ spec:
         {{- if $plugin_config.requires_vision_metadata }}
         checksum/vision-metadata-config: {{ $visionMetadataConfigMap | sha256sum }}
         {{- end }}
+        {{- if and $plugin_config.requires_kit_worker ( ($plugin_config.kit_worker).sidecar_metadata_catalog ) }}
+        checksum/sidecar-metadata-config: {{ $sidecarMetadataConfigMap | sha256sum }}
+        {{- end }}
       labels:
         release_name: {{ $releaseName }}
         component: "deepsearch"
@@ -95,6 +99,7 @@ spec:
       {{- $globalImagePullSecrets | nindent 6 }}
       hostname: {{ $fullName }}
       volumes:
+      {{- include "deepsearch-global.storageBackendVolumes" (dict "Values" $values "Release" $release) | nindent 6 }}
       - name: logging-config
         configMap:
           name: {{ $fullName }}-logging
@@ -109,11 +114,42 @@ spec:
         configMap:
           name: {{ $fullName }}-vlm-config-{{ $plugin_name | replace "_" "-"  }}
       {{- end }}
+      {{- if and $plugin_config.requires_kit_worker ( ($plugin_config.kit_worker).sidecar_metadata_catalog ) }}
+      - name: sidecar-metadata-config
+        configMap:
+          name: {{ $fullName }}-sidecar-metadata-config-{{ $plugin_name | replace "_" "-"  }}
+      {{- end }}
       - name: dshm
         emptyDir:
           medium: Memory
       - name: tmp
         {{- toYaml $values.microservices.plugin_worker.tmpDir | nindent 8 }}
+      {{- /*
+        Backing volumes for the kit-worker sidecar. Without these the Kit asset
+        cache lives in the container's writable layer — discarded on every restart
+        and uncounted against ephemeral-storage — and /dev/shm stays at the 64Mi
+        container default.
+      */}}
+      {{- if $plugin_config.requires_kit_worker }}
+      {{- with $plugin_config.kit_worker }}
+      {{- if (.cache | default dict).enabled }}
+      - name: kit-worker-cache
+        emptyDir:
+          {{- with .cache.medium }}
+          medium: {{ . }}
+          {{- end }}
+          {{- with .cache.size_limit }}
+          sizeLimit: {{ . }}
+          {{- end }}
+      {{- end }}
+      {{- with .shm_size }}
+      - name: kit-worker-dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: {{ . }}
+      {{- end }}
+      {{- end }}
+      {{- end }}
       {{- if $plugin_config.serviceAccountName }}
       serviceAccountName: {{ $plugin_config.serviceAccountName }}
       {{- else if $plugin_config.useRenderingServiceAccount }}
@@ -160,6 +196,7 @@ spec:
             protocol: TCP
           {{- end}}
           volumeMounts:
+          {{- include "deepsearch-global.storageBackendVolumeMounts" (dict "Values" $values "Release" $release) | nindent 10 }}
           - mountPath: /logging.yaml
             name: logging-config
             subPath: logging.yaml
@@ -203,6 +240,12 @@ spec:
               value: /vision_metadata_config/image_prompt.txt
             - name: USDSEARCH_VISION_METADATA_MODEL
               value: {{ ( $plugin_config.vision_endpoint.metadata_model | default $values.vision_endpoint.metadata_model ) | quote }}
+            {{- with ( $plugin_config.vision_endpoint.metadata_extra_body | default $values.vision_endpoint.metadata_extra_body ) }}
+            - name: USDSEARCH_VISION_METADATA_EXTRA_BODY
+              value: {{ . | toJson | quote }}
+            {{- end }}
+            {{- /* Keep output identity global: one crawler dispatches every plugin. */}}
+            {{- include "deepsearch.template.vlm.metadataOutputConfig" $values.vision_endpoint | nindent 12 }}
             {{- include "deepsearch.template.vlm.config" (dict "source" $plugin_config.vision_endpoint.provider "default" $values.vision_endpoint.provider) | nindent 12 }}
             {{- end }}
             {{- if $plugin_config.requires_thumbnail_settings }}
@@ -374,11 +417,132 @@ spec:
           {{- end }}
             - name: PLUGINS_CONFIG_PATH
               value: /plugin_config/plugin.config.yaml
+            {{- with $plugin_config.kit_worker }}
+            {{- if .timeout_seconds }}
+            # Give the plugin's HTTP client a margin over the builder's own
+            # timeout, so a slow build surfaces as the builder's 408 (which
+            # carries a reason) instead of an opaque client-side timeout.
+            - name: AGS_PLUGIN_GET_GRAPH_TIMEOUT
+              value: {{ add (.timeout_seconds | int) (.client_timeout_margin | default 120 | int) | quote }}
+            # The same value the sidecar gets as KIT_TIMEOUT_SECONDS, sent on every
+            # build request. Both containers therefore read one knob, and the pair
+            # cannot drift if only one of them is restarted.
+            - name: AGS_PLUGIN_BUILD_TIMEOUT
+              value: {{ .timeout_seconds | quote }}
+            {{- end }}
+            {{- end }}
+        {{- /*
+          The kit-worker sidecar. Rendered from the `kit_worker` *map* rather than
+          from a `sidecar_containers` list entry, so a single field can be
+          overridden without restating the whole container (Helm merges maps but
+          replaces lists).
+        */}}
+        {{- if $plugin_config.requires_kit_worker }}
+          {{- $kitWorker := $plugin_config.kit_worker | default dict }}
+          {{- $kitWorkerImage := $kitWorker.image | default dict }}
+          {{- $kitWorkerCache := $kitWorker.cache | default dict }}
+        - name: kit-worker
+          {{- if $kitWorkerImage.name }}
+          image: {{ default $values.global.registry $kitWorkerImage.registry }}/{{ $kitWorkerImage.name }}:{{ $kitWorkerImage.tag }}
+          {{- else }}
+          image: {{ include "deepsearch-global.graphBuilderImage" $ }}
+          {{- end }}
+          imagePullPolicy: {{ default $values.imagePullPolicy $kitWorker.imagePullPolicy }}
+          {{- with $kitWorker.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $kitWorker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # Same logging config as the plugin-worker container beside it. Without
+            # it the sidecar falls back to the config packaged in its image, which
+            # is fixed at WARN and hides its own per-build lines.
+            - mountPath: /logging.yaml
+              name: logging-config
+              subPath: logging.yaml
+            {{- if $kitWorkerCache.enabled }}
+            - name: kit-worker-cache
+              mountPath: {{ $kitWorkerCache.mount_path | default "/cache" }}
+            {{- end }}
+            {{- if $kitWorker.shm_size }}
+            - name: kit-worker-dshm
+              mountPath: /dev/shm
+            {{- end }}
+            {{- if $kitWorker.sidecar_metadata_catalog }}
+            - name: sidecar-metadata-config
+              mountPath: /sidecar_metadata_config
+            {{- end }}
+          env:
+            - name: SENTRY_DSN
+              value: {{ $values.microservices.plugin_worker.sentry_dsn | default $.Values.global.sentry_dsn | default "" }}
+            - name: ACCEPT_EULA
+              value: {{ $license | quote }}
+            - name: LOGGING_CONFIG
+              value: /logging.yaml
+            # Same tracing config as the plugin-worker container beside it —
+            # without these the sidecar is the one hop in the indexing path that
+            # cannot report to the collector.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $values.global.tracing.OTEL_EXPORTER_OTLP_ENDPOINT }}
+            - name: OTEL_SDK_DISABLED
+              value: {{ $values.global.tracing.OTEL_SDK_DISABLED | quote }}
+            - name: OTEL_TRACES_EXPORTER
+              value: {{ $values.global.tracing.OTEL_TRACES_EXPORTER | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ printf "%s-kit-worker" $fullName }}
+            # Match the sidecar's request concurrency to the worker's: prefer the
+            # plugin-specific n_concurrent_queue_workers, else the generic one.
+            - name: N_PARALLEL_PROCESSES
+              value: {{ $plugin_config.n_concurrent_queue_workers | default $values.microservices.plugin_worker.settings.n_concurrent_queue_workers | quote }}
+            {{- if $plugin_config.indexed_properties }}
+            - name: INDEXED_PROPERTIES
+              value: {{ $plugin_config.indexed_properties | quote }}
+            {{- end }}
+            {{- if $plugin_config.indexed_property_prefixes }}
+            - name: INDEXED_PROPERTY_PREFIXES
+              value: {{ $plugin_config.indexed_property_prefixes | quote }}
+            {{- end }}
+            {{- if $kitWorker.timeout_seconds }}
+            - name: KIT_TIMEOUT_SECONDS
+              value: {{ $kitWorker.timeout_seconds | quote }}
+            {{- end }}
+            {{- if $kitWorker.memory_limit_mb }}
+            - name: KIT_WORKER_MEMORY_LIMIT_MB
+              value: {{ $kitWorker.memory_limit_mb | quote }}
+            {{- end }}
+            {{- if $kitWorkerCache.enabled }}
+            - name: CACHE_LOCATION
+              value: {{ $kitWorkerCache.mount_path | default "/cache" | quote }}
+            {{- end }}
+            {{- if $kitWorker.sidecar_metadata_catalog }}
+            - name: SIDECAR_METADATA_CONFIG_PATH
+              value: /sidecar_metadata_config/sidecar_metadata.yaml
+            {{- end }}
+          {{- with $kitWorker.env }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $kitWorker.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- /*
+          Generic extension point for any *additional* sidecars. `image` and the
+          rest are defaulted so a partial override renders instead of failing on
+          a nil lookup.
+        */}}
         {{- with $plugin_config.sidecar_containers }}
           {{- range $sidecar := . }}
+          {{- if and $plugin_config.requires_kit_worker (eq $sidecar.name "kit-worker") }}
+            {{- fail (printf "plugin %q defines a 'kit-worker' entry in sidecar_containers while requires_kit_worker is set, which would render two containers with the same name. The kit-worker sidecar is now configured under plugins.%s.kit_worker — move your overrides there and drop the sidecar_containers entry." $plugin_name $plugin_name) }}
+          {{- end }}
+          {{- $sidecarImage := $sidecar.image | default dict }}
         - name: {{ $sidecar.name }}
-          {{- if $sidecar.image.name }}
-          image: {{ default $values.global.registry $sidecar.image.registry }}/{{ $sidecar.image.name }}:{{ $sidecar.image.tag }}
+          {{- if $sidecarImage.name }}
+          image: {{ default $values.global.registry $sidecarImage.registry }}/{{ $sidecarImage.name }}:{{ $sidecarImage.tag }}
           {{- else }}
           image: {{ include "deepsearch-global.renderingJobImage" $ }}
           {{- end }}
@@ -396,19 +560,7 @@ spec:
               value: {{ $values.microservices.plugin_worker.sentry_dsn | default $.Values.global.sentry_dsn | default "" }}
             - name: ACCEPT_EULA
               value: {{ $license | quote }}
-            # Match the sidecar's request concurrency to the worker's: prefer the
-            # plugin-specific n_concurrent_queue_workers, else the generic one.
-            - name: N_PARALLEL_PROCESSES
-              value: {{ $plugin_config.n_concurrent_queue_workers | default $values.microservices.plugin_worker.settings.n_concurrent_queue_workers | quote }}
-            {{- if $plugin_config.indexed_properties }}
-            - name: INDEXED_PROPERTIES
-              value: {{ $plugin_config.indexed_properties | quote }}
-            {{- end }}
-            {{- if $plugin_config.indexed_property_prefixes }}
-            - name: INDEXED_PROPERTY_PREFIXES
-              value: {{ $plugin_config.indexed_property_prefixes | quote }}
-            {{- end }}
-          {{- with .env }}
+          {{- with $sidecar.env }}
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- with $sidecar.securityContext }}

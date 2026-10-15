@@ -74,6 +74,7 @@ spec:
           - {{ . }}
           {{- end }}
       volumes:
+      {{- include "deepsearch-global.storageBackendVolumes" . | nindent 6 }}
       - name: logging-config
         configMap:
           name: {{ $fullName }}-logging
@@ -129,6 +130,7 @@ spec:
             - name: TAG_PROBE_TIMEOUT
               value: "3600"
           volumeMounts:
+          {{- include "deepsearch-global.storageBackendVolumeMounts" . | nindent 10 }}
           - mountPath: /logging.yaml
             name: logging-config
             subPath: logging.yaml

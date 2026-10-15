@@ -34,6 +34,7 @@ class RedisPromMetrics(TypedDict):
     plugin_unique_len_metric: Gauge
     results_queue_metric: Gauge
     plugin_tasks_count_metric: Gauge
+    stream_oldest_pending_age_metric: Gauge
 
 
 class RedisCacheMetrics:
@@ -69,6 +70,14 @@ class RedisCacheMetrics:
                 "omnideepsearch_plugin_tasks_queue_size",
                 "Count of tasks for plugin queued for processing",
                 labelnames=list(self.common_labels.keys()) + ["plugin_name"],
+            ),
+            # The oldest pending entry is what holds back stream trimming: nothing
+            # behind it can be reclaimed. An age that grows past the stream's
+            # autoclaim idle time means an entry is stuck rather than being worked on.
+            stream_oldest_pending_age_metric=Gauge(
+                "omnideepsearch_stream_oldest_pending_age_seconds",
+                "Age of the oldest unacknowledged entry of a stream consumer group",
+                labelnames=list(self.common_labels.keys()) + ["stream", "stream_group"],
             ),
         )
 
@@ -120,6 +129,25 @@ class RedisCacheMetrics:
                     self.metrics["plugin_unique_len_metric"].labels(*self.common_labels.values(), plugin_name).set(
                         length
                     )
+
+                # Last, and catching everything: a stream can be reset or lose its
+                # group between the calls this makes (Redis answers NOGROUP), and no
+                # reading here is worth holding up - let alone aborting - the metrics
+                # above.
+                for stream_worker in self.cache_client.streams.values():
+                    try:
+                        for group_name, age in (await stream_worker.get_oldest_pending_ages()).items():
+                            self._metrics["stream_oldest_pending_age_metric"].labels(
+                                *self.common_labels.values(),
+                                stream_worker.stream_name,
+                                group_name,
+                            ).set(age)
+                    except Exception as exc_info:
+                        logger.warning(
+                            "Could not read the oldest pending entry of stream '%s': %s",
+                            stream_worker.stream_name,
+                            str(exc_info),
+                        )
 
             except Exception as exc_info:
                 logger.exception(

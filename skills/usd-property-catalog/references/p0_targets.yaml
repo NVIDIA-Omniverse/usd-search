@@ -13,17 +13,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Each target may carry optional UI hints passed through to generated field
+# stanzas: `label:` (display name in the Explorer) and `group:` (collapsible
+# rail section; physics-schema concepts use "Physics", dataset concepts leave
+# it unset and share the rail's default "USD Properties" group).
 targets:
   - concept: License
     field_name: license
     patterns: ['licen', 'copyright', '\brights\b', 'spdx']
     recommended_key: 'nvidia:license'
+    label: License
     note: No OpenUSD-standard key exists; needs a vendor key convention + authoring.
 
   - concept: Isaac Sim/Lab Version
     field_name: isaac_sim_version
     patterns: ['isaac.*version', 'isaacsim', 'isaac[_:]lab', 'kit.?version']
     recommended_key: 'isaac:version'
+    label: Isaac Sim version
     note: >-
       Only present indirectly today (robot structure + nested validation-feature
       versions like FET100_BASE_ISAACSIM); no asset-level app-version field.
@@ -32,12 +38,15 @@ targets:
     field_name: simready_profile
     patterns: ['sim.?ready.*profile', '_profile(_version)?$', '\bprofile\b']
     recommended_key: 'simready_metadata_validation__profile'
+    label: SimReady profile
     note: Present in the SimReady corpus (Prop-Robotics-Isaac/-Physx/-Neutral, ...).
 
   - concept: Physics backend
     field_name: physics_backend
     patterns: ['physx', 'physics.*(backend|engine|solver)', '_backend\b']
     recommended_key: 'physics:backend'
+    label: Physics backend
+    group: Physics
     note: >-
       Not a standalone field; only encoded in the profile suffix (-Physx/-Isaac/
       -Neutral) and FET00x_BASE_PHYSX validation features.
@@ -46,4 +55,6 @@ targets:
     field_name: collision_type
     patterns: ['physics:approximation', '\bapproximation\b', 'collision.*(type|approx)']
     recommended_key: 'physics:approximation'
+    label: Collision type
+    group: Physics
     note: OpenUSD-standard MeshCollisionAPI token (convexHull/convexDecomposition/...).

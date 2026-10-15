@@ -14,10 +14,37 @@
 # limitations under the License.
 
 # standard modules
+import json
 from pathlib import Path
 
 # third party modules
+from tokenizers import Tokenizer, normalizers
 from transformers import PreTrainedTokenizerBase
+
+
+def _ensure_lowercase_normalizer(tokenizer_json: Path) -> None:
+    """Prepend a ``Lowercase`` normalizer if absent — older ``transformers`` omit it here."""
+    tok = Tokenizer.from_file(str(tokenizer_json))
+    normalizer = json.loads(tok.to_str()).get("normalizer")
+
+    def _has_lowercase(node) -> bool:
+        if not isinstance(node, dict):
+            return False
+        if node.get("type") == "Lowercase":
+            return True
+        return any(_has_lowercase(child) for child in node.get("normalizers", []))
+
+    if _has_lowercase(normalizer):
+        print("  Lowercase normalizer: already present")
+        return
+
+    tok.normalizer = (
+        normalizers.Sequence([normalizers.Lowercase(), tok.normalizer])
+        if tok.normalizer is not None
+        else normalizers.Lowercase()
+    )
+    tok.save(str(tokenizer_json), pretty=True)
+    print("  Lowercase normalizer: added (SigLIP2 reference preprocessing)")
 
 
 def get_tokenizer(tokenizer: PreTrainedTokenizerBase, output_dir: str):
@@ -26,6 +53,7 @@ def get_tokenizer(tokenizer: PreTrainedTokenizerBase, output_dir: str):
 
     print(f"Saving tokenizer to {output_path}...")
     tokenizer.save_pretrained(output_path)
+    _ensure_lowercase_normalizer(output_path / "tokenizer.json")
 
     # Remove files not needed at runtime (only tokenizer.json is used)
     for f in [
@@ -48,7 +76,7 @@ def get_tokenizer(tokenizer: PreTrainedTokenizerBase, output_dir: str):
         if max_len != float("inf"):
             print(f"  Model max length: {max_len}")
         else:
-            print(f"  Model max length: unlimited")
+            print("  Model max length: unlimited")
 
     # Test the tokenizer
     test_text = "a photo of a cat"

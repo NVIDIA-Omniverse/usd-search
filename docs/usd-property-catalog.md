@@ -126,6 +126,16 @@ better text means better natural-language recall (see
 [parser behavior](#how-the-llm-parser-uses-it)). Keep the set focused; a bloated
 catalog inflates the parser prompt.
 
+Or skip the hand-merge entirely: **filter-intent mode** generates the complete
+catalog in one step. Give the targets file optional `label`/`group` UI hints
+(and a `type` override where inference would misfire), then run the transform
+with `--base <corpus-agnostic fields> --emit-catalog <name>`. Every concept is
+resolved against the live index stats (the `recommended_key` when the corpus
+carries it, else the highest-coverage matching key; concepts with no match are
+dropped), so the emitted `search_fields.<name>.yaml` can never point a filter at
+a property the index doesn't have. Deployments that re-point at a new index just
+re-run the generation. See the skill's "Filter-intent mode" section.
+
 Example stanzas the skill produced for a SimReady corpus:
 
 ```yaml
@@ -239,7 +249,10 @@ auto-grows from `GET /llm_parse/fields`) is a follow-up Explorer enhancement.
 Adding a field to `search_fields.yaml` wires it into the parser automatically
 (`llm_parse/fields.py`):
 
-- the `IRFieldName` enum is regenerated, so the LLM **can** emit the field;
+- the internal `IRFieldName` enum is regenerated, so the LLM **can** emit the
+  field (that enum constrains decoding only — the API publishes `field` as a
+  plain string, since the catalog is per-deployment; see
+  [`docs/search-filters.md`](search-filters.md#apis));
 - the field's `description` + `examples` are injected into the system-prompt
   catalog (`build_field_catalog`), so the LLM **knows** about it;
 - the mapper turns it into a real request param (e.g. `property_match` →
@@ -262,6 +275,31 @@ Two things to keep in mind:
 | Filter catalog file | `USDSEARCH_LLM_PARSING_FIELDS_FILEPATH` | `ngsearch.microservices.search_rest_api.llm_parsing.fields` |
 | Grounding catalog file | `USDSEARCH_LLM_PARSING_PROPERTY_CATALOG_FILEPATH` | `ngsearch.microservices.search_rest_api.llm_parsing.property_catalog` |
 | Per-field USD key override | `USDSEARCH_LLM_PARSING_<FIELD>_PROPERTY` (via a field's `map.property_env`) | (set the env on the deployment) |
+
+## Cataloguing part of a corpus
+
+`GET /search/stats/usd_properties` accepts the same filter parameters as
+`/search` (`search_path`, `file_extension_include`, `filter_by_properties`,
+`filter_by_tags`, dates, sizes, bbox dimensions, `search_in_scene`, …), so the
+inventory can be scoped instead of corpus-wide:
+
+```bash
+curl -s ${AUTH:+-H "$AUTH"} \
+  "$USD_SEARCH_API_URL/search/stats/usd_properties?search_path=/Projects/Vehicles/" \
+  -o stats.json
+```
+
+Useful when one deployment holds several distinct asset sets and a single catalog
+would blur them — build one per subtree and point each index/tenant at its own.
+The counts remain exact for the subset (this is an aggregation, not a sample of
+search results), and filtering is asset-scoped: filtering on `class=vehicle`
+reports *every* property those assets carry, which is what makes it a drill-down
+tool. Search-only parameters (`description`, `limit`, …) are rejected with a 422,
+as are misspelled filter names.
+
+Note these numbers are **not** access-filtered — they describe the index, not
+what the calling account may read. See
+[`docs/search-filters.md`](search-filters.md#scoping-the-inventory-to-part-of-the-corpus).
 
 ## Keeping it fresh
 

@@ -19,10 +19,12 @@ import logging
 import re
 import shlex
 import time
+import uuid
 from copy import deepcopy
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+from deepsearch_api.routers_v2.models import SearchFilterFields
 from deepsearch_api.search_backend.embeddings import (
     BaseEmbeddingInterface,
     EmbeddingType,
@@ -60,6 +62,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from . import OPENSEARCH_MAX_RESULT_WINDOW
 from .exceptions import ImageProcessingError, ScoringConfigQueryMismatchError
 from .models import VectorQueryScoreType
+from .pagination import (
+    DepthLimitReason,
+    PageInfo,
+    PageSpec,
+    PaginationMode,
+    build_cursor,
+    fingerprint_request,
+)
 from .utils import OrjsonSerializer
 
 logger = logging.getLogger(__name__)
@@ -67,6 +77,94 @@ tracer = trace.get_tracer(__name__)
 
 # Constant for vision metadata fields expansion in hybrid search
 VISION_METADATA_FIELDS_PLACEHOLDER = "__VISION_METADATA_FIELDS__"
+
+# The name vote (ScoringConfig.name_match): hits whose name or path holds every query word, as whole words.
+NAME_VOTE_STOPWORDS = frozenset(
+    {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "is", "of", "on", "or", "the", "to", "with"}
+)
+NAME_VOTE_MAX_WORDS = 8
+_NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
+_WORD_PIECES = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def name_vote_words(query: str) -> List[str]:
+    """The query's words for the name vote: split at anything not a letter or digit, lowercased, each once,
+    stopwords and one-character words left out, at most NAME_VOTE_MAX_WORDS."""
+    words: List[str] = []
+    for word in _NON_ALNUM.split((query or "").lower()):
+        if len(word) < 2 or word in NAME_VOTE_STOPWORDS or word in words:
+            continue
+        words.append(word)
+        if len(words) == NAME_VOTE_MAX_WORDS:
+            break
+    return words
+
+
+def _name_parts(text: str) -> Tuple[set, set]:
+    """(parts, words) of a name or path, lowercased: parts are split at anything not a letter or digit; words add
+    each part's camelCase and letter/digit pieces ("AllegroHand" -> allegrohand, allegro, hand)."""
+    parts, words = set(), set()
+    for part in _NON_ALNUM.split(text or ""):
+        if not part:
+            continue
+        parts.add(part.lower())
+        words.update(piece.lower() for piece in _WORD_PIECES.findall(part))
+    return parts, words | parts
+
+
+def _holds_word(word: str, parts: set, words: set) -> bool:
+    if any(c.isdigit() for c in word):  # a model code: the start of a part (m900 ~ m900ib280, ur10 ~ ur10e)
+        return any(part.startswith(word) for part in parts)
+    return word in words or word + "s" in words or word + "es" in words or (word.endswith("s") and word[:-1] in words)
+
+
+def holds_query_words(source: Dict[str, Any], words: List[str]) -> bool:
+    """Whether a hit's name or path holds every word (name_vote_words) as a whole word."""
+    parts, all_words = _name_parts(f"{source.get('name') or ''} {source.get('path') or ''}")
+    return all(_holds_word(w, parts, all_words) for w in words)
+
+
+def _top_matched_view(explanations: Optional[List[ScoreExplanation]]) -> Optional[Dict[str, Any]]:
+    """A ranked hit's top matched view, as stored with it in the ranking cache, or None.
+
+    The first matched vector with an image across the hit's explanations: the view a client shows and judges
+    (``matched_vectors[0].image``). Short keys, since it is stored once per ranked hit.
+    """
+    for explanation in explanations or []:
+        for vector in explanation.matched_vectors or []:
+            if vector.image:
+                return {
+                    "t": getattr(explanation.search_type, "value", explanation.search_type),
+                    "f": explanation.field,
+                    "s": explanation.score,
+                    "o": vector.offset,
+                    "vs": vector.score,
+                    "vf": vector.field,
+                    "i": vector.image,
+                }
+    return None
+
+
+def _explanations_from_cached_view(view: Any) -> List[ScoreExplanation]:
+    """The explanation a page served from the ranking cache carries: the one naming the hit's top matched view.
+
+    Explanations are built from per-leg hit payloads, which are not cached; without this, hits past the first page
+    had no matched view, and a client validating them fell back to the asset's URL. [] for an entry cached without
+    a view (a text-only hit, or a ranking cached before this) or one that does not parse.
+    """
+    if not isinstance(view, dict) or not view.get("i"):
+        return []
+    try:
+        return [
+            ScoreExplanation(
+                search_type=view["t"],
+                score=view["s"],
+                field=view["f"],
+                matched_vectors=[VectorScore(offset=view["o"], score=view["vs"], field=view["vf"], image=view["i"])],
+            )
+        ]
+    except (KeyError, TypeError, ValueError):  # pydantic's ValidationError is a ValueError
+        return []
 
 
 def _normalize_extension_groups(or_groups: List[List[str]]) -> List[List[str]]:
@@ -122,6 +220,46 @@ class SearchSettings(BaseSettings):
     # a meaningful fusion pool. Capped by OPENSEARCH_MAX_RESULT_WINDOW.
     # Env var: RRF_MIN_WINDOW_SIZE (no env_prefix on SearchSettings).
     rrf_min_window_size: int = 100
+
+    # --- Pagination (docs/plans/search-pagination.md §4.6) ---------------------
+    # None of these are mandatory: cursors are unsigned and self-describing, so
+    # pagination adds no deployment config that has to be kept in sync between
+    # replicas. Env vars are the bare upper-cased names (no env_prefix here).
+    #
+    # Depth cap for text-query and multi-leg searches. NOT applied to filter-only
+    # queries, which page to arbitrary depth over a unique keyword sort.
+    pagination_max_offset: int = 10000
+    # Fusion window pinned for a multi-leg query that does not set
+    # scoring_config.rrf_config.window_size. The window IS the reachable result
+    # set when paging — a client can never see past it — so it has to exceed the
+    # old floor of 100, which capped a hybrid query at ~3 pages.
+    #
+    # It is not free: every leg fetches `window` documents per request, so this
+    # multiplies per-leg fetch and deserialization volume directly, and the
+    # similarity sweep (when similarity_threshold is set) is O(window^2) in
+    # Python. 200 keeps that within ~2x of the pre-pagination cost while giving
+    # 10 pages at the Explorer's default limit of 20. Raise it per request via
+    # scoring_config.rrf_config.window_size when a specific caller needs depth.
+    #
+    # MIRRORED IN THE UI: services/explorer/src/utils/pagination.js (DEFAULT_WINDOW)
+    # hardcodes this to label its window-size presets and to explain the limit when
+    # paging stops. Nothing fails if the two diverge — the Explorer just labels the
+    # wrong number as the default — so changing this value needs a UI check too.
+    pagination_default_window: int = 200
+    # Access filtering runs after the page is cut, so pages have to be topped
+    # back up (FilteredSearchClient._search_filling_page). Over-fetching this
+    # much per attempt fills a page in one round trip for any caller who can see
+    # at least 1/factor of the corpus...
+    access_filter_overfetch_factor: int = 3
+    # ...and this bounds what the rest cost: 4 attempts at 3x reach ~12
+    # page-widths of candidates, past which the caller gets a short page plus
+    # has_more=true rather than a request that walks the index looking for
+    # something visible.
+    access_filter_max_fetches: int = 4
+    # Cursor lifetime. Bounded so a cursor cannot long outlive the index state it
+    # describes; clamped down to the ranking cache's TTL when that cache is on, so
+    # a cursor never outlives the ranking it points at. 0 disables expiry.
+    pagination_cursor_ttl_seconds: int = 900
 
 
 class SearchFilterConfig(BaseSettings):
@@ -182,8 +320,21 @@ class SearchBackendClientV2:
         self._vector_query_score_type = settings.vector_query_score_type
         self.index_name = settings.opensearch_index_name
         self._rrf_min_window_size = settings.rrf_min_window_size
+        self.pagination_max_offset = settings.pagination_max_offset
+        self._pagination_default_window = settings.pagination_default_window
+        self._pagination_cursor_ttl_seconds = settings.pagination_cursor_ttl_seconds
+        # Read by FilteredSearchClient, which owns the post-filter page refill.
+        self.access_filter_overfetch_factor = settings.access_filter_overfetch_factor
+        self.access_filter_max_fetches = settings.access_filter_max_fetches
+        # Optional RRF ranking cache (Redis), attached at startup. Purely a
+        # latency optimisation for pages 2..N of a multi-leg query — when absent
+        # or unreachable, every page recomputes the fused ranking, which is
+        # correct, just slower.
+        self.ranking_cache: Optional[Any] = None
         self.text_to_vector_model = None  # Initialize text-to-vector model when needed
-        self.explain = False
+        # One-time index-mapping check guard (see ensure_mappings_verified). This
+        # client is shared process-wide, so mappings are verified once, not per request.
+        self._mappings_verified = False
         self.embedding_clients: dict[EmbeddingType, BaseEmbeddingInterface] = embedding_clients
         if EmbeddingType.SIGLIP2_EMBEDDING not in embedding_clients:
             raise ValueError("Siglip2 embedding client is required for SearchBackendClientV2")
@@ -202,8 +353,7 @@ class SearchBackendClientV2:
             self.search_filter_config = search_filter_config
 
     async def __aenter__(self):
-        with tracer.start_as_current_span("search_backend.verify_search_index_mappings"):
-            await self.verify_search_index_mappings()
+        await self.ensure_mappings_verified()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -211,6 +361,21 @@ class SearchBackendClientV2:
 
     async def close(self):
         await self.client.close()
+
+    async def ensure_mappings_verified(self) -> None:
+        """Verify the index mappings exactly once for this (shared) client.
+
+        Idempotent and cheap after the first success (a bool check). Safe to call
+        on the hot path: the underlying check is module-cached and the mapping
+        write is idempotent, so a concurrent double-run before the flag is set is
+        harmless. Left un-set if verification fails (e.g. OpenSearch briefly down
+        at startup) so the next caller retries.
+        """
+        if self._mappings_verified:
+            return
+        with tracer.start_as_current_span("search_backend.verify_search_index_mappings"):
+            await self.verify_search_index_mappings()
+        self._mappings_verified = True
 
     async def verify_search_index_mappings(self):
         try:
@@ -665,12 +830,255 @@ class SearchBackendClientV2:
             query_body["collapse"] = {"field": "hash_value"}
         return query_body
 
+    @staticmethod
+    def _deterministic_leg_sort() -> List[Dict[str, Any]]:
+        """Sort spec giving every leg a total, reproducible order.
+
+        OpenSearch does not order equal-scoring documents stably across requests
+        (different shard copies, different segment layouts), and RRF scores a
+        document by its *rank* within a leg — so tied documents swapping
+        positions 5 and 6 swaps their fused scores too. The order has to be
+        pinned at the leg; a Python-side tiebreak is too late. Ties are the norm,
+        not the exception: a filter-only ``match_all`` leg scores everything 1.0.
+
+        ``base_key`` is a unique indexed keyword, always fetched; sorting on
+        ``_id`` would need fielddata. ``_score`` first keeps relevance order and
+        keeps scores computed. The per-hit ``sort`` values this emits are what
+        ``search_after`` consumes.
+        """
+        return [{"_score": "desc"}, {"base_key": "asc"}]
+
+    async def _page_from_cached_ranking(
+        self,
+        search_request: DeepSearchSearchRequestV2,
+        page: PageSpec,
+        query_fingerprint: str,
+        size: int,
+    ) -> Optional[Tuple[List[Tuple[str, Dict[str, Any]]], int]]:
+        """Serve an RRF page from a previously materialised fused order.
+
+        Returns ``(paginated_docs, ranking_length)``, or None to fall back to
+        recomputing — on a cache miss, an expiry, a fingerprint mismatch, or any
+        Redis error. Falling back is always correct, just slower: the cursor
+        carries everything needed to rebuild the ranking.
+
+        Only the *order* is cached, so document bodies are re-fetched by id here.
+        That keeps the cache small and means it can never serve a stale
+        ``_source``.
+        """
+        if not (self.ranking_cache and page.ranking_id):
+            return None
+
+        order = await self.ranking_cache.get(page.ranking_id, query_fingerprint)
+        if not order:
+            return None
+
+        # raw_offset: the cached order is the pre-access-filter one, so it is
+        # indexed by the raw position (identical to `offset` unless access
+        # filtering has dropped hits earlier in the walk).
+        window = order[page.raw_offset : page.raw_offset + size]
+        if not window:
+            return [], len(order)
+
+        hits_by_id = await self._fetch_hits_by_ids([entry["id"] for entry in window], search_request)
+
+        paginated_docs: List[Tuple[str, Dict[str, Any]]] = []
+        for entry in window:
+            hit = hits_by_id.get(entry["id"])
+            if hit is None:
+                # Deleted between the ranking being built and this page being
+                # requested. Skip it rather than fabricate a hit; the page comes
+                # back one short, which is the same shape access filtering
+                # produces and which has_more already accounts for.
+                continue
+            paginated_docs.append(
+                (
+                    entry["id"],
+                    {
+                        "hit": hit,
+                        "rrf_score": entry.get("s", 0.0),
+                        "original_ranks": entry.get("r", {}),
+                        "original_scores": entry.get("os", []),
+                        # Score explanations are derived from per-leg hit payloads,
+                        # which are deliberately not cached (they would dwarf the
+                        # order itself). Pages served from cache carry
+                        # rrf_score/rrf_rank/original_ranks and one explanation:
+                        # the hit's top matched view, stored with the order.
+                        "explanations": _explanations_from_cached_view(entry.get("mv")),
+                    },
+                )
+            )
+        return paginated_docs, len(order)
+
+    async def _fetch_hits_by_ids(
+        self, doc_ids: List[str], search_request: DeepSearchSearchRequestV2
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch raw hits for an explicit id list, keyed by id.
+
+        Used by the cached-ranking path: the fused order is known, only the
+        bodies are missing.
+        """
+        if not doc_ids:
+            return {}
+        body = {
+            "query": {"ids": {"values": doc_ids}},
+            "_source": self._build_source_includes(search_request),
+        }
+        with tracer.start_as_current_span("search_backend.fetch_by_ids") as span:
+            span.set_attribute("query.type", "ids")
+            span.set_attribute("query.id_count", len(doc_ids))
+            response = await self.client.search(index=self.index_name, body=body, size=len(doc_ids))
+        return {hit["_id"]: hit for hit in response.get("hits", {}).get("hits", [])}
+
+    def cursor_ttl(self) -> Optional[int]:
+        """Cursor lifetime.
+
+        ``pagination_cursor_ttl_seconds`` bounds how long a cursor may describe an
+        index that has moved on underneath it; 0 disables expiry. When the ranking
+        cache is on the two are kept in step (the smaller wins) so a cursor never
+        outlives the ranking it points at by much — an expired cursor is a clean
+        400, whereas a stale ranking id would silently recompute.
+        """
+        ttl = self._pagination_cursor_ttl_seconds or None
+        if self.ranking_cache:
+            ttl = min(ttl, self.ranking_cache.ttl_seconds) if ttl else self.ranking_cache.ttl_seconds
+        return ttl
+
+    def _select_pagination_mode(
+        self,
+        search_request: DeepSearchSearchRequestV2,
+        leg_count: int,
+        requested: Optional[PaginationMode] = None,
+    ) -> PaginationMode:
+        """Pick the retrieval strategy. Never caller-controlled — it flips with
+        the leg count, which is an implementation detail.
+
+        LEG mode pages natively in OpenSearch and needs a single leg, where RRF
+        order is that leg's own order: an optimisation plus extra depth, not a
+        ranking change. ``similarity_threshold`` disqualifies it, since that
+        sweep is prefix-dependent (offset 5000 cannot be judged without having
+        materialised 0..4999) — but only when the sweep actually runs, so a
+        filter-only request carrying an inert threshold keeps LEG mode.
+
+        ``requested`` is a cursor's pinned mode; honouring it keeps a walk in one
+        mode, and can only narrow LEG to RRF, never the reverse.
+        """
+        similarity_sweep_runs = search_request.similarity_threshold is not None and bool(
+            search_request.description or search_request.image_similarity_search or search_request.vector_queries
+        )
+        eligible = leg_count <= 1 and not similarity_sweep_runs
+        if not eligible:
+            return PaginationMode.RRF
+        if requested == PaginationMode.RRF:
+            return PaginationMode.RRF
+        return PaginationMode.LEG
+
+    def _leg_retrieval_params(
+        self,
+        mode: PaginationMode,
+        page: PageSpec,
+        limit: int,
+        window_size: int,
+    ) -> Tuple[int, Optional[int], Optional[List[Any]]]:
+        """Per-leg ``size`` / ``from`` / ``search_after`` for the chosen mode.
+
+        RRF mode fetches the full fusion window on every leg and slices in Python
+        afterwards — the fused order does not exist until the legs are merged, so
+        OpenSearch cannot do the paging.
+
+        LEG mode pushes the paging down to OpenSearch: ``from``/``size`` while
+        ``from + size`` fits inside ``index.max_result_window``, then
+        ``search_after`` beyond it. ``search_after`` has no depth limit; ``from``
+        is rejected by the server once ``from + size`` exceeds the window, and
+        batching does not help because the check is per request.
+        """
+        if mode == PaginationMode.RRF:
+            return window_size, None, None
+
+        if page.search_after:
+            # Deep page: resume from the previous page's last sort values. `from`
+            # must not be combined with search_after.
+            return limit, None, page.search_after
+
+        # raw_offset, not offset: `from` indexes the pre-access-filter ordering.
+        return limit, page.raw_offset, None
+
+    async def _execute_leg(
+        self,
+        leg: Dict[str, Any],
+        size: int,
+        from_: Optional[int] = None,
+        search_after: Optional[List[Any]] = None,
+        preference: Optional[str] = None,
+    ) -> Tuple[Any, float, Dict[str, Any]]:
+        """Run one leg and return ``(name, weight, response)``.
+
+        ``preference`` pins the shard copies the leg runs on. A primary and its
+        replicas score the same document differently (each holds its own deleted
+        docs until a merge, which shifts BM25 statistics, and builds its own kNN
+        graphs), so without it consecutive pages of one walk can land on
+        different copies: a ``search_after`` score taken from one copy then skips
+        or repeats documents on another, and a replayed cursor returns a different
+        page. Passing the query fingerprint keeps every page and replay of a walk
+        on the same copies. It is a routing hint, never a constraint: if a pinned
+        copy goes away OpenSearch falls back to another one. The value must not
+        start with ``_``, which OpenSearch reserves for its special preferences.
+        """
+        body = leg["body"]
+        if search_after:
+            body = {**body, "search_after": search_after}
+
+        kwargs: Dict[str, Any] = {}
+        if from_:
+            kwargs["from_"] = from_
+        if preference:
+            kwargs["preference"] = preference
+
+        with tracer.start_as_current_span("search_backend.opensearch_query") as span:
+            span.set_attribute("query.type", leg["type_attr"])
+            span.set_attribute("query.size", size)
+            if "index" in leg:
+                span.set_attribute("query.vector_index", leg["index"])
+            if from_:
+                span.set_attribute("query.from", from_)
+            if search_after:
+                span.set_attribute("query.search_after", True)
+            response = await self.client.search(
+                index=self.index_name,
+                body=body,
+                size=size,
+                explain=False,  # OpenSearch _explain output is not exposed by the API
+                # Every leg counts exactly. Without this OpenSearch stops counting
+                # at 10000, so corpus_total (a max() across legs) silently
+                # saturated whenever a vector leg won.
+                track_total_hits=True,
+                **kwargs,
+            )
+            span.set_attribute("query.took_ms", response.get("took", 0))
+            span.set_attribute(
+                "query.total_hits",
+                response.get("hits", {}).get("total", {}).get("value", 0),
+            )
+        return (leg["name"], leg["weight"], response)
+
     async def search(
         self,
         search_request: DeepSearchSearchRequestV2,
         from_: int = 0,
         url_whitelist: Optional[List[str]] = None,
+        window_size: Optional[int] = None,
+        page: Optional[PageSpec] = None,
     ) -> SearchResponse:
+        """Run the multi-leg search and fuse the legs with client-side RRF.
+
+        Args:
+            window_size: Pin the RRF fusion window explicitly. Pagination MUST pass
+                this (carried in the cursor), because the auto-computed default
+                below grows with ``from_`` — page 1 would fuse a pool of 100 and
+                page 10 a pool of 640, so a given offset would not denote a stable
+                document across pages. When ``None`` the legacy auto-computation is
+                kept so existing non-paginating callers are unaffected.
+        """
         logger.debug(
             "Performing search with request:\n%s",
             search_request.model_dump_json(indent=2),
@@ -678,19 +1086,63 @@ class SearchBackendClientV2:
 
         size = search_request.limit
 
+        # `from_` is the legacy positional offset; `page` is the richer form used
+        # by pagination. Reconcile them so both entry points work.
+        if page is None:
+            page = PageSpec(offset=from_, raw_offset=from_)
+        # Retrieval happens in the RAW (pre-access-filter) space: `raw_offset` is
+        # the position in the ordering OpenSearch and the fusion step produce,
+        # whereas `offset` counts only the hits a caller actually received. The two
+        # coincide unless the access-filtering layer has dropped hits (see
+        # FilteredSearchClient), so this is a no-op for every other caller.
+        from_ = page.raw_offset
+
+        # How deep this request needs to reach: the page start plus the page itself.
+        retrieval_depth = from_ + size
+
         scoring_config = search_request.scoring_config
         rrf_config = scoring_config.rrf_config
-        # cap the window size to OPENSEARCH_MAX_RESULT_WINDOW; floor (default 100,
-        # configurable via rrf_min_window_size) so small limits still give each
-        # leg a meaningful fusion pool
+        # cap the window size to OPENSEARCH_MAX_RESULT_WINDOW; floor at
+        # pagination_default_window (the window IS the reachable set in RRF mode,
+        # so a small pool would cap a hybrid query at a couple of pages), and grow
+        # with the requested depth for callers asking for a big single page.
         window_size = min(
-            rrf_config.window_size or max(self._rrf_min_window_size, (from_ + size) * 2),
+            page.window
+            or window_size
+            or rrf_config.window_size
+            or max(self._rrf_min_window_size, self._pagination_default_window, retrieval_depth * 2),
             OPENSEARCH_MAX_RESULT_WINDOW,
         )
 
+        query_fingerprint = fingerprint_request(search_request)
+
+        # Fast path: a later page of a multi-leg query whose fused order was
+        # already materialised. Skips every leg (including the kNN ones) and the
+        # O(n^2) similarity sweep, fetching only this page's documents by id.
+        # A miss falls through and recomputes — see cache/ranking_cache.py.
+        cached = await self._page_from_cached_ranking(search_request, page, query_fingerprint, size)
+        if cached is not None:
+            paginated_docs, ranking_length = cached
+            return await self._assemble_response(
+                search_request=search_request,
+                page=page,
+                mode=PaginationMode.RRF,
+                paginated_docs=paginated_docs,
+                size=size,
+                window_size=window_size,
+                total_hits=ranking_length,
+                corpus_total=ranking_length,
+                took=0,
+                query_fingerprint=query_fingerprint,
+                ranking_id=page.ranking_id,
+            )
+
         # Store individual search results
         all_results = []
-        bool_filters = await self._create_bool_filters(search_request)
+        # Set by whichever branch runs; the filter-only branch is single-leg by
+        # definition so it settles the mode up front.
+        mode = PaginationMode.RRF
+        bool_filters = await self.create_bool_filters(search_request)
         source_includes = self._build_source_includes(search_request)
 
         # Add URL whitelist filter if provided
@@ -723,31 +1175,38 @@ class SearchBackendClientV2:
 
             # Add collapse for deduplication if requested
             query = self._add_collapse_for_deduplication(query, search_request)
+            # match_all scores every document 1.0, so the whole result set is one
+            # tie — without an explicit sort the order is whatever the shards
+            # happen to return.
+            query["sort"] = self._deterministic_leg_sort()
 
             logger.debug(
                 "Executing filter-only search with query:\n%s",
                 json.dumps(query, indent=2),
             )
-            with tracer.start_as_current_span("search_backend.opensearch_query") as span:
-                span.set_attribute("query.type", "filter_only")
-                span.set_attribute("query.window_size", window_size)
-                response = await self.client.search(
-                    index=self.index_name,
-                    body=query,
-                    size=window_size,
-                    explain=self.explain,
-                    track_total_hits=True,
+            # One leg by construction, so LEG mode always applies (there is no
+            # similarity_threshold to disqualify it — that filter is inert without
+            # a vector query). This is the shape that pages to arbitrary depth.
+            mode = self._select_pagination_mode(search_request, leg_count=1, requested=page.mode)
+            leg_size, leg_from, leg_search_after = self._leg_retrieval_params(
+                mode=mode, page=page, limit=size, window_size=window_size
+            )
+            all_results.append(
+                await self._execute_leg(
+                    leg={
+                        "name": SearchType.FILTER_ONLY,
+                        "weight": 1.0,
+                        "body": query,
+                        "type_attr": "filter_only",
+                    },
+                    size=leg_size,
+                    from_=leg_from,
+                    search_after=leg_search_after,
+                    preference=query_fingerprint,
                 )
-                span.set_attribute("query.took_ms", response.get("took", 0))
-                span.set_attribute(
-                    "query.total_hits",
-                    response.get("hits", {}).get("total", {}).get("value", 0),
-                )
-            all_results.append((SearchType.FILTER_ONLY, 1.0, response))
+            )
 
         else:
-            # Parallelize all search queries
-            search_tasks = []
 
             def _prepare_leg_query(inner_query: Dict[str, Any]) -> Dict[str, Any]:
                 leg_query = {"query": inner_query}
@@ -761,25 +1220,16 @@ class SearchBackendClientV2:
                 # Add collapse for deduplication if requested
                 leg_query = self._add_collapse_for_deduplication(leg_query, search_request)
                 leg_query["_source"] = source_includes
+                # Pin tie order so per-leg ranks (and therefore RRF scores) are
+                # reproducible across requests.
+                leg_query["sort"] = self._deterministic_leg_sort()
                 return leg_query
 
-            async def _execute_text_leg(leg_name, leg_query, leg_weight, query_type_attr):
-                with tracer.start_as_current_span("search_backend.opensearch_query") as span:
-                    span.set_attribute("query.type", query_type_attr)
-                    span.set_attribute("query.window_size", window_size)
-                    response = await self.client.search(
-                        index=self.index_name,
-                        body=leg_query,
-                        size=window_size,
-                        explain=self.explain,
-                        track_total_hits=True,
-                    )
-                    span.set_attribute("query.took_ms", response.get("took", 0))
-                    span.set_attribute(
-                        "query.total_hits",
-                        response.get("hits", {}).get("total", {}).get("value", 0),
-                    )
-                return (leg_name, leg_weight, response)
+            # Build every leg BEFORE executing any of them: the pagination mode is
+            # decided by how many legs a query actually produces, and that is not
+            # known from the request alone (a text query whose fields are all
+            # disabled contributes no leg, and vector legs fan out per query/image).
+            legs: List[Dict[str, Any]] = []
 
             # Prepare hybrid text search if enabled
             if search_request.hybrid_text_query and scoring_config.hybrid_text.enabled:
@@ -798,20 +1248,28 @@ class SearchBackendClientV2:
                         "Preparing hybrid text search with query:\n%s",
                         json.dumps(hybrid_query, indent=2),
                     )
-                    search_tasks.append(
-                        asyncio.create_task(
-                            _execute_text_leg(
-                                SearchType.HYBRID,
-                                hybrid_query,
-                                scoring_config.hybrid_text.weight,
-                                "hybrid_text",
-                            )
-                        )
+                    legs.append(
+                        {
+                            "name": SearchType.HYBRID,
+                            "weight": scoring_config.hybrid_text.weight,
+                            "body": hybrid_query,
+                            "type_attr": "hybrid_text",
+                            "is_vector": False,
+                        }
                     )
 
-            # Prepare all vector searches
+            # Prepare all vector searches.
+            #
+            # k is how many candidates an approximate-kNN leg retrieves per shard.
+            # It must cover BOTH uses, because the mode is not settled yet — it
+            # depends on the leg count, which is only known once these are built:
+            #   - RRF mode fuses the whole window, so k >= window_size
+            #   - LEG mode pages to offset + limit, and an approximate leg has
+            #     nothing to page into past k (it never retrieved those
+            #     candidates), so k >= retrieval_depth
+            knn_k = min(max(window_size, retrieval_depth), OPENSEARCH_MAX_RESULT_WINDOW)
             with tracer.start_as_current_span("search_backend.build_vector_queries"):
-                vector_queries = await self._build_vector_queries(search_request, window_size)
+                vector_queries = await self._build_vector_queries(search_request, knn_k)
             for idx, (vector_query, vector_field_name) in enumerate(vector_queries):
                 query = _prepare_leg_query(vector_query)
 
@@ -834,27 +1292,36 @@ class SearchBackendClientV2:
                 vector_field_config = scoring_config.vector_fields.get(vector_field_name)
                 leg_weight = vector_field_config.weight if vector_field_config else 1.0
 
-                async def execute_vector_search(
-                    query_body=query, vector_idx=idx, search_name=query_name, weight=leg_weight
-                ):
-                    with tracer.start_as_current_span("search_backend.opensearch_query") as span:
-                        span.set_attribute("query.type", "vector")
-                        span.set_attribute("query.vector_index", vector_idx)
-                        span.set_attribute("query.window_size", window_size)
-                        response = await self.client.search(
-                            index=self.index_name,
-                            body=query_body,
-                            size=window_size,
-                            explain=self.explain,
-                        )
-                        span.set_attribute("query.took_ms", response.get("took", 0))
-                        span.set_attribute(
-                            "query.total_hits",
-                            response.get("hits", {}).get("total", {}).get("value", 0),
-                        )
-                    return (search_name, weight, response)
+                legs.append(
+                    {
+                        "name": query_name,
+                        "weight": leg_weight,
+                        "body": query,
+                        "type_attr": "vector",
+                        "is_vector": True,
+                        "index": idx,
+                    }
+                )
 
-                search_tasks.append(asyncio.create_task(execute_vector_search()))
+            # Now that the leg count is known, settle the mode and re-derive the
+            # per-leg retrieval depth from it.
+            mode = self._select_pagination_mode(search_request, leg_count=len(legs), requested=page.mode)
+            leg_size, leg_from, leg_search_after = self._leg_retrieval_params(
+                mode=mode, page=page, limit=size, window_size=window_size
+            )
+
+            search_tasks = [
+                asyncio.create_task(
+                    self._execute_leg(
+                        leg=leg,
+                        size=leg_size,
+                        from_=leg_from,
+                        search_after=leg_search_after,
+                        preference=query_fingerprint,
+                    )
+                )
+                for leg in legs
+            ]
 
             # Execute all search tasks in parallel
             if search_tasks:
@@ -873,10 +1340,23 @@ class SearchBackendClientV2:
             # "vector_0" or "text_to_vector" do not map back to a vector_fields
             # key, which previously caused all configured vector weights to be
             # silently ignored.
+            # In LEG mode OpenSearch already returned only the requested page, so
+            # the first hit is at absolute position `offset`, not 1. Ranks must be
+            # absolute or a doc's rrf_score would change purely with which page it
+            # was fetched on.
+            rank_offset = page.raw_offset if mode == PaginationMode.LEG else 0
+
             for query_name, query_weight, response in all_results:
                 rank_constant = rrf_config.query_rank_constants.get(query_name, rrf_config.rank_constant)
+                # Leg names arrive as either a plain str (vector legs: "vector_0")
+                # or a SearchType member (text, filter-only). They end up as dict
+                # keys in `original_ranks`, which is declared Dict[str, int] and is
+                # serialized by orjson when the fused order is cached — and orjson
+                # rejects a dict key that is not exactly str, enum-of-str or not.
+                # Normalise once, here, rather than at each use.
+                rank_key = query_name.value if isinstance(query_name, SearchType) else query_name
 
-                for rank, hit in enumerate(response["hits"]["hits"], 1):
+                for rank, hit in enumerate(response["hits"]["hits"], rank_offset + 1):
                     doc_id = hit["_id"]
                     hit_score = hit["_score"]
 
@@ -896,7 +1376,7 @@ class SearchBackendClientV2:
                         }
 
                     document_scores[doc_id]["rrf_score"] += weighted_rrf_score
-                    document_scores[doc_id]["original_ranks"][query_name] = rank
+                    document_scores[doc_id]["original_ranks"][rank_key] = rank
                     if "original_scores" not in document_scores[doc_id]:
                         document_scores[doc_id]["original_scores"] = []
                     if "explanations" not in document_scores[doc_id]:
@@ -914,23 +1394,142 @@ class SearchBackendClientV2:
                     )
                     document_scores[doc_id]["original_scores"].append(hit_score)
 
-        # Sort documents by RRF score
-        sorted_docs = sorted(document_scores.items(), key=lambda x: x[1]["rrf_score"], reverse=True)
+        # The name vote (ScoringConfig.name_match): the hits whose name or path holds every query word, as whole
+        # words, get one more vote, ranked in the order fused so far. Read from the hits the legs returned, so no
+        # extra query runs; fused requests only (a single leg is paged by OpenSearch, where a vote moves nothing).
+        # A query shorter than min_words votes only when its word is rare among those hits (rare_word_hits).
+        name_match = scoring_config.name_match
+        vote_query = search_request.hybrid_text_query or search_request.description
+        if mode == PaginationMode.RRF and name_match.enabled and name_match.weight > 0 and vote_query:
+            words = name_vote_words(vote_query)
+            if words:
+                fused = sorted(
+                    document_scores.items(),
+                    key=lambda x: (-x[1]["rrf_score"], x[1]["hit"].get("_source", {}).get("base_key", ""), x[0]),
+                )
+                voted = [doc for _, doc in fused if holds_query_words(doc["hit"].get("_source", {}), words)]
+                if len(words) < name_match.min_words and len(voted) > name_match.rare_word_hits:
+                    voted = []
+                rank_constant = rrf_config.query_rank_constants.get(SearchType.NAME, rrf_config.rank_constant)
+                for rank, doc in enumerate(voted, 1):
+                    vote = name_match.weight / (rank + rank_constant)
+                    doc["rrf_score"] += vote
+                    doc["original_ranks"][SearchType.NAME.value] = rank
+                    doc.setdefault("explanations", []).append(
+                        ScoreExplanation(
+                            search_type=SearchType.NAME,
+                            score=1.0,
+                            field="name",
+                            rrf_score=vote,
+                            rrf_rank_constant=rank_constant,
+                            matched_terms=words,
+                        )
+                    )
+
+        # Sort documents by RRF score, with a deterministic tiebreak.
+        #
+        # Exact rrf_score ties happen whenever two documents occupy the same rank
+        # in different legs (e.g. doc A is #3 in the text leg, doc B is #3 in the
+        # vector leg, and neither appears in the other). Sorting on rrf_score alone
+        # left those to `document_scores` insertion order. That is reproducible
+        # within one process, but it is derived from per-leg hit order, which is
+        # NOT stable across requests — see _deterministic_leg_sort() for why.
+        #
+        # base_key is the per-document unique key (hash_value repeats across
+        # base_keys, which is why deduplicate_by_hash collapses on it) and is always
+        # fetched via _BASE_SOURCE_FIELDS. doc_id is a belt-and-braces final key: it
+        # is the dict key here, so it is unique even if _source were ever filtered
+        # down past base_key.
+        sorted_docs = sorted(
+            document_scores.items(),
+            key=lambda x: (
+                -x[1]["rrf_score"],
+                x[1]["hit"].get("_source", {}).get("base_key", ""),
+                x[0],
+            ),
+        )
 
         # Apply similarity threshold filtering for embedding-based searches
         filtered_docs = self._apply_similarity_threshold_filtering(sorted_docs, search_request)
 
-        # Apply pagination and prepare final results
-        total_hits = len(filtered_docs)
         # Lower-bound estimate of corpus matches: max of per-leg OpenSearch total_hits.
         # Each leg applies the same bool_filters, so max(legs) <= true union <= sum(legs).
-        # Note: OpenSearch defaults to track_total_hits=10000, so this saturates at 10000
-        # for large corpora unless track_total_hits is overridden upstream.
+        # Every leg now runs with track_total_hits=True, so each leg's own count is
+        # exact; this is a lower bound only because legs may disagree on membership.
         corpus_total = max(
             (r.get("hits", {}).get("total", {}).get("value", 0) for _, _, r in all_results),
             default=0,
         )
-        paginated_docs = filtered_docs[from_ : from_ + size]
+
+        ranking_id = None
+        if mode == PaginationMode.LEG:
+            # OpenSearch already applied from/size (or search_after), so these ARE
+            # the page. Slicing again would drop everything past the first page.
+            paginated_docs = filtered_docs
+            # There is no fusion window here — the whole result set is reachable,
+            # so the candidate pool is the corpus match count.
+            total_hits = corpus_total
+        else:
+            total_hits = len(filtered_docs)
+            paginated_docs = filtered_docs[from_ : from_ + size]
+            # Materialise the fused order so later pages can skip the legs
+            # entirely. Best-effort: a failed write only costs the next page a
+            # recompute. Reuse the incoming ranking id when resuming after a
+            # cache miss, so a walk keeps one id rather than orphaning entries.
+            #
+            # Detached (set_soon, not await set): this response does not read what
+            # it writes, so waiting on Redis here only adds a round trip — a
+            # cross-node one in most deployments — to every first page.
+            if self.ranking_cache and total_hits > size:
+                ranking_id = page.ranking_id or uuid.uuid4().hex
+                order = []
+                for doc_id, info in filtered_docs:
+                    entry = {
+                        "id": doc_id,
+                        "s": info["rrf_score"],
+                        "r": info["original_ranks"],
+                        "os": info.get("original_scores", []),
+                    }
+                    # The hit's top matched view, so later pages name it too (see _explanations_from_cached_view).
+                    view = _top_matched_view(info.get("explanations"))
+                    if view:
+                        entry["mv"] = view
+                    order.append(entry)
+                self.ranking_cache.set_soon(ranking_id, query_fingerprint, order)
+
+        return await self._assemble_response(
+            search_request=search_request,
+            page=page,
+            mode=mode,
+            paginated_docs=paginated_docs,
+            size=size,
+            window_size=window_size,
+            total_hits=total_hits,
+            corpus_total=corpus_total,
+            took=sum(r["took"] for _, _, r in all_results),
+            query_fingerprint=query_fingerprint,
+            ranking_id=ranking_id,
+        )
+
+    async def _assemble_response(
+        self,
+        search_request: DeepSearchSearchRequestV2,
+        page: PageSpec,
+        mode: PaginationMode,
+        paginated_docs: List[Tuple[str, Dict[str, Any]]],
+        size: int,
+        window_size: int,
+        total_hits: int,
+        corpus_total: int,
+        took: int,
+        query_fingerprint: str,
+        ranking_id: Optional[str] = None,
+    ) -> SearchResponse:
+        """Turn a page of fused documents into the API response.
+
+        Shared by the normal path and the cached-ranking fast path so both emit
+        identical shapes.
+        """
         final_hits = []
 
         for doc_id, doc_info in paginated_docs:
@@ -959,21 +1558,43 @@ class SearchBackendClientV2:
                 rrf_score=doc_info["rrf_score"],
                 metadata=SearchResultMetadata.model_construct(
                     explanations=doc_info["explanations"],
-                    rrf_rank=len(final_hits) + 1,
+                    # Absolute position in the ranked list, not position within
+                    # this page — otherwise every page would restart at 1.
+                    rrf_rank=page.offset + len(final_hits) + 1,
                     original_ranks=doc_info["original_ranks"],
                 ),
                 source=filtered_source,
                 inner_hits=(hit.get("inner_hits", {}) if search_request.return_inner_hits else {}),
                 thumbnail_exists=thumbnail_exists,
+                # Only LEG mode paginates through OpenSearch, so only there do the
+                # per-hit sort values mean anything; the cached-ranking path has no
+                # hits to take them from. Never serialized (excluded on the field).
+                sort_values=hit.get("sort"),
             )
             final_hits.append(result)
+
+        page_info, paginable_total, has_more, next_cursor = self._build_pagination_state(
+            search_request=search_request,
+            page=page,
+            mode=mode,
+            page_hits=paginated_docs,
+            page_size=size,
+            window_size=window_size,
+            candidate_total=total_hits,
+            query_fingerprint=query_fingerprint,
+            ranking_id=ranking_id,
+        )
 
         search_response = SearchResponse.model_construct(
             total=total_hits,
             corpus_total=corpus_total,
+            paginable_total=paginable_total,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            pagination=page_info.model_dump(mode="json"),
             hits=final_hits,
             search_metadata={
-                "took": sum(r["took"] for _, _, r in all_results),
+                "took": took,
                 "max_score": max((h.score for h in final_hits), default=0),
             },
         )
@@ -982,6 +1603,123 @@ class SearchBackendClientV2:
             search_response.model_dump_json(indent=2),
         )
         return search_response
+
+    def _build_pagination_state(
+        self,
+        search_request: DeepSearchSearchRequestV2,
+        page: PageSpec,
+        mode: PaginationMode,
+        page_hits: List[Tuple[str, Dict[str, Any]]],
+        page_size: int,
+        window_size: int,
+        candidate_total: int,
+        query_fingerprint: Optional[str] = None,
+        ranking_id: Optional[str] = None,
+    ) -> Tuple[PageInfo, int, bool, Optional[str]]:
+        """Work out how deep this query can go, and mint the next cursor.
+
+        Returns ``(page_info, paginable_total, has_more, next_cursor)``.
+
+        ``paginable_total`` — NOT ``corpus_total`` — is what a paginator should
+        render: in RRF mode only the fusion window is reachable, so showing a
+        1.2M corpus count over a 1000-document pool would be wrong.
+        """
+        consumed = len(page_hits)
+
+        if search_request.validate_results:
+            # Single-page by contract (see the plan, §9.5): VLM validation drops
+            # non-matching hits after the page is cut and never backfills. Minting
+            # a cursor here would hand the caller a token the server then refuses,
+            # so say up front that this is the only page.
+            return (
+                PageInfo(
+                    mode=mode,
+                    offset=page.offset,
+                    page_size=consumed,
+                    depth_limit=consumed,
+                    depth_limit_reason=DepthLimitReason.VALIDATION,
+                ),
+                consumed,
+                False,
+                None,
+            )
+
+        if mode == PaginationMode.RRF:
+            # Fusion happens client-side over a bounded window, so the window IS
+            # the reachable set.
+            depth_limit = min(window_size, page.max_offset)
+            reason = DepthLimitReason.RRF_WINDOW
+        elif search_request.deduplicate_by_hash:
+            # collapse + search_after is rejected by the server unless the collapse
+            # field IS the sort field ("collapse field and sort field must be the
+            # same...", verified on OpenSearch 3.6.0 — plan 7.1b). Satisfying that
+            # would mean sorting on hash_value and losing relevance order, so
+            # deduplicated queries stay on from/size and inherit its hard cap.
+            depth_limit = min(OPENSEARCH_MAX_RESULT_WINDOW, page.max_offset)
+            reason = DepthLimitReason.COLLAPSE
+        else:
+            depth_limit = page.max_offset
+            reason = DepthLimitReason.MAX_OFFSET
+
+        paginable_total = min(candidate_total, depth_limit)
+        # Depth is measured in the raw (pre-access-filter) space, which is what
+        # every limit here is expressed in; `offset` only counts hits the caller
+        # actually received, and diverges once access filtering drops some.
+        next_raw = page.raw_offset + consumed
+        next_offset = page.offset + consumed
+        has_more = consumed > 0 and next_raw < paginable_total
+
+        next_cursor = None
+        # Set when paging stops because the retrieval mechanism ran out, not
+        # because the results did. Keeps the EXHAUSTED override below from
+        # relabelling a hard stop as "no more results" — the whole point of
+        # depth_limit_reason is that a client can tell those two apart.
+        stopped_by_depth = False
+        if has_more:
+            search_after = None
+            if mode == PaginationMode.LEG and not search_request.deduplicate_by_hash:
+                # Beyond index.max_result_window `from` is rejected outright, so a
+                # deep walk has to hand the next page its resume position. The sort
+                # values come free from _deterministic_leg_sort().
+                last_hit = page_hits[-1][1]["hit"]
+                search_after = last_hit.get("sort")
+
+            if next_raw + page_size > OPENSEARCH_MAX_RESULT_WINDOW and search_after is None:
+                # Cannot go deeper: `from` is capped and we have no resume values.
+                has_more = False
+                stopped_by_depth = True
+                reason = DepthLimitReason.RESULT_WINDOW
+                paginable_total = min(paginable_total, OPENSEARCH_MAX_RESULT_WINDOW)
+            else:
+                next_cursor = build_cursor(
+                    mode=mode,
+                    query_fingerprint=query_fingerprint or fingerprint_request(search_request),
+                    offset=next_offset,
+                    raw_offset=next_raw,
+                    window=window_size if mode == PaginationMode.RRF else None,
+                    search_after=search_after,
+                    # Lets the next page reuse the materialised fused order. Absent
+                    # (or stale) just means that page recomputes.
+                    ranking_id=ranking_id,
+                    ttl_seconds=self.cursor_ttl(),
+                )
+
+        if not has_more and not stopped_by_depth and next_raw >= paginable_total:
+            reason = DepthLimitReason.EXHAUSTED
+
+        return (
+            PageInfo(
+                mode=mode,
+                offset=page.offset,
+                page_size=consumed,
+                depth_limit=depth_limit,
+                depth_limit_reason=reason,
+                window=window_size if mode == PaginationMode.RRF else None,
+            ),
+            paginable_total,
+            has_more,
+            next_cursor,
+        )
 
     async def _build_vector_queries(
         self, search_request: DeepSearchSearchRequestV2, window_size: int
@@ -1419,8 +2157,15 @@ class SearchBackendClientV2:
                 )
         return parsed
 
-    async def _create_bool_filters(self, search_request: DeepSearchSearchRequestV2) -> List[Dict[str, Any]]:
-        """Generate boolean filters based on search request parameters."""
+    async def create_bool_filters(self, search_request: SearchFilterFields) -> List[Dict[str, Any]]:
+        """Generate boolean filters based on search request parameters.
+
+        Shared by two callers, which is why it takes the narrower
+        ``SearchFilterFields`` rather than a full search request: the search path
+        drops the result into ``bool.filter``, and the USD-property statistics
+        path uses the same clauses to scope its aggregations. Anything added here
+        therefore lands on both — see ``SearchFilterFields``.
+        """
         filters = []
 
         # File name filters
@@ -1903,61 +2648,63 @@ class SearchBackendClientV2:
             else:
                 break
 
-    async def get_usd_properties_stats(self, page_size=10000) -> StatsResponse:
+    async def get_usd_properties_stats(
+        self,
+        bool_filters: Optional[List[Dict[str, Any]]] = None,
+        page_size=10000,
+    ) -> StatsResponse:
+        """Inventory the USD properties carried by the indexed corpus.
+
+        Args:
+            bool_filters: clauses from ``create_bool_filters``, restricting the
+                aggregation to the assets they match. An aggregation runs over
+                everything the query matched — not over a page of hits — so the
+                counts stay exact for whatever subset is selected. ``None`` (the
+                default) aggregates over the whole index, which is the original
+                behaviour: no ``query`` key is emitted at all.
+
+                Note the scope is the *asset*, not the property: filtering on
+                ``class=vehicle`` returns every property those assets carry, not
+                just the matching one. That is what makes this usable for
+                drill-down.
+        """
+        # A doc-level filter, so it applies to the parent assets; the nested
+        # aggregation below then walks all of their usd_properties.
+        query = {"bool": {"filter": bool_filters}} if bool_filters else None
+
+        def _agg_body(agg_name: str, sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+            body = {
+                "size": 0,
+                "aggs": {
+                    "usd_properties_agg": {
+                        "nested": {"path": "usd_properties"},
+                        "aggs": {
+                            agg_name: {
+                                "composite": {
+                                    "size": page_size,
+                                    "sources": sources,
+                                }
+                            }
+                        },
+                    }
+                },
+            }
+            if query is not None:
+                body["query"] = query
+            return body
+
         # Aggregation bodies:
-        keys_agg = {
-            "size": 0,
-            "aggs": {
-                "usd_properties_agg": {
-                    "nested": {"path": "usd_properties"},
-                    "aggs": {
-                        "all_keys": {
-                            "composite": {
-                                "size": page_size,
-                                "sources": [{"usd_key": {"terms": {"field": "usd_properties.name"}}}],
-                            }
-                        }
-                    },
-                }
-            },
-        }
+        keys_agg = _agg_body("all_keys", [{"usd_key": {"terms": {"field": "usd_properties.name"}}}])
 
-        values_agg = {
-            "size": 0,
-            "aggs": {
-                "usd_properties_agg": {
-                    "nested": {"path": "usd_properties"},
-                    "aggs": {
-                        "all_values": {
-                            "composite": {
-                                "size": page_size,
-                                "sources": [{"usd_value": {"terms": {"field": "usd_properties.value"}}}],
-                            }
-                        }
-                    },
-                }
-            },
-        }
+        values_agg = _agg_body("all_values", [{"usd_value": {"terms": {"field": "usd_properties.value"}}}])
 
-        kv_agg = {
-            "size": 0,
-            "aggs": {
-                "usd_properties_agg": {
-                    "nested": {"path": "usd_properties"},
-                    "aggs": {
-                        "kv_pairs": {
-                            "composite": {
-                                "size": page_size,
-                                "sources": [
-                                    {"usd_key": {"terms": {"field": "usd_properties.name"}}},
-                                    {"usd_value": {"terms": {"field": "usd_properties.value"}}},
-                                ],
-                            }
-                        }
-                    },
-                }
-            },
-        }
+        kv_agg = _agg_body(
+            "kv_pairs",
+            [
+                {"usd_key": {"terms": {"field": "usd_properties.name"}}},
+                {"usd_value": {"terms": {"field": "usd_properties.value"}}},
+            ],
+        )
 
         async def collect_agg_results(agg_body: dict, agg_name: str, mapper: Callable[[dict], Any]):
             results = []

@@ -138,11 +138,34 @@ class AsyncPoolExecutor:
         return await asyncio.gather(*wrapped_tasks)
 
 
+class RequestScopedApiClient(ApiClient):
+    """A per-request view of a shared asset-graph ``ApiClient``.
+
+    ``ApiClient.__init__`` builds a new transport (SSL context, aiohttp connector and
+    session), which is far too expensive per request. This view skips it: it reuses
+    the shared client's configuration and transport and owns only its headers.
+    Closing it is a no-op; the shared transport is closed once, at app shutdown.
+    """
+
+    def __init__(self, shared: ApiClient, headers: Dict[str, str]) -> None:
+        # super().__init__ is deliberately not called: it would build a new transport.
+        self.configuration = shared.configuration
+        self.rest_client = shared.rest_client
+        # A NEW dict: default_headers is merged into every call, so sharing the dict
+        # would send one caller's credentials on another caller's requests.
+        self.default_headers = {**shared.default_headers, **headers}
+        self.cookie = shared.cookie
+        self.client_side_validation = shared.client_side_validation
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
 @asynccontextmanager
 async def ags_client_with_headers(client: ApiClient, headers: Dict[str, str]) -> AsyncIterator[ApiClient]:
-    _client = ApiClient(configuration=client.configuration)
-    for header_name, header_value in headers.items():
-        _client.set_default_header(header_name=header_name, header_value=header_value)
-
-    async with _client:
-        yield _client
+    # No `async with`: the yielded view shares `client`'s transport, which must
+    # outlive this request.
+    yield RequestScopedApiClient(client, headers)

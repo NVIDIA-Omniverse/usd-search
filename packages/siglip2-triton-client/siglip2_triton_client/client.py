@@ -148,7 +148,12 @@ class TritonClient(IClient, ABC):
             model_name = self.model_name
         if model_version is None:
             model_version = self.model_version
-        return self.inference_server_client.get_model_metadata(model_name=model_name, model_version=model_version)
+        # headers carry the auth token / NVCF function-id metadata, exactly as
+        # infer() and ping() do - without them a remote server answers
+        # UNAUTHENTICATED.
+        return self.inference_server_client.get_model_metadata(
+            model_name=model_name, model_version=model_version, headers=self.headers
+        )
 
 
 class TritonImageClient(TritonClient):

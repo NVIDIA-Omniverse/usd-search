@@ -330,7 +330,8 @@ class RenderingServiceClient:
                     f'Basic {base64.b64encode((self._storage_client.config.auth.user+":"+self._storage_client.config.auth.password).encode()).decode()}'
                 )
             elif isinstance(self._storage_client, StorageAPIStorageClient):
-                storage_api_url = self._storage_client.config.grpc_endpoint
+                # Kit-bound form: omni.client reads TLS off the endpoint string, not `ssl`.
+                storage_api_url = self._storage_client.config.kit_storage_api_url
                 # Resolve a concrete bearer token. _get_token() returns the
                 # static config.token when set, otherwise mints one from the
                 # OpenID client-credentials config (cached/refreshed). Forwarding

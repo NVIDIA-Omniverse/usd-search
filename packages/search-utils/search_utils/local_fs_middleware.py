@@ -25,6 +25,11 @@ When ``LOCAL_FS_MODE=true`` is set in the environment, this middleware:
 When ``LOCAL_FS_MODE`` is unset or not ``true``, the middleware is a complete no-op
 with zero per-request overhead (early return in ``__call__``).
 
+The response rewrite applies to every caller, including our own services: the
+asset-graph service answers deepsearch-api with local paths too.
+:func:`search_utils.url_mapping.normalize_upstream_document` turns them back into
+``s3://`` URIs before they reach a storage client or an index lookup.
+
 Required environment variables (when enabled):
     LOCAL_FS_MODE       -- "true" / "1" / "yes" to activate
     LOCAL_FS_HOST_PATH  -- absolute path on the host (e.g., /home/user/my-assets)
@@ -35,6 +40,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional, Tuple
 from urllib.parse import unquote
 
 logger = logging.getLogger(__name__)
@@ -43,25 +49,31 @@ logger = logging.getLogger(__name__)
 _SKIP_PATH_FRAGMENTS = ("/health", "/readyz", "/livez", "/metrics")
 
 
+def local_fs_prefixes() -> Optional[Tuple[str, str]]:
+    """``(local_prefix, s3_prefix)`` when local-filesystem mode is on and configured, else ``None``."""
+    mode = os.environ.get("LOCAL_FS_MODE", "").lower()
+    if mode not in ("true", "1", "yes"):
+        return None
+    host_path = os.environ.get("LOCAL_FS_HOST_PATH", "")
+    bucket = os.environ.get("S3_STORAGE_BUCKET_NAME", "")
+    if not host_path or not bucket:
+        logger.warning(
+            "LOCAL_FS_MODE is set but LOCAL_FS_HOST_PATH or S3_STORAGE_BUCKET_NAME is missing — "
+            "local-filesystem path rewriting is disabled."
+        )
+        return None
+    return host_path.rstrip("/") + "/", f"s3://{bucket}/"
+
+
 class LocalFSPathMiddleware:
     """Pure ASGI middleware for bidirectional local-path <-> S3 URI rewriting."""
 
     def __init__(self, app):
         self.app = app
-        mode = os.environ.get("LOCAL_FS_MODE", "").lower()
-        self.enabled = mode in ("true", "1", "yes")
+        prefixes = local_fs_prefixes()
+        self.enabled = prefixes is not None
         if self.enabled:
-            host_path = os.environ.get("LOCAL_FS_HOST_PATH", "")
-            bucket = os.environ.get("S3_STORAGE_BUCKET_NAME", "")
-            if not host_path or not bucket:
-                logger.warning(
-                    "LOCAL_FS_MODE is set but LOCAL_FS_HOST_PATH or "
-                    "S3_STORAGE_BUCKET_NAME is missing — disabling middleware."
-                )
-                self.enabled = False
-                return
-            self.local_prefix = host_path.rstrip("/") + "/"
-            self.s3_prefix = f"s3://{bucket}/"
+            self.local_prefix, self.s3_prefix = prefixes
             self._local_bytes = self.local_prefix.encode()
             self._s3_bytes = self.s3_prefix.encode()
             logger.info(

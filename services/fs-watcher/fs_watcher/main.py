@@ -22,7 +22,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-from urllib.parse import quote
 
 import httpx
 from PIL import Image
@@ -83,15 +82,14 @@ def _should_skip(path: Path, watch_root: Path) -> bool:
 
 
 def _build_s3_uri(path: Path, watch_root: Path, bucket: str) -> str:
-    """Convert a local filesystem path to an S3 URI.
+    """Convert a local filesystem path to an S3 URI holding the raw object key.
 
     Example:
-        /watch/Projects/car.usd -> s3://usdsearch-local/Projects/car.usd
+        /watch/Projects/my car.usd -> s3://usdsearch-local/Projects/my car.usd
     """
-    rel = path.relative_to(watch_root)
-    # URL-encode path components but keep slashes.
-    encoded = "/".join(quote(part, safe="") for part in rel.parts)
-    return f"s3://{bucket}/{encoded}"
+    # Never percent-encode: s3proxy keys are the raw file names, and httpx escapes
+    # the URI once more as a query parameter (see search_utils.asset_uri).
+    return f"s3://{bucket}/{path.relative_to(watch_root).as_posix()}"
 
 
 async def _trigger_reindex(

@@ -15,8 +15,21 @@
 
 """The structured intermediate representation (IR) the LLM fills in.
 
-``SearchIR`` is the JSON-schema-constrained output. ``field`` and ``operator``
-are enums so the model cannot emit unknown values; ``extra="forbid"`` makes the
+Two layers, deliberately split:
+
+* ``IRFilter`` / ``SearchIR`` are the **wire** models — what the API publishes and
+  returns. ``field`` is a plain string here, because the field set is deployment
+  configuration (``search_fields.yaml``), not part of the contract: publishing it
+  as a closed enum bakes one deployment's catalog into the OpenAPI spec and makes
+  generated statically-typed clients fail to deserialize any other deployment's
+  response. Clients enumerate the live catalog via ``GET /llm_parse/fields``.
+* ``ConstrainedIRFilter`` / ``ConstrainedSearchIR`` narrow ``field`` to the
+  registry-generated ``IRFieldName`` enum. They exist only for the extractor's
+  JSON-schema-constrained decoding, where the closed enum is what makes it
+  impossible for the LLM to emit an unknown field. They are never a response
+  model, so they never reach the spec.
+
+``operator`` is a static enum in both layers, and ``extra="forbid"`` makes the
 emitted JSON schema set ``additionalProperties: false``.
 """
 
@@ -35,11 +48,29 @@ class IRFilter(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    field: IRFieldName = Field(description="The field to filter on (one of the allowed enum values).")
+    field: str = Field(
+        description=(
+            "The field to filter on. The valid names are deployment-specific "
+            "(they come from the deployment's filter catalog) — enumerate them "
+            "with `GET /llm_parse/fields`."
+        )
+    )
     operator: Operator = Field(description="Comparison operator. Must be valid for the chosen field.")
     value: Union[str, float, bool, List[str]] = Field(
         description="The value to compare against. Use a list only for `in` operators."
     )
+
+
+def field_name(flt: IRFilter) -> str:
+    """The filter's field as a plain string, whether it came from the wire model
+    (already a ``str``) or the constrained one (an ``IRFieldName`` member)."""
+    return flt.field.value if isinstance(flt.field, Enum) else str(flt.field)
+
+
+def to_wire_filter(flt: IRFilter) -> IRFilter:
+    """Down-convert to the wire model, so a constrained filter's enum ``field``
+    is serialized (and typed) as a plain string."""
+    return IRFilter(field=field_name(flt), operator=flt.operator, value=flt.value)
 
 
 class UnmappedConstraint(BaseModel):
@@ -87,6 +118,26 @@ class SearchIR(BaseModel):
         ge=1,
         le=10000,
         description="Maximum number of results, only if the user explicitly asked for a count.",
+    )
+
+
+class ConstrainedIRFilter(IRFilter):
+    """``IRFilter`` with ``field`` narrowed to the loaded registry's enum.
+
+    Used only as (part of) the extractor's structured-output schema: the closed
+    enum is what makes it impossible for the LLM to name a field this deployment
+    does not have. Never used as a response model — see the module docstring."""
+
+    field: IRFieldName = Field(description="The field to filter on (one of the allowed enum values).")
+
+
+class ConstrainedSearchIR(SearchIR):
+    """``SearchIR`` whose filters are enum-constrained — the extractor's
+    JSON-schema-constrained output type."""
+
+    filters: List[ConstrainedIRFilter] = Field(
+        default_factory=list,
+        description="Structured filters extracted from the query. Empty if the query maps to no known filter.",
     )
 
 

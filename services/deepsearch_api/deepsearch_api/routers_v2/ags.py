@@ -21,10 +21,15 @@ from asset_graph_service_client.api.ags_asset_graph_api import AGSAssetGraphApi
 from asset_graph_service_client.api_client import ApiClient
 from deepsearch_api.routers_v2 import dependencies, service
 from deepsearch_api.routers_v2.ags_models import Asset, AssetGraph
+from deepsearch_api.routers_v2.models import AssetUrl
 from deepsearch_api.routers_v2.service import verify_access_for_asset_graph
 from fastapi import APIRouter, Depends, Query
 
 from search_utils.storage_client import StorageClient
+from search_utils.url_mapping import (
+    normalize_upstream_document,
+    rewrite_response_document,
+)
 
 router = APIRouter(
     prefix="/ags",
@@ -48,7 +53,7 @@ logger.info(
 async def get_dependencies_graph(
     async_ags_client: Annotated[ApiClient, Depends(dependencies.async_ags_client)],
     storage_client: Annotated[StorageClient, Depends(dependencies.storage_client)],
-    root_node_url: str = Query(description="URL of the asset"),
+    root_node_url: AssetUrl = Query(description="URL of the asset"),
     max_level: Optional[int] = Query(
         default=None,
         description="Max level of dependency tree traversal (by default unlimited)",
@@ -62,10 +67,15 @@ async def get_dependencies_graph(
     dependency_graph = await AGSAssetGraphApi(
         api_client=async_ags_client
     ).get_dependencies_graph_dependency_graph_graph_get(root_node_url=root_node_url, max_level=max_level, limit=limit)
+    # AGS answers in the public URL form on a deployment that publishes one; the
+    # ACL check below and `root_node_url` are both internal, so normalize first or
+    # every node fails verification and the graph comes back silently empty.
+    dependency_graph = normalize_upstream_document(dependency_graph)
     if ENABLE_ACCESS_VERIFICATION:
-        return await verify_access_for_asset_graph(dependency_graph, root_node_url, storage_client)
+        graph = await verify_access_for_asset_graph(dependency_graph, root_node_url, storage_client)
     else:
-        return dependency_graph.to_dict()
+        graph = dependency_graph.to_dict()
+    return rewrite_response_document(graph)
 
 
 @router.get(
@@ -76,7 +86,7 @@ async def get_dependencies_graph(
 async def get_dependencies_flat(
     async_ags_client: Annotated[ApiClient, Depends(dependencies.async_ags_client)],
     storage_client: Annotated[StorageClient, Depends(dependencies.storage_client)],
-    root_node_url: str = Query(description="URL of the asset"),
+    root_node_url: AssetUrl = Query(description="URL of the asset"),
     max_level: Optional[int] = Query(
         default=None,
         description="Max level of dependency tree traversal (by default unlimited)",
@@ -96,12 +106,16 @@ async def get_dependencies_flat(
     asset_dependencies = await AGSAssetGraphApi(
         api_client=async_ags_client
     ).get_dependencies_flat_dependency_graph_flat_get(root_node_url=root_node_url, max_level=max_level, limit=limit)
+    # Public form in, internal form out: `check_acl` speaks to the storage client.
+    asset_dependencies = normalize_upstream_document(asset_dependencies)
     verified_urls = set(await service.check_acl([asset.url for asset in asset_dependencies], storage_client))
-    return [
-        Asset(**asset.to_dict())
-        for asset in asset_dependencies
-        if asset.url in verified_urls or not ENABLE_ACCESS_VERIFICATION
-    ]
+    return rewrite_response_document(
+        [
+            Asset(**asset.to_dict())
+            for asset in asset_dependencies
+            if asset.url in verified_urls or not ENABLE_ACCESS_VERIFICATION
+        ]
+    )
 
 
 @router.get(
@@ -112,7 +126,7 @@ async def get_dependencies_flat(
 async def get_dependencies_inverse(
     async_ags_client: Annotated[ApiClient, Depends(dependencies.async_ags_client)],
     storage_client: Annotated[StorageClient, Depends(dependencies.storage_client)],
-    root_node_url: str = Query(description="URL of the asset"),
+    root_node_url: AssetUrl = Query(description="URL of the asset"),
     max_level: Optional[int] = Query(
         default=None,
         description="Max level of dependency tree traversal (by default unlimited)",
@@ -134,12 +148,15 @@ async def get_dependencies_inverse(
     ).get_dependencies_inverse_dependency_graph_inverse_flat_get(
         root_node_url=root_node_url, max_level=max_level, limit=limit
     )
+    asset_dependencies = normalize_upstream_document(asset_dependencies)
     verified_urls = set(await service.check_acl([asset.url for asset in asset_dependencies], storage_client))
-    return [
-        Asset(**asset.to_dict())
-        for asset in asset_dependencies
-        if asset.url in verified_urls or not ENABLE_ACCESS_VERIFICATION
-    ]
+    return rewrite_response_document(
+        [
+            Asset(**asset.to_dict())
+            for asset in asset_dependencies
+            if asset.url in verified_urls or not ENABLE_ACCESS_VERIFICATION
+        ]
+    )
 
 
 @router.get(
@@ -150,7 +167,7 @@ async def get_dependencies_inverse(
 async def get_inverse_dependencies_graph(
     async_ags_client: Annotated[ApiClient, Depends(dependencies.async_ags_client)],
     storage_client: Annotated[StorageClient, Depends(dependencies.storage_client)],
-    root_node_url: str = Query(description="URL of the asset"),
+    root_node_url: AssetUrl = Query(description="URL of the asset"),
     max_level: Optional[int] = Query(
         default=None,
         description="Max level of dependency tree traversal (by default unlimited)",
@@ -166,7 +183,9 @@ async def get_inverse_dependencies_graph(
     ).get_inverse_dependencies_graph_dependency_graph_inverse_graph_get(
         root_node_url=root_node_url, max_level=max_level, limit=limit
     )
+    dependency_graph = normalize_upstream_document(dependency_graph)
     if ENABLE_ACCESS_VERIFICATION:
-        return await verify_access_for_asset_graph(dependency_graph, root_node_url, storage_client)
+        graph = await verify_access_for_asset_graph(dependency_graph, root_node_url, storage_client)
     else:
-        return dependency_graph.to_dict()
+        graph = dependency_graph.to_dict()
+    return rewrite_response_document(graph)

@@ -1,7 +1,7 @@
 [project]
 name = "deepsearch-rendering-job"
 dynamic = ["version"]
-description = "DeepSearch rendering job service — GPU FastAPI + Kit subprocess workers for USD thumbnail rendering"
+description = "DeepSearch rendering job service — GPU FastAPI service rendering USD and MDL thumbnails with ovrtx"
 authors = [
     {name = "Artem Rozantsev", email = "arozantsev@nvidia.com"},
     {name = "Ted Asiamah", email = "tasiamah@nvidia.com"},
@@ -9,37 +9,60 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "aiohttp>=3.13.5",
-    "jinja2>=3.1.6",
+    "aiohttp>=3.14.3",
     "fire>=0.6.0",
-    "pydantic<2",
+    "pydantic>=2.10.5",
+    "pydantic-settings>=2.6.1",
     "typing-extensions>=4.9.0",
     "pyyaml>=6.0.1",
     "pymysql>=1.1.1",
     "aiomysql>=0.3.2",
     "redis>=5.0.8",
-    "pillow>=12.2.0",
+    "pillow>=12.3.0",
     "setuptools>=78.1.1",
     "sentry-sdk>=2.14.0",
-    "starlette>=0.50.0",  # capped <1.0 transitively by pydantic<2 (fastapi w/ starlette 1.x needs pydantic>=2.7)
-    "fastapi>=0.125.0",  # capped by pydantic<2 (fastapi>0.125 needs pydantic>=2.7)
+    "starlette>=0.50.0",
+    "fastapi>=0.125.0",
     "python-multipart>=0.0.27",
-    "websockets>=12.0",
+    "websockets>=14,<16",
     "cachetools>=5.3.3",
     "uvicorn>=0.34.3",
     "numpy>=1.26.4",
     "httpx>=0.28.1",
     "authlib>=1.7.2",
     "async-lru>=2.0.2",
-    "cryptography>=48.0.1",
+    "cryptography>=50.0.0",
     "orjson>=3.11.3",
     "pyjwt[crypto]>=2.11.0",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "psutil>=7.1.2",
     "asteval>=1.0.6",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
+    "boto3>=1.34.0",
+    "usd-core==25.11",  # reads the asset's authored upAxis out-of-band (ovrtx exposes no stage-metadata API)
     "colorama>=0.4.6; sys_platform == 'win32'",
 ]
+
+[dependency-groups]
+test = [
+    "pytest>=8.1.1",
+    "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.3.1",
+    "pytest-xdist>=3.5.0",
+    "pytest-cov>=5.0.0",
+    "pytest-rerunfailures>=15.0",
+    "imagehash>=4.3.1",
+    # Test-only: farm_io.deserialize() is the actual production consumer of
+    # this package's serialize_payload() wire format. Used to prove a real
+    # rendered payload decodes correctly on the consumer side (see
+    # tests/test_renderer.py::test_rendered_payload_consumable_by_production_farm_io) -
+    # this exact drift shipped a regression once already. Not a runtime
+    # dependency.
+    "deepsearch-utils",
+]
+
+[tool.uv.sources]
+deepsearch-utils = { workspace = true }
 
 [tool.uv]
 package = true

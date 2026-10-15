@@ -1,0 +1,111 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# GPU rendering-job image (published as usdsearch-kit-workflows). FastAPI service
+# that renders USD and MDL thumbnails with the ovrtx RTX renderer. Build context
+# is the repo root so deps resolve from the single workspace uv.lock; requires
+# --gpus=all at runtime. Run with MODE=api.
+
+# Omniverse Ubuntu 24.04 base: it already ships everything ovrtx needs at the OS
+# level: Python 3.12 (pip, venv), the glvnd GL/EGL dispatchers and Mesa, libxext6
+# (linked by the injected libGLX_nvidia.so.0, which is also the driver's Vulkan
+# ICD), libgomp1, and the NVIDIA EGL/Vulkan ICD files. The ovrtx wheel bundles its
+# own CUDA runtime (libcudart.so.12, nvrtc) and Vulkan loader, and the NVIDIA
+# container runtime injects the host driver libraries, so no CUDA image is needed.
+# The base's /eula.sh entrypoint is replaced below; the image ships under the
+# NVIDIA Omniverse License Agreement.
+FROM nvcr.io/nvidia/omniverse/ov-base-ubuntu24-x86_64:1.0.1
+
+USER root
+
+# Ask the NVIDIA container runtime for the graphics (GL/EGL/Vulkan) driver libs as
+# well as compute (already the base's default; kept explicit).
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=all
+
+# Security patches only: the listed packages are already in the base and are
+# upgraded to the latest Ubuntu security release. No blanket `apt-get upgrade`, so
+# every installed version is accounted for in THIRD_PARTY_NOTICE.md.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl libssl3t64 curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# UID/GID of the runtime user. Defaults to 1000/1000/ubuntu, which the Ubuntu
+# 24.04 base image already ships as a ready-made user/home/shell — reused as-is
+# rather than recreated, matching the Helm chart's securityContext
+# (runAsUser/fsGroup: 1000, both rendering-service and k8s_renderer) and the
+# common host-uid convention for local/CI bind mounts. Override to match a
+# specific host if it differs (e.g. USER_ID=$(id -u) GROUP_ID=$(id -g)
+# USER_NAME=appuser). If USER_NAME already exists but with a different
+# uid/gid (e.g. overriding USER_ID/GROUP_ID while leaving USER_NAME=ubuntu),
+# it's renumbered via usermod/groupmod rather than left stale, since the
+# ownership below and the final USER both use the requested USER_ID/GROUP_ID.
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG USER_NAME=ubuntu
+
+RUN if id -u ${USER_NAME} > /dev/null 2>&1; then \
+        CURRENT_UID=$(id -u ${USER_NAME}) && \
+        CURRENT_GID=$(id -g ${USER_NAME}) && \
+        CURRENT_GROUP=$(id -gn ${USER_NAME}) && \
+        if [ "${CURRENT_UID}" != "${USER_ID}" ] || [ "${CURRENT_GID}" != "${GROUP_ID}" ]; then \
+            if getent passwd ${USER_ID} > /dev/null 2>&1 && [ "$(getent passwd ${USER_ID} | cut -d: -f1)" != "${USER_NAME}" ]; then userdel -f "$(getent passwd ${USER_ID} | cut -d: -f1)"; fi && \
+            if getent group ${GROUP_ID} > /dev/null 2>&1 && [ "$(getent group ${GROUP_ID} | cut -d: -f1)" != "${CURRENT_GROUP}" ]; then groupdel "$(getent group ${GROUP_ID} | cut -d: -f1)" 2>/dev/null || true; fi && \
+            groupmod -g ${GROUP_ID} ${CURRENT_GROUP} && \
+            usermod -u ${USER_ID} -g ${GROUP_ID} ${USER_NAME} && \
+            chown -R ${USER_ID}:${GROUP_ID} /home/${USER_NAME}; \
+        fi \
+    else \
+        if getent passwd ${USER_ID} > /dev/null 2>&1; then userdel -f "$(getent passwd ${USER_ID} | cut -d: -f1)"; fi && \
+        if getent group ${GROUP_ID} > /dev/null 2>&1; then groupdel "$(getent group ${GROUP_ID} | cut -d: -f1)" 2>/dev/null || true; fi && \
+        groupadd -g ${GROUP_ID} ${USER_NAME} && \
+        useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash ${USER_NAME}; \
+    fi
+RUN mkdir /cache && chown ${USER_ID}:${GROUP_ID} /cache && chmod 777 /cache
+
+# Python deps go into a virtualenv on the base's Python 3.12: the base ships some
+# Python packages as Debian packages (e.g. python3-numpy 1.26.4) that pip cannot
+# replace in the system site-packages. Owned by the runtime user, so ovrtx's
+# in-package caches and test-time `pip install` stay writable.
+RUN python3 -m venv /opt/venv && chown -R ${USER_ID}:${GROUP_ID} /opt/venv
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:${PATH}
+
+# Install the locked runtime dependencies exported from the single workspace-root
+# uv.lock for a reproducible build; the application itself is installed --no-deps
+# below. The root pyproject's find-links wheels/ must exist for any uv invocation
+# even though this service pulls nothing from it.
+RUN pip install --no-cache-dir uv==0.12.23
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN mkdir -p wheels
+COPY services/rendering-job ./services/rendering-job
+RUN uv export --frozen --no-dev --no-emit-project --package deepsearch-rendering-job --format requirements-txt -o /tmp/requirements.txt \
+    && pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ovrtx is pinned in requirements-gpu.txt, not here; the real binary wheel comes from
+# NVIDIA PyPI (pypi.org ships only a stub sdist).
+RUN pip install --no-cache-dir -r services/rendering-job/requirements-gpu.txt --extra-index-url https://pypi.nvidia.com --prefer-binary
+
+RUN pip install --no-cache-dir --no-deps ./services/rendering-job
+
+COPY services/rendering-job/data/entrypoint.sh /entrypoint.sh
+COPY services/rendering-job/data/usd /data/usd
+
+RUN chown -R ${USER_ID}:${GROUP_ID} /opt/venv
+
+USER ${USER_NAME}
+
+ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]

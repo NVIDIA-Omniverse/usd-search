@@ -35,13 +35,24 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # local / proprietary modules
 from ..client import LLMClient, LLMConnectionConfig
-from ..exceptions import LLMException, ParsingException
+from ..exceptions import (
+    LLMBadRequestException,
+    LLMException,
+    LLMLengthException,
+    ParsingException,
+)
 from .metadata import Metadata
 
 logger = logging.getLogger(__name__)
 
 OUTPUT_PARSING_SUPPORTED = sys.version_info >= (3, 12)
 LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "false").lower() in ("true", "1")
+
+
+def _is_permanent_llm_error(exc: Exception) -> bool:
+    """Return whether retrying the same metadata request cannot succeed."""
+
+    return isinstance(exc, (LLMBadRequestException, LLMLengthException))
 
 
 class MetadataGenerationConfig(BaseSettings):
@@ -51,9 +62,19 @@ class MetadataGenerationConfig(BaseSettings):
     ``LLMConnectionConfig``.
     """
 
-    model: str = Field(default="gcp/google/gemini-3.1-pro-preview")
+    # Default set by the 2026-08 metadata bake-off: won on faithfulness,
+    # compliance, and searchability (see docs/models-and-config.md).
+    model: str = Field(default="azure/openai/gpt-5.6-sol")
     max_tries: int = Field(default=3)
     reasoning_effort: Optional[str] = Field(default="none")
+    extra_body: Optional[dict] = Field(
+        default=None,
+        description="Extra OpenAI request-body fields passed through to the endpoint. "
+        "Needed e.g. for hub-served Qwen, where reasoning_effort alone does not disable "
+        "thinking and the model burns the whole completion budget: set to "
+        '{"chat_template_kwargs": {"enable_thinking": false}}. '
+        "Env: USDSEARCH_VISION_METADATA_EXTRA_BODY (JSON).",
+    )
     max_tokens: int = Field(default=4096)
     temperature: float = Field(default=0.0)
 
@@ -85,15 +106,20 @@ class MetadataGeneration:
             max_tokens=self._config.max_tokens,
             temperature=self._config.temperature,
             reasoning_effort=self._config.reasoning_effort,
+            extra_body=self._config.extra_body,
         )
         self.client.with_structured_output(schema=self._metadata.base_model)
 
         pydantic_parser: PydanticOutputParser[BaseModel] = PydanticOutputParser(
             pydantic_object=self._metadata.base_model
         )
+        # The fixing parser must run on the RAW model: the structured-output
+        # wrapper returns a BaseModel, which crashes the fixing retry_chain
+        # (it ends in a StrOutputParser) — a fixing parser built on client.llm
+        # could never repair anything.
         self.parser = OutputFixingParser.from_llm(
             parser=pydantic_parser,
-            llm=self.client.llm,
+            llm=self.client.base_llm,
         )
 
     @property
@@ -200,16 +226,37 @@ class MetadataGeneration:
                     backoff.expo,
                     LLMException,
                     max_tries=self.config.max_tries,
+                    giveup=_is_permanent_llm_error,
                     logger=logger,
                 )(ainvoke_fn)
 
-            response = await ainvoke_fn(
-                prompt=prepared_prompt,
+            invoke_kwargs = dict(
                 system_prompt=self.system_prompt,
                 base64_images=base64_images,
+                # Views of one asset: label them so the model can aggregate and
+                # reconcile evidence across views (see prompt "How to analyze").
+                label_images=True,
                 **kwargs,
             )
-        except LLMException:
+            try:
+                response = await ainvoke_fn(prompt=prepared_prompt, **invoke_kwargs)
+            except ParsingException as e:
+                # Schema-validation failure (e.g. off-vocabulary enum) — the call
+                # succeeded but the OUTPUT is wrong. Deterministic at temp 0, so a
+                # plain retry can't help; re-ask once with the errors spelled out.
+                logger.warning("VLM output failed schema validation, re-asking with errors: %s", e)
+                validation_errors = e.validation_errors or (("schema", "validation_error"),)
+                safe_error_summary = "\n".join(
+                    f"- {location}: {error_type}" for location, error_type in validation_errors
+                )
+                repair_prompt = (
+                    f"{prepared_prompt}\n\n## Correction\n"
+                    "Your previous answer failed schema validation with the following "
+                    "errors — fix them and return the full corrected JSON object:\n"
+                    f"{safe_error_summary}"
+                )
+                response = await ainvoke_fn(prompt=repair_prompt, **invoke_kwargs)
+        except (LLMException, ParsingException):
             raise
         except Exception as e:
             logger.error("VLM invocation failed: %s", e, exc_info=True)

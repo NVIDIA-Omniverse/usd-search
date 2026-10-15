@@ -20,7 +20,12 @@ by model. `metadata` and `validation` are the VISION-role helper libraries.
 """
 
 from .client import LLMClient, LLMConnectionConfig
-from .exceptions import LLMException, LLMLengthException, ParsingException
+from .exceptions import (
+    LLMBadRequestException,
+    LLMException,
+    LLMLengthException,
+    ParsingException,
+)
 from .metadata import (
     Metadata,
     MetadataConfig,
@@ -40,6 +45,7 @@ __all__ = [
     "LLMConnectionConfig",
     "LLMException",
     "LLMLengthException",
+    "LLMBadRequestException",
     "ParsingException",
     "Metadata",
     "MetadataConfig",

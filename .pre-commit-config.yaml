@@ -20,7 +20,10 @@ repos:
     -   id: check-yaml
         # Helm chart templates are Go templates ({{ ... }}), not parseable as
         # plain YAML — exclude them (helm lint/template validates those instead).
-        exclude: (\.gitlab-ci\.yml|docker-compose\.web-ui\.yml|infra/compose/openapi-merge\.yml|helm/.*/templates/.*\.ya?ml)
+        # GitLab CI configs use the !reference tag, which check-yaml cannot
+        # construct; `[./]` so the included per-package configs under ci/ are
+        # covered too, not just the dot-prefixed roots (GitLab lints these).
+        exclude: ([./]gitlab-ci\.yml|docker-compose\.web-ui\.yml|infra/compose/openapi-merge\.yml|helm/.*/templates/.*\.ya?ml)
     # Two carve-outs from the content-rewriting fixers:
     #   - services/explorer/dist/ is a generated build artifact (see
     #     scripts/generate-explorer-build.sh) committed verbatim — the public
@@ -29,9 +32,9 @@ repos:
     #     whitespace/EOF fixups mangle the originals (and would fight the
     #     third-party-notice hook below, which regenerates them verbatim).
     -   id: end-of-file-fixer
-        exclude: ^(services/explorer/dist/|licenses/)
+        exclude: ^(services/explorer/dist/|licenses/|scripts/third_party_license_texts/)
     -   id: trailing-whitespace
-        exclude: ^(services/explorer/dist/|licenses/)
+        exclude: ^(services/explorer/dist/|licenses/|scripts/third_party_license_texts/)
     -   id: check-added-large-files
         # uv.lock files are machine-generated and legitimately exceed the
         # default 500 KB limit; they must stay tracked for reproducible builds.
@@ -84,15 +87,16 @@ repos:
           (?x)^(
             (.*/)?pyproject\.toml
             |uv\.lock
-            |services/rendering-job/uv\.lock
-            |services/asset-graph-builder/uv\.lock
             |services/siglip2-triton/docker/uv\.lock
+            |services/rendering-job/requirements-gpu\.txt
             |docker/Dockerfile\.usdsearch
             |docker/Dockerfile\.siglip2-triton
+            |docker/Dockerfile\.rendering-job
             |scripts/generate_third_party_notice\.sh
             |scripts/_generate_third_party_notice\.py
             |scripts/_apt_deps_incontainer\.sh
             |scripts/third_party_extras\.json
+            |scripts/third_party_license_texts/.*
             |THIRD_PARTY_NOTICE\.md
             |licenses/.*
           )$

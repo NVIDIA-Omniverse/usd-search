@@ -60,6 +60,7 @@ spec:
       {{- $globalImagePullSecrets | nindent 6 }}
       hostname: {{ $fullName }}
       volumes:
+      {{- include "deepsearch-global.storageBackendVolumes" . | nindent 6 }}
       - name: logging-config
         configMap:
           name: {{ $fullName }}-logging
@@ -98,6 +99,7 @@ spec:
             protocol: TCP
           {{- end}}
           volumeMounts:
+          {{- include "deepsearch-global.storageBackendVolumeMounts" . | nindent 10 }}
           - mountPath: /logging.yaml
             name: logging-config
             subPath: logging.yaml

@@ -18,9 +18,9 @@
 #
 # Environment variables:
 #   SOURCE      - Directory containing the packaged .tgz chart (default: _charts at repo root)
-#   REGISTRY    - NGC registry path (default: omniverse/deeptag-internal)
-#   ORG         - NGC org (default: omniverse)
-#   TEAM        - NGC team (default: deeptag-internal)
+#   REGISTRY    - NGC registry path (default: m3sujtetvf5w/usdsearch)
+#   ORG         - NGC org (default: m3sujtetvf5w)
+#   TEAM        - NGC team (default: usdsearch)
 #   OVERWRITE   - Whether to overwrite existing chart (default: false)
 #   CHART_VERSION - Set by version.sh or CI; used as the chart version
 #
@@ -33,9 +33,9 @@ if [ -z "${CHART_VERSION:-}" ]; then
     source "$DIR/version.sh"
 fi
 
-registry=${REGISTRY:-"omniverse/deeptag-internal"}
-org=${ORG:-"omniverse"}
-team=${TEAM:-"deeptag-internal"}
+registry=${REGISTRY:-"m3sujtetvf5w/usdsearch"}
+org=${ORG:-"m3sujtetvf5w"}
+team=${TEAM:-"usdsearch"}
 overwrite=${OVERWRITE:-"false"}
 chart_name="usdsearch"
 source_dir=${SOURCE:-"${ROOT}/_charts"}

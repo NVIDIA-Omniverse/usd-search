@@ -89,17 +89,6 @@ fields:
       property: "__polygon_count"
       property_env: USDSEARCH_LLM_PARSING_POLYGON_COUNT_PROPERTY
 
-  # --- Deployment-specific fields (not enabled by default) -------------------
-  # Filters tied to SimReady-style USD properties — rigid-body physics
-  # (physics_rigid_body), colliders (has_collider), object class
-  # (object_class), mass (physics_mass), density (physics_density) — are NOT
-  # part of the default catalog: they only return results on corpora indexed
-  # with those property conventions. A complete ready-to-use catalog that
-  # includes them ships next to this file as `search_fields.simready.yaml`;
-  # point USDSEARCH_LLM_PARSING_FIELDS_FILEPATH at it (helm:
-  # ngsearch.microservices.search_rest_api.llm_parsing.fields) or copy the
-  # entries you need. See docs/search-filters.md.
-
   - name: dimension
     type: number
     operators: [gt, gte, lt, lte]
@@ -108,3 +97,8 @@ fields:
       - '"small objects under 1 meter" -> dimension lt 1'
       - '"large props over 3m" -> dimension gt 3'
     map: {kind: bbox}
+
+  # Physics filters (rigid body, collider, mass, density) are SimReady/Isaac-only
+  # and are NOT in the default catalog. Enable per deployment: use
+  # search_fields.simready.yaml (next to this file) or generate one with the
+  # /usd-property-catalog skill (see docs/search-filters.md).

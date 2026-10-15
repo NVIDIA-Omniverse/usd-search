@@ -45,6 +45,18 @@ services:
         REACT_APP_DEFAULT_FILE_EXTENSION_INCLUDE: ${REACT_APP_DEFAULT_FILE_EXTENSION_INCLUDE:-usd*}
     container_name: usdsearch-explorer
     restart: unless-stopped
+    # Runtime index registry (optional): the image's entrypoint renders
+    # /app/runtime-config.js from these before nginx starts, so the picker's
+    # index list is deploy-time env — no rebuild. Keys are the
+    # x-usdsearch-storage-backend values the API accepts (the deployment's
+    # storage backends). Example:
+    #   EXPLORER_SERVER_MAPPING='{"backend-a":{"name":"Backend A","apiUrl":"",
+    #     "embedding_config":{"field_name":"siglip2-embedding.embedding","dimension":1536}}}'
+    #   EXPLORER_DEFAULT_SERVER=backend-a
+    # Unset -> single-backend behavior (no picker, no header sent).
+    environment:
+      EXPLORER_SERVER_MAPPING: ${EXPLORER_SERVER_MAPPING:-}
+      EXPLORER_DEFAULT_SERVER: ${EXPLORER_DEFAULT_SERVER:-}
     # bitnami nginx serves the static SPA from /app on :8080 by default — no
     # config mount needed. The gateway routes /ui and the APIs.
     # The bitnami image has no wget/curl, so probe the port with a bash

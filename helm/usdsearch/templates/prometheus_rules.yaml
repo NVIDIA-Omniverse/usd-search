@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{  $releaseName := include "deepsearch-global.releaseName" . -}}
+{{- $labels := include "deepsearch-global.labels" . -}}
+{{- $monitorLabels := .Values.monitorLabels -}}
+
+{{- /* An entry is only trimmed once every consumer group is past it, so the alert
+       threshold has to allow for a legitimately long-running item: an entry stays
+       pending for up to `autoclaim_min_idle_time` before it is even reclaimed. Two
+       reclaim windows of the slowest stream is the point at which it is stuck
+       rather than busy. The values are read defensively - a deployment that does
+       not override `cache_settings` gets the subchart defaults, which the parent
+       chart cannot see. */ -}}
+{{- $cacheSettings := (.Values.deepsearch).cache_settings | default dict -}}
+{{- $farmIdleMs := int ($cacheSettings.farm_job_autoclaim_min_idle_time | default 10800000) -}}
+{{- $nonFarmIdleMs := int ($cacheSettings.non_farm_job_autoclaim_min_idle_time | default 5400000) -}}
+{{- $stalePendingSeconds := div (mul (max $farmIdleMs $nonFarmIdleMs) 2) 1000 -}}
+
+{{- if .Values.deployPrometheusRules }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $releaseName }}-indexing-streams
+  labels:
+    prometheus: kube-prometheus
+    {{- $labels | nindent 4 }}
+    {{- with $monitorLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: {{ $releaseName }}-indexing-streams
+    rules:
+    # An item that runs out of attempts leaves its stream. For a job that is
+    # recorded as `failed_retries_exhausted`; for a result it means finished
+    # inference was thrown away and the asset stays out of the index until it is
+    # crawled again. Either way it is work the deployment paid for and lost.
+    - alert: USDSearchIndexingItemsDropped
+      expr: sum by (stream, trigger) (increase(omnideepsearch_stream_items_requeued_total{outcome="dropped"}[15m])) > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          USD Search dropped items from the {{`{{ $labels.stream }}`}} stream
+        description: >-
+          {{`{{ $value | printf "%.0f" }}`}} item(s) exhausted their retry budget on
+          {{`{{ $labels.stream }}`}} in the last 15 minutes (trigger:
+          {{`{{ $labels.trigger }}`}}). A `failed` trigger means processing kept
+          raising; `reclaimed` means the workers holding those items kept dying. The
+          affected asset URIs are logged at ERROR level by the worker or the writer,
+          and a dropped result is also recorded against the asset as
+          `failed_retries_exhausted`.
+    # The trim point of a stream is its oldest unacknowledged entry, so one item
+    # stuck here retains every entry queued behind it and Redis grows without bound.
+    - alert: USDSearchIndexingStreamTrimBlocked
+      expr: max by (stream, stream_group) (omnideepsearch_stream_oldest_pending_age_seconds) > {{ $stalePendingSeconds }}
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: >-
+          USD Search stream {{`{{ $labels.stream }}`}} cannot be trimmed
+        description: >-
+          The oldest unacknowledged entry of consumer group
+          {{`{{ $labels.stream_group }}`}} on {{`{{ $labels.stream }}`}} has been
+          pending for {{`{{ $value | humanizeDuration }}`}}, which is longer than two
+          reclaim windows. Nothing behind it can be reclaimed, so the stream - and
+          Redis memory with it - keeps growing.
+{{- end }}

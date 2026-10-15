@@ -7,6 +7,13 @@ the stack, or *developing* on the repo itself.
 The top-level [`README.md`](../README.md) is the product overview; this index
 points at the deeper docs.
 
+## Architecture
+
+- [Architecture](architecture.md) — the microservice breakdown (Search,
+  Embedding, Indexing, Rendering, Asset Graph Service), the data stores
+  behind them, supported storage backends, and a capabilities-at-a-glance
+  list. Start here before deploying or integrating.
+
 ## Using USD Search with an agent
 
 USD Search ships agent skills that wrap search, inspection, and deployment as
@@ -58,6 +65,15 @@ source of truth shared by **Claude** and **Codex Desktop** (`.claude/skills` and
   LLM/VLM connection and per-role model selection.
 - [Configuration map](configuration-map.md) — one table from each feature to the
   file that defines it and the env var that overrides it.
+- [Asset-graph build failures](asset-graph-failures.md) — the per-asset reason
+  codes a failed graph build reports, where to read them, and how to size the
+  kit-worker so an over-large asset is attributable rather than an OOM-kill.
+- [Support matrix](support-matrix.md) — hardware and software requirements for
+  a production Kubernetes/Helm deployment.
+- [Performance & scaling](performance.md) — reference benchmark numbers and
+  how to scale stateless services, rendering, and the stateful data stores.
+- [Monitoring](../helm/usdsearch/README.md#monitoring) — enable the built-in
+  Grafana dashboards for indexing progress and system state.
 - [`openapi.html`](openapi.html) — rendered REST API reference.
 
 ## Beta features

@@ -324,7 +324,7 @@ class K8sRenderer(FarmClient):
             )
         return job
 
-    def get_auth_kwargs(self, storage_client: StorageClient, base_uri: Optional[str] = None) -> Dict[str, str]:
+    async def get_auth_kwargs(self, storage_client: StorageClient, base_uri: Optional[str] = None) -> Dict[str, str]:
         """Get authentication arguments for the task
 
         Args:
@@ -352,8 +352,11 @@ class K8sRenderer(FarmClient):
             )
         elif isinstance(storage_client, StorageAPIStorageClient):
             return dict(
-                storage_api_url=storage_client.config.grpc_endpoint,
-                storage_api_token=storage_client.config.token,
+                # Kit-bound form: omni.client reads TLS off the endpoint string, not `ssl`.
+                storage_api_url=storage_client.config.kit_storage_api_url,
+                # Resolve through _get_token() so token / token_file / OpenID all work; the
+                # short-lived render Job still receives a concrete bearer token inline.
+                storage_api_token=await storage_client._get_token(),
                 storage_api_openid_client_id=storage_client.config.openid_client_id,
                 storage_api_openid_client_secret=storage_client.config.openid_client_secret,
                 storage_api_openid_token_url=storage_client.config.openid_token_url,
@@ -383,6 +386,8 @@ class K8sRenderer(FarmClient):
     async def get(
         self, uri: str, fields: List[str] = [], task_id: Optional[str] = None, **kwargs
     ) -> ProcessedItemContent:
+        # polls left after the job succeeded, giving an in-flight result time to land in the cache
+        polls_after_success: Optional[int] = None
         while True:
             try:
                 item_content = await self.get_data(uri)
@@ -391,6 +396,15 @@ class K8sRenderer(FarmClient):
             except KeyError:
                 pass
 
+            if polls_after_success is not None:
+                if polls_after_success <= 0:
+                    k8s_renderer_logger.warning("K8S job with id: %s succeeded without a result for %s", task_id, uri)
+                    return ProcessedItemContent(
+                        status=ResponseStatus.error,
+                        response={"task_id": task_id, "uri": uri, "error": "job finished without a result"},
+                    )
+                polls_after_success -= 1
+
             await asyncio.sleep(10)
 
             if task_id is not None:
@@ -398,6 +412,7 @@ class K8sRenderer(FarmClient):
                     job_id_mapping: Dict[str, V1Job] = await self.get_k8s_jobs()
                 except ClientConnectorError as e:
                     k8s_renderer_logger.warning("Error fetching k8s rendering jobs", exc_info=e)
+                    continue
                 # get job status
                 if task_id not in job_id_mapping.keys():
                     raise ValueError(f"K8S Job ID: '{task_id}' not found in {job_id_mapping.keys()}")
@@ -414,6 +429,9 @@ class K8sRenderer(FarmClient):
                     k8s_renderer_logger.warning("K8S job with id: %s failed, state: %s", task_id, str(pod_state))
 
                     raise K8SJobException(f"K8S job with id: {task_id} failed")
+                elif status == JobStatus.succeeded:
+                    if polls_after_success is None:
+                        polls_after_success = 1
                 else:
                     k8s_renderer_logger.debug("Status of the '%s' job: %s", task_id, status.value)
 
@@ -427,7 +445,7 @@ class K8sRenderer(FarmClient):
 
         # prepare authentication parameters
 
-        auth_kwargs: Dict[str, str] = self.get_auth_kwargs(self._storage_client, base_uri=base_uri)
+        auth_kwargs: Dict[str, str] = await self.get_auth_kwargs(self._storage_client, base_uri=base_uri)
         job = self._render_k8s_job_yaml(job_id=job_id, url_list=url_list, **auth_kwargs)
         logger.debug("Creating k8s job %s body:\n%s", job_id, yaml.dump(job))
 

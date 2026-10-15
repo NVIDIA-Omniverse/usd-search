@@ -131,3 +131,34 @@ Create a fully functional metrics service name
 {{- define "deepsearch-crawler.metrics" -}}
 {{- (include "deepsearch-crawler.fullname" .) -}}-metrics
 {{- end -}}
+
+{{/*
+Normalize `.Values.crawler.path` into a list of paths. Accepts either a
+single string (single crawler instance) or a list of strings (one crawler
+Deployment per entry, all other settings shared).
+*/}}
+{{- define "deepsearch-crawler.paths" -}}
+{{- if kindIs "string" .Values.crawler.path }}
+{{- list .Values.crawler.path | toYaml }}
+{{- else }}
+{{- .Values.crawler.path | toYaml }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Per-instance fullname. When there is a single crawler path, this equals
+`deepsearch-crawler.fullname` unchanged, so single-path installs keep their
+existing resource names across upgrades. When there are multiple paths, each
+instance gets an index suffix (paths may contain characters that aren't safe
+in Kubernetes resource names, so the index is used rather than the path).
+*/}}
+{{- define "deepsearch-crawler.instanceFullname" -}}
+{{- $fullName := index . 0 -}}
+{{- $numPaths := index . 1 -}}
+{{- $i := index . 2 -}}
+{{- if gt $numPaths 1 -}}
+{{- printf "%s-%d" $fullName $i -}}
+{{- else -}}
+{{- $fullName -}}
+{{- end -}}
+{{- end -}}

@@ -1,0 +1,4 @@
+# GPU renderer, installed only in the container image (docker/Dockerfile.rendering-job).
+# Kept out of pyproject/uv.lock on purpose: the real binary wheel lives on NVIDIA PyPI,
+# while pypi.org ships only a stub sdist. Pin the version here rather than in the Dockerfile.
+ovrtx==0.5.0.377615

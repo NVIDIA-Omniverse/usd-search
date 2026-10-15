@@ -30,10 +30,16 @@ from asset_graph_service.api.exceptions import NotFoundError
 from asset_graph_service.api.healthchecks import healthchecks_router
 from asset_graph_service.api.profiling import get_profiling_middleware
 from asset_graph_service.api.tracing import provider
-from asset_graph_service.db.neo4j import Neo4jDBBackend, Neo4jSettings, get_settings
+from asset_graph_service.db.neo4j import (
+    Neo4jDBBackend,
+    Neo4jSettings,
+    PropertyIndexCache,
+    get_settings,
+)
 from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi_swagger import patch_fastapi
+from neo4j.exceptions import Neo4jError
 from opentelemetry import trace
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -42,6 +48,8 @@ from pydantic_settings import BaseSettings
 from starlette import status
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+from search_utils.url_mapping import configure_url_mapper, rewrite_response_text
 
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 logger = logging.getLogger(__name__)
@@ -62,10 +70,18 @@ setup_logging()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.config = AppConfig()
+    # Public/internal asset-URL translation, shared with deepsearch-api: this
+    # service is reachable through the gateway directly (/asset_graph/*,
+    # /dependency_graph*), so it must speak the same URLs. No-op unless
+    # USDSEARCH_URL_MAPPING_MODE is set; a bad config fails startup on purpose.
+    app.url_mapper = configure_url_mapper()
     app.neo4j_settings = Neo4jSettings()
-    db = Neo4jDBBackend(app.neo4j_settings)
+    # Shared across every request in this process — see PropertyIndexCache's docstring.
+    app.property_index_cache = PropertyIndexCache()
+    db = Neo4jDBBackend(app.neo4j_settings, app.property_index_cache)
     async with db.session() as session:
         await session.setup()
+        await session.seed_property_index_cache()
         await session.close()
     yield
 
@@ -116,9 +132,9 @@ The **Asset Graph Service (AGS) API** provides advanced querying capabilities fo
   - Find objects within a specified bounding box or radius.
   - Results sorted by distance with options for vector alignment using a transformation matrix.
 
-- **USD Property Queries:** 
+- **USD Property Queries:**
     - Enables querying objects in a 3D scene using USD properties, such as finding all assets with a specific semantic label.
-     
+
 - **Asset Dependency Searches:**
   - Identify all assets referenced in a scene - including USD references, material references, or textures.
   - Reverse search to find all scenes containing a particular asset.
@@ -231,8 +247,27 @@ async def validation_exception_handler(request: Request, exc: NotFoundError):
             {
                 "error": {
                     "code": exc.__class__.__name__,
-                    "message": str(exc),
-                    "target": exc.target,
+                    # Quote the URL the caller sent, not its internal translation.
+                    "message": rewrite_response_text(str(exc)),
+                    "target": rewrite_response_text(exc.target),
+                }
+            }
+        ),
+    )
+
+
+@app.exception_handler(Neo4jError)
+async def neo4j_exception_handler(request: Request, exc: Neo4jError):
+    # Surface the database error details in the response body instead of a bare 500, so callers
+    # (e.g. the graph builder) can see *why* a write failed rather than just the status code.
+    logger.exception("Neo4j error handling %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content=jsonable_encoder(
+            {
+                "error": {
+                    "code": getattr(exc, "code", None) or exc.__class__.__name__,
+                    "message": getattr(exc, "message", None) or str(exc),
                 }
             }
         ),

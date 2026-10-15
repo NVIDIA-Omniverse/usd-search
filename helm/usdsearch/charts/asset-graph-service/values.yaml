@@ -47,6 +47,12 @@ graphdb:
   passwordFromSecret:
   n_workers: 5
 
+# Info endpoint base URL, published to the pod as INFO_ENDPOINT_URL. The service
+# itself does not call it; the admin tools do, to ask for an asset to be
+# re-indexed after they repair it (see services/asset-graph/README.md).
+# Defaults to the in-cluster info-endpoint Service of this release.
+infoEndpointURL: ""
+
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
@@ -110,7 +116,7 @@ env:
   #    value: 'VARIABLE VALUE'
 
 # Enable liveness check before container start-up. This liveness checks verifies that
-# all resources that microservice depends on a ready before initialization. These 
+# all resources that microservice depends on a ready before initialization. These
 # resources include:
 #  * Redis
 enableLivenessChecks: true

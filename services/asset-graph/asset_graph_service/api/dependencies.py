@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 async def database(request: Request) -> AsyncGenerator[BaseGraphDB, None]:
-    async with Neo4jDBBackend(request.app.neo4j_settings).session() as db:
+    async with Neo4jDBBackend(request.app.neo4j_settings, request.app.property_index_cache).session() as db:
         yield db
 
 

@@ -11,6 +11,9 @@
   <em><strong>Find any 3D asset in natural language.</strong> Describe what you're looking for, like "quadruped robot dog with arm", and USD Search surfaces the matching USD assets from across your library, even when filenames don't contain the words.</em>
 </p>
 
+See [`docs/architecture.md`](docs/architecture.md) for the microservice
+breakdown behind these features.
+
 ## Features
 
 - **Semantic search.** Find assets by meaning rather than by filename: SigLIP2 embeddings match your text, or a dragged-in reference image, against how every asset actually looks, so the right model surfaces even when your words never appear in the path. On its own that is pure semantic ranking; blended with keyword matching it becomes hybrid search.

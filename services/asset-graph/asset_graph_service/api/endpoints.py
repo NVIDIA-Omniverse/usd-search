@@ -38,6 +38,8 @@ from fastapi.params import Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
+from search_utils.url_mapping import AssetUrl, rewrite_response_document
+
 from ..db.models import PropertiesFilter, PropertiesFilterRelation
 
 api_v1_router = APIRouter()
@@ -230,16 +232,10 @@ async def mark_asset_as_deleted(
     """
     rev_dependencies = await database.get_inverse_asset_dependencies_flat(url, limit=1)
     if rev_dependencies:
-        logger.info(
-            "Delete request for %s. Asset is still referenced in other scenes, will only be marked as deleted.",
-            url,
-        )
+        logger.info("Delete request: asset is still referenced in other scenes, will only be marked as deleted.")
         await database.mark_assets_as_deleted([url])
     else:
-        logger.info(
-            "Delete request for %s. Asset is not used in other scenes; deleting permanently.",
-            url,
-        )
+        logger.info("Delete request: asset is not used in other scenes; deleting permanently.")
         await database.delete_assets([url])
     # TODO: Delete prims
 
@@ -288,7 +284,7 @@ async def get_prims_within_radius(
     verify_access: Annotated[Any, Depends(dependencies.verify_access)],
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     prims_filter: Annotated[CommonPrimFilterBoundedBbox, Depends(CommonPrimFilterBoundedBbox)],
-    scene_url: Annotated[str, Query(description="URL of the scene to search.")],
+    scene_url: Annotated[AssetUrl, Query(description="URL of the scene to search.")],
     radius: Annotated[float, Query(description="Radius of the proximity query", gt=0, allow_inf_nan=False)],
     center_prim_usd_path: Annotated[
         str,
@@ -375,24 +371,26 @@ async def get_prims_within_radius(
             },
         )
 
-    return [
-        SpatialQueryResponseItem(
-            prim=res[0],
-            distance=res[1],
-            vector=get_transformed_vector(
-                reference_vector,
-                [
-                    res[0].bbox_midpoint[0],
-                    res[0].bbox_midpoint[1],
-                    res[0].bbox_midpoint[2],
-                ],
-                transformation_matrix=[
-                    [float(num) for num in row.split(",")] for row in transformation_matrix.split(";")
-                ],
-            ),
-        )
-        for res in results
-    ]
+    return rewrite_response_document(
+        [
+            SpatialQueryResponseItem(
+                prim=res[0],
+                distance=res[1],
+                vector=get_transformed_vector(
+                    reference_vector,
+                    [
+                        res[0].bbox_midpoint[0],
+                        res[0].bbox_midpoint[1],
+                        res[0].bbox_midpoint[2],
+                    ],
+                    transformation_matrix=[
+                        [float(num) for num in row.split(",")] for row in transformation_matrix.split(";")
+                    ],
+                ),
+            )
+            for res in results
+        ]
+    )
 
 
 @api_v1_router.get(
@@ -405,7 +403,7 @@ async def get_prims_within_bounding_box(
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     prims_filter: Annotated[CommonPrimFilterBoundedBbox, Depends(CommonPrimFilterBoundedBbox)],
     scene_url: Annotated[
-        str,
+        AssetUrl,
         Query(
             description="Retrieve prims from the scene at specified URL.",
         ),
@@ -473,7 +471,7 @@ async def get_prims_within_bounding_box(
         max_bbox_z=max_bbox_z,
     )
 
-    return results
+    return rewrite_response_document(results)
 
 
 @api_v1_router.get("/asset_graph/usd/prims", tags=["AGS Scene Graph"], response_model_exclude_none=True)
@@ -482,7 +480,7 @@ async def get_prims(
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     prims_filter: Annotated[CommonPrimFilter, Depends(CommonPrimFilter)],
     scene_url: Annotated[
-        str,
+        AssetUrl,
         Query(
             description="Retrieve prims from the scene at specified URL.",
         ),
@@ -514,7 +512,7 @@ async def get_prims(
         ),
     ] = None,
     source_asset_url: Annotated[
-        str,
+        AssetUrl,
         Query(
             description="Filter prims based on their source asset URL, i.e. the asset they have a reference to",
         ),
@@ -556,7 +554,7 @@ async def get_prims(
         use_scaled_bbox_dimensions=prims_filter.use_scaled_bbox_dimensions,
     )
 
-    return await filter_objects(verify_access, results, "scene_url")
+    return rewrite_response_document(await filter_objects(verify_access, results, "scene_url"))
 
 
 @api_v1_router.get(
@@ -568,7 +566,7 @@ async def scene_summary(
     verify_access: Annotated[Any, Depends(dependencies.verify_access)],
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     scene_url: Annotated[
-        str,
+        AssetUrl,
         Query(
             description="Scene summary.",
         ),
@@ -609,19 +607,23 @@ async def scene_summary(
         if prim.source_asset_url:
             referenced_assets[prim.source_asset_url] += 1
 
-    return SceneSummaryResponse(
-        scene_url=scene_url,
-        unique_property_keys=unique_property_keys,
-        unique_properties=unique_properties,
-        scene_mpu=getattr(root_asset, "scene_mpu", None) if root_asset else None,
-        scene_up_axis=(getattr(root_asset, "scene_up_axis", None) if root_asset else None),
-        prim_types=prim_types,
-        n_prims=len(prims),
-        total_polygon_count=total_polygon_count,
-        total_point_count=total_point_count,
-        total_curve_segment_count=total_curve_segment_count,
-        referenced_assets=referenced_assets,
-        default_prim=next((prim for prim in prims if prim.default_prim), None),
+    # `referenced_assets` is keyed by asset URL, so the walker translates its keys
+    # as well as the scalar URL fields.
+    return rewrite_response_document(
+        SceneSummaryResponse(
+            scene_url=scene_url,
+            unique_property_keys=unique_property_keys,
+            unique_properties=unique_properties,
+            scene_mpu=getattr(root_asset, "scene_mpu", None) if root_asset else None,
+            scene_up_axis=(getattr(root_asset, "scene_up_axis", None) if root_asset else None),
+            prim_types=prim_types,
+            n_prims=len(prims),
+            total_polygon_count=total_polygon_count,
+            total_point_count=total_point_count,
+            total_curve_segment_count=total_curve_segment_count,
+            referenced_assets=referenced_assets,
+            default_prim=next((prim for prim in prims if prim.default_prim), None),
+        )
     )
 
 
@@ -634,7 +636,7 @@ async def get_dependencies_graph(
     verify_access: Annotated[Any, Depends(dependencies.verify_access)],
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     root_node_url: Annotated[
-        str,
+        AssetUrl,
         Query(description="URL of the asset"),
     ],
     max_level: Annotated[
@@ -662,7 +664,7 @@ async def get_dependencies_graph(
     dependency_graph = await database.get_asset_dependencies_graph(root_node_url, max_level=max_level, limit=limit)
     dependency_graph.nodes = await filter_objects(verify_access, dependency_graph.nodes, "url")
     dependency_graph.edges = await filter_objects(verify_access, dependency_graph.edges, ["node_1_url", "node_2_url"])
-    return dependency_graph
+    return rewrite_response_document(dependency_graph)
 
 
 @api_v1_router.get(
@@ -674,7 +676,7 @@ async def get_dependencies_flat(
     verify_access: Annotated[Any, Depends(dependencies.verify_access)],
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     root_node_url: Annotated[
-        str,
+        AssetUrl,
         Query(description="URL of the asset"),
     ],
     max_level: Annotated[
@@ -700,7 +702,7 @@ async def get_dependencies_flat(
     if not await database.get_asset(root_node_url):
         raise AssetNotFoundError(target=root_node_url)
     asset_dependencies = await database.get_asset_dependencies_flat(root_node_url, max_level=max_level, limit=limit)
-    return await filter_objects(verify_access, asset_dependencies, "url")
+    return rewrite_response_document(await filter_objects(verify_access, asset_dependencies, "url"))
 
 
 @api_v1_router.get(
@@ -712,7 +714,7 @@ async def get_dependencies_inverse(
     verify_access: Annotated[Any, Depends(dependencies.verify_access)],
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     root_node_url: Annotated[
-        str,
+        AssetUrl,
         Query(description="URL of the asset"),
     ],
     max_level: Annotated[
@@ -740,7 +742,7 @@ async def get_dependencies_inverse(
     asset_dependencies = await database.get_inverse_asset_dependencies_flat(
         root_node_url, max_level=max_level, limit=limit
     )
-    return await filter_objects(verify_access, asset_dependencies, "url")
+    return rewrite_response_document(await filter_objects(verify_access, asset_dependencies, "url"))
 
 
 @api_v1_router.get(
@@ -752,7 +754,7 @@ async def get_inverse_dependencies_graph(
     verify_access: Annotated[Any, Depends(dependencies.verify_access)],
     database: Annotated[BaseGraphDB, Depends(dependencies.database)],
     root_node_url: Annotated[
-        str,
+        AssetUrl,
         Query(description="URL of the asset"),
     ],
     max_level: Annotated[
@@ -782,4 +784,4 @@ async def get_inverse_dependencies_graph(
     )
     dependency_graph.nodes = await filter_objects(verify_access, dependency_graph.nodes, "url")
     dependency_graph.edges = await filter_objects(verify_access, dependency_graph.edges, ["node_1_url", "node_2_url"])
-    return dependency_graph
+    return rewrite_response_document(dependency_graph)

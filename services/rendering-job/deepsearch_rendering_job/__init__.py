@@ -42,9 +42,7 @@ except Exception:
 
 def get_logging_config() -> Dict[str, Any]:  # type: ignore[misc]
     with open(
-        os.getenv("LOGGING_CONFIG", bin_path.joinpath("logging.yml").as_posix()),
-        "r",
-        encoding="utf-8",
+        os.getenv("LOGGING_CONFIG", bin_path.joinpath("logging.yml").as_posix()), "r", encoding="utf-8"
     ) as logging_config:
         return yaml.load(logging_config, Loader=yaml.FullLoader)  # type: ignore[no-any-return]
 

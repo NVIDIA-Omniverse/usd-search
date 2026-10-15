@@ -3,7 +3,7 @@
   "info": {
     "title": "USD Search and Asset Graph Search APIs",
     "description": "# USD Search API Overview\n**USD Search API** is a collection of cloud-native microservices that enable developers, creators, and workflow specialists to efficiently search through vast collections of OpenUSD data, images, and other assets using natural language or image-based inputs.\nWith these production-ready microservices, developers can deploy USD Search API onto their own infrastructure. With USD Search API\u2019s artificial intelligence (AI) features, you can quickly locate untagged and unstructured 3D data and digital assets, saving time navigating unstructured, untagged 3D data. USD Search API is capable of searching and indexing 3D asset databases, as well as navigating complex 3D scenes to perform spatial searches, without requiring manual tagging of assets.\n## Features\n- **Natural Language Searches:** - Utilize AI to search for images and USD-based 3D models using simple, descriptive language.\n- **Image Similarity Searches:** - Find images similar to a reference image through AI-driven image comparisons.\n- **Metadata Filtering:** - Filter search results by file name, file type, creation/modification dates, file size, and creator/modifier metadata.\n- **USD Content Filtering with Asset Graph Search:** - When used with the Asset Graph Search, search capabilities are expanded to include filtering based on USD properties and object dimensions.\n- **Multiple Storage Backend Support:** - Compatible with various storage backends, including AWS S3 buckets and Omniverse Nucleus server.\n- **Advanced File Name, Extension, and Path Filters:** - Use wildcards for broad or specific file name and extension searches.\n- **Date and Size Range Filtering:** - Specify assets created or modified within certain date ranges or file sizes larger or smaller than a designated threshold.\n- **User-based Filtering:** - Filter assets based on their creator or modifier, allowing for searches tailored to particular users' contributions.\n- **Embedding-based Similarity Threshold:** - Set a similarity threshold for more nuanced control over search results in embedding-based searches.\n- **Custom Search Paths and Scenes:** - Specify search locations within the storage backend or conduct searches within specific scenes for targeted results.\n- **Return Detailed Results:** - Option to include images, metadata, root prims, and predictions in the search results.\n\n# Asset Graph Search (AGS) API Overview\n**Asset Graph Search (AGS)** provides advanced querying capabilities for assets and USD trees indexed in a graph database. It supports proximity queries based on coordinates or prims to find objects within specified areas or radii, sorted by distance, and includes transformation options for vector alignment. The API also offers dependency and reverse dependency searches, helping to identify all assets referenced in a scene or scenes containing a particular asset, which can optimize scene loading and track dependency changes. By combining different query types, the AGS API enables complex scenarios for scene understanding, manipulation, and generation. Integrated with USD Search it provides in-scene search functionality.\n## Features\n- **Proximity Queries:** - Find objects within a specified bounding box or radius. - Results sorted by distance with options for vector alignment using a transformation matrix.\n- **USD Property Queries:** - Enables querying objects in a 3D scene using USD properties, such as finding all assets with a specific semantic label.\n- **Asset Dependency Searches:** - Identify all assets referenced in a scene \u2014 including USD references, material references, or textures. - Reverse search to find all scenes containing a particular asset.\n- **Combined Query Capabilities:** - Enable complex scenarios for enhanced scene understanding, manipulation, and generation.\n- **Integration with USD Search:** - Provides in-scene search functionality.\n",
-    "version": "1.4.0"
+    "version": "1.5.0"
   },
   "servers": [
     {
@@ -1584,7 +1584,7 @@
           "Storage Backend"
         ],
         "summary": "Get Storage Backend Info",
-        "description": "Display some information about the storage backend, to which the USD Search API instance is connected to.",
+        "description": "Display some information about the storage backend(s), to which the USD Search API instance is connected to.\n\nA single Storage API deployment can serve several buckets / namespace roots. These are discovered via\n``ListTopLevelAddresses`` and reported as one entry per root; backends that expose a single root (or a\nStorage API server without discovery support) report their configured ``base_uri``.",
         "operationId": "get_storage_backend_info_info_backend_storage_get",
         "parameters": [
           {
@@ -1680,7 +1680,7 @@
           "Asset"
         ],
         "summary": "On-demand asset processing",
-        "description": "USD Search processes all assets on the storage backend in the background. This, however, may\ntake time depending on the amount of data on the storage backend and the amount of available resources,\nwhich could lead to delays in specific assets appearing in the search index. In order to address this\nand prioritize processing of specific assets, it is possible to use this endpoint to trigger\nindexing of a specific asset on demand.\n\nWhen triggering processing of a specific asset URL the user could decide, with which plugin the\nasset needs to be processed. By default, when no plugin is selected - the service will trigger\nprocessing for all plugins that could work with this asset type. Please find below the list of\nsupported plugins:\n\n* **asset_graph_generation**: \n    Constructs several graphs based on the prim hierarchy of a USD file. This plugin is an essential component of Asset Graph Service (AGS).\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **image_to_embedding**: \n    Extracts CLIP embeddings from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *avifs, h5, jpc, j2k, pxr, dcx, rgba, vst, xpm, blp, fits, rgb, dds, ras, icb, apng, jpeg, grib, jpf, ftu, jpe, pcd, emf, bw, jpg, psd, jp2, pcx, ico, j2c, cur, msp, iim, ftc, eps, fit, mpg, bufr, exr, hdf, pnm, fli, im, avif, jpx, dib, jfif, pbm, vda, pgm, sgi, gif, ps, icns, flc, mpeg, pfm, bmp, webp, tiff, wmf, xbm, qoi, ppm, png, tif, gbr, tga*\n\n* **image_to_vision_metadata**: \n    Extracts VLM-generated metadata from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *avifs, h5, jpc, j2k, pxr, dcx, rgba, vst, xpm, blp, fits, rgb, dds, ras, icb, apng, jpeg, grib, jpf, ftu, jpe, pcd, emf, bw, jpg, psd, jp2, pcx, ico, j2c, cur, msp, iim, ftc, eps, fit, mpg, bufr, exr, hdf, pnm, fli, im, avif, jpx, dib, jfif, pbm, vda, pgm, sgi, gif, ps, icns, flc, mpeg, pfm, bmp, webp, tiff, wmf, xbm, qoi, ppm, png, tif, gbr, tga*\n\n* **rendering_to_embedding**: \n    Renders the asset and extracts CLIP embeddings from the generated preview images.\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **rendering_to_vision_metadata**: \n    Renders the asset and extracts VLM-generated metadata using the generated preview images.\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **thumbnail_generation**: \n    Renders the asset uploads one of the rendered images to the storage backend to serve as a thumbnail for this asset.\n    \n    * This plugin supports the following data types: *usdc, usd, usda, usdz*\n\n* **thumbnail_to_embedding**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract CLIP embeddings.\n    \n    * This plugin supports the following data types: *any*\n\n* **thumbnail_to_vision_metadata**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract VLM-generated metadata.\n    \n    * This plugin supports the following data types: *any*\n\n\n**NOTE**: If some of the plugins are not enabled for the USD Search instance, selecting them for the\n*plugins* parameter setting will have not effect. Please reach out to your USD Search service administrator\nif you would like to enable certain plugin functionality. The list of plugins that are enabled for\nthis USD Search instance could be retrieved using **/info/plugins** endpoint.",
+        "description": "USD Search processes all assets on the storage backend in the background. This, however, may\ntake time depending on the amount of data on the storage backend and the amount of available resources,\nwhich could lead to delays in specific assets appearing in the search index. In order to address this\nand prioritize processing of specific assets, it is possible to use this endpoint to trigger\nindexing of a specific asset on demand.\n\nWhen triggering processing of a specific asset URL the user could decide, with which plugin the\nasset needs to be processed. By default, when no plugin is selected - the service will trigger\nprocessing for all plugins that could work with this asset type. Please find below the list of\nsupported plugins:\n\n* **asset_graph_generation**: \n    Constructs several graphs based on the prim hierarchy of a USD file. This plugin is an essential component of Asset Graph Service (AGS).\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **image_to_embedding**: \n    Extracts CLIP embeddings from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *apng, png, dib, msp, xpm, avif, vst, bmp, flc, rgba, fit, ftu, sgi, ps, j2k, vda, hdf, ras, jp2, tif, psd, dcx, dds, jpeg, pbm, jpe, bw, blp, jpc, grib, icb, h5, bufr, pfm, qoi, tga, cur, jpg, ftc, fits, gbr, pgm, emf, j2c, fli, exr, iim, webp, jpx, avifs, icns, gif, mpeg, xbm, jfif, eps, pcd, pnm, jpf, im, mpg, rgb, ico, ppm, wmf, pxr, pcx, tiff*\n\n* **image_to_vision_metadata**: \n    Extracts VLM-generated metadata from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *apng, png, dib, msp, xpm, avif, vst, bmp, flc, rgba, fit, ftu, sgi, ps, j2k, vda, hdf, ras, jp2, tif, psd, dcx, dds, jpeg, pbm, jpe, bw, blp, jpc, grib, icb, h5, bufr, pfm, qoi, tga, cur, jpg, ftc, fits, gbr, pgm, emf, j2c, fli, exr, iim, webp, jpx, avifs, icns, gif, mpeg, xbm, jfif, eps, pcd, pnm, jpf, im, mpg, rgb, ico, ppm, wmf, pxr, pcx, tiff*\n\n* **rendering_to_embedding**: \n    Renders the asset and extracts CLIP embeddings from the generated preview images.\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **rendering_to_vision_metadata**: \n    Renders the asset and extracts VLM-generated metadata using the generated preview images.\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **thumbnail_generation**: \n    Renders the asset uploads one of the rendered images to the storage backend to serve as a thumbnail for this asset.\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **thumbnail_to_embedding**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract CLIP embeddings.\n    \n    * This plugin supports the following data types: *any*\n\n* **thumbnail_to_vision_metadata**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract VLM-generated metadata.\n    \n    * This plugin supports the following data types: *any*\n\n\n**NOTE**: If some of the plugins are not enabled for the USD Search instance, selecting them for the\n*plugins* parameter setting will have not effect. Please reach out to your USD Search service administrator\nif you would like to enable certain plugin functionality. The list of plugins that are enabled for\nthis USD Search instance could be retrieved using **/info/plugins** endpoint.",
         "operationId": "submit_for_processing_process_asset_get",
         "parameters": [
           {
@@ -1799,7 +1799,7 @@
           "AI Search"
         ],
         "summary": "Search",
-        "description": "All supported search parameters are available as query parameters.\n\nSearch endpoint enables comprehensive searches across images (e.g., .jpg, .png) and USD-based 3D models within\nvarious storage backends (Nucleus, S3, etc.). It enables users to use natural language, image\nsimilarity, and precise metadata criteria (file name, type, date, size, creator, etc.) to locate relevant content\nefficiently. Furthermore, when integrated with the Asset Graph Service, USD Search API extends its capabilities to\ninclude searches based on USD properties and spatial dimensions of 3D model bounding boxes, enhancing the ability\nto find assets that meet specific requirements.",
+        "description": "All supported search parameters are available as query parameters.\n\nSearch endpoint enables comprehensive searches across images (e.g., .jpg, .png) and USD-based 3D models within\nvarious storage backends (Nucleus, S3, etc.). It enables users to use natural language, image\nsimilarity, and precise metadata criteria (file name, type, date, size, creator, etc.) to locate relevant content\nefficiently. Furthermore, when integrated with the Asset Graph Service, USD Search API extends its capabilities to\ninclude searches based on USD properties and spatial dimensions of 3D model bounding boxes, enhancing the ability\nto find assets that meet specific requirements.\n\n**Pagination:** pass `offset`, or better, the previous response's `X-Next-Cursor` header back as\n`cursor` \u2014 it pins the ranking so pages do not overlap or skip. Because this endpoint returns a\nbare JSON array, the pagination state travels in response headers rather than the body:\n`X-Next-Cursor`, `X-Has-More` (`true`/`false`) and `X-Paginable-Total` (the page-count basis).\nHow deep you can go depends on the query shape: filter-only queries are unbounded, a text query\nis capped by the deployment's `pagination_max_offset`, and a multi-leg query is capped by the RRF\nfusion window. `validate_results=true` is single-page and cannot be combined with `offset`/`cursor`.\nThe richer envelope \u2014 including why paging stopped \u2014 is on `POST /v3/deepsearch/search`.",
         "operationId": "search_v2_deepsearch_search_get",
         "security": [
           {
@@ -2730,6 +2730,37 @@
             "description": "Set the maximum number of results to return from the search, default is 32"
           },
           {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of results to skip. Prefer the `cursor` below, which pins the ranking so pages do not overlap or skip. Depth depends on the query shape: filter-only is unbounded, a text query is capped by pagination_max_offset, a multi-leg query by the RRF fusion window. Cannot be combined with validate_results=true.",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Number of results to skip. Prefer the `cursor` below, which pins the ranking so pages do not overlap or skip. Depth depends on the query shape: filter-only is unbounded, a text query is capped by pagination_max_offset, a multi-leg query by the RRF fusion window. Cannot be combined with validate_results=true."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque cursor from the previous response's `X-Next-Cursor` header. Takes precedence over `offset`. The query must stay identical while paging; `limit` and the `return_*` flags may change. Cannot be combined with validate_results=true.",
+              "title": "Cursor"
+            },
+            "description": "Opaque cursor from the previous response's `X-Next-Cursor` header. Takes precedence over `offset`. The query must stay identical while paging; `limit` and the `return_*` flags may change. Cannot be combined with validate_results=true."
+          },
+          {
             "name": "vision_metadata",
             "in": "query",
             "required": false,
@@ -2860,6 +2891,30 @@
                   }
                 ]
               }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "description": "Opaque cursor for the next page. Absent on the last page.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Has-More": {
+                "description": "Whether another page exists (`true`/`false`). Authoritative \u2014 a full page does not imply more.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false"
+                  ]
+                }
+              },
+              "X-Paginable-Total": {
+                "description": "How many results paging can reach. Not a corpus count; see `paginable_total` on the v3 response.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
             }
           },
           "422": {
@@ -2879,7 +2934,7 @@
           "AI Search"
         ],
         "summary": "Search Post",
-        "description": "All supported search parameters are available as body parameters.\n\nSearch endpoint enables comprehensive searches across images (e.g., .jpg, .png) and USD-based 3D models within\nvarious storage backends (Nucleus, S3, etc.). It enables users to use natural language, image\nsimilarity, and precise metadata criteria (file name, type, date, size, creator, etc.) to locate relevant content\nefficiently. Furthermore, when integrated with the Asset Graph Service, USD Search API extends its capabilities to\ninclude searches based on USD properties and spatial dimensions of 3D model bounding boxes, enhancing the ability\nto find assets that meet specific requirements.",
+        "description": "All supported search parameters are available as body parameters.\n\nSearch endpoint enables comprehensive searches across images (e.g., .jpg, .png) and USD-based 3D models within\nvarious storage backends (Nucleus, S3, etc.). It enables users to use natural language, image\nsimilarity, and precise metadata criteria (file name, type, date, size, creator, etc.) to locate relevant content\nefficiently. Furthermore, when integrated with the Asset Graph Service, USD Search API extends its capabilities to\ninclude searches based on USD properties and spatial dimensions of 3D model bounding boxes, enhancing the ability\nto find assets that meet specific requirements.\n\n**Pagination:** pass `offset`, or better, the previous response's `X-Next-Cursor` header back as\n`cursor` \u2014 it pins the ranking so pages do not overlap or skip. Because this endpoint returns a\nbare JSON array, the pagination state travels in response headers rather than the body:\n`X-Next-Cursor`, `X-Has-More` (`true`/`false`) and `X-Paginable-Total` (the page-count basis).\nHow deep you can go depends on the query shape: filter-only queries are unbounded, a text query\nis capped by the deployment's `pagination_max_offset`, and a multi-leg query is capped by the RRF\nfusion window. `validate_results=true` is single-page and cannot be combined with `offset`/`cursor`.\nThe richer envelope \u2014 including why paging stopped \u2014 is on `POST /v3/deepsearch/search`.",
         "operationId": "search_post_v2_deepsearch_search_post",
         "security": [
           {
@@ -2966,6 +3021,30 @@
                   }
                 ]
               }
+            },
+            "headers": {
+              "X-Next-Cursor": {
+                "description": "Opaque cursor for the next page. Absent on the last page.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Has-More": {
+                "description": "Whether another page exists (`true`/`false`). Authoritative \u2014 a full page does not imply more.",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "true",
+                    "false"
+                  ]
+                }
+              },
+              "X-Paginable-Total": {
+                "description": "How many results paging can reach. Not a corpus count; see `paginable_total` on the v3 response.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
             }
           },
           "422": {
@@ -2987,20 +3066,8 @@
           "AI Search"
         ],
         "summary": "Stats Usd Properties",
-        "description": "Inventory of USD properties across the indexed corpus: every unique property key, every unique\nvalue, and every unique key=value pair \u2014 each with the number of assets that carry it\n(``asset_count``), sorted by coverage. The full lists (not just counts) power property discovery;\nsee the ``/usd-property-catalog`` skill, which turns this into a local catalog + filter config.",
+        "description": "Inventory of USD properties across the indexed corpus: every unique property key, every unique\nvalue, and every unique key=value pair \u2014 each with the number of assets that carry it\n(``asset_count``), sorted by coverage. The full lists (not just counts) power property discovery;\nsee the ``/usd-property-catalog`` skill, which turns this into a local catalog + filter config.\n\n**Filtering.** Pass any of the filter parameters that `/search` accepts (`search_path`,\n`file_extension_include`, `filter_by_properties`, `filter_by_tags`, dates, bbox dimensions,\n`search_in_scene`, \u2026) to inventory a subset of the corpus instead \u2014 \"which properties do the\nassets under /Projects/Vehicles carry?\". Passing none inventories everything, as before.\n\nCounts stay **exact** for whatever subset is selected: this is an aggregation over the whole\nmatching set, not a summary of one page of search results. Filtering is asset-scoped, so\n`filter_by_properties=class=vehicle` returns *every* property those assets carry, not just\n`class` \u2014 which is what makes drill-down work.\n\nSearch-only parameters (`description`, vector/image queries, `limit`, `offset`) are rejected\nwith a 422: an aggregation has no ranking to apply them to, and silently ignoring them would\nreturn corpus-wide numbers that look filtered.\n\n**Not access-filtered.** Results describe the index itself, not the subset of assets the\ncaller could download \u2014 with or without filters. Deployments that cannot accept that should\nturn aggregations off (`enable_aggregations=false`), which makes this endpoint return 403.",
         "operationId": "stats_usd_properties_v2_deepsearch_search_stats_usd_properties_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StatsResponse"
-                }
-              }
-            }
-          }
-        },
         "security": [
           {
             "HTTPBearer": []
@@ -3011,7 +3078,703 @@
           {
             "APIKeyHeader": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "file_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+              "examples": [
+                "robot.usd",
+                "*scene*"
+              ],
+              "title": "File Name"
+            },
+            "description": "Filter results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
+          },
+          {
+            "name": "exclude_file_name",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclude results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+              "examples": [
+                "draft*",
+                "*temp*"
+              ],
+              "title": "Exclude File Name"
+            },
+            "description": "Exclude results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
+          },
+          {
+            "name": "file_extension_include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+              "examples": [
+                "usd",
+                "usd*",
+                "jpg,png,gif"
+              ],
+              "title": "File Extension Include"
+            },
+            "description": "Filter results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
+          },
+          {
+            "name": "file_extension_exclude",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclude results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+              "examples": [
+                "jpg",
+                "jpg,png,gif",
+                "mdl"
+              ],
+              "title": "File Extension Exclude"
+            },
+            "description": "Exclude results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
+          },
+          {
+            "name": "created_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include assets created after a specified date",
+              "examples": [
+                "2023-01-01",
+                "2023-06-01"
+              ],
+              "title": "Created After"
+            },
+            "description": "Filter results to only include assets created after a specified date"
+          },
+          {
+            "name": "created_before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include assets created before a specified date",
+              "examples": [
+                "2023-01-01",
+                "2023-06-01"
+              ],
+              "title": "Created Before"
+            },
+            "description": "Filter results to only include assets created before a specified date"
+          },
+          {
+            "name": "modified_after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include assets modified after a specified date",
+              "examples": [
+                "2023-02-01",
+                "2023-07-01"
+              ],
+              "title": "Modified After"
+            },
+            "description": "Filter results to only include assets modified after a specified date"
+          },
+          {
+            "name": "modified_before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include assets modified before a specified date",
+              "examples": [
+                "2023-02-01",
+                "2023-07-01"
+              ],
+              "title": "Modified Before"
+            },
+            "description": "Filter results to only include assets modified before a specified date"
+          },
+          {
+            "name": "file_size_greater_than",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d+[KMGT]B$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include files larger than a specific size",
+              "examples": [
+                "1KB",
+                "10MB"
+              ],
+              "title": "File Size Greater Than"
+            },
+            "description": "Filter results to only include files larger than a specific size"
+          },
+          {
+            "name": "file_size_less_than",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d+[KMGT]B$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include files smaller than a specific size",
+              "examples": [
+                "100MB",
+                "1GB"
+              ],
+              "title": "File Size Less Than"
+            },
+            "description": "Filter results to only include files smaller than a specific size"
+          },
+          {
+            "name": "created_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include assets created by a specific user. In case AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email.",
+              "examples": [
+                "ov_user"
+              ],
+              "title": "Created By"
+            },
+            "description": "Filter results to only include assets created by a specific user. In case AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email."
+          },
+          {
+            "name": "exclude_created_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclude assets created by a specific user from the results",
+              "examples": [
+                "ov_user"
+              ],
+              "title": "Exclude Created By"
+            },
+            "description": "Exclude assets created by a specific user from the results"
+          },
+          {
+            "name": "modified_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter results to only include assets modified by a specific user. In the case, when AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email.",
+              "examples": [
+                "ov_user"
+              ],
+              "title": "Modified By"
+            },
+            "description": "Filter results to only include assets modified by a specific user. In the case, when AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email."
+          },
+          {
+            "name": "exclude_modified_by",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclude assets modified by a specific user from the results",
+              "examples": [
+                "ov_user"
+              ],
+              "title": "Exclude Modified By"
+            },
+            "description": "Exclude assets modified by a specific user from the results"
+          },
+          {
+            "name": "search_path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character.",
+              "examples": [
+                "/Projects/Vehicles/",
+                "/Samples/*"
+              ],
+              "title": "Search Path"
+            },
+            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character."
+          },
+          {
+            "name": "exclude_search_path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclude assets within this directory path. Same format as search_path \u2014 do NOT include the storage backend URL prefix. Supports wildcards: `*` for any characters, `?` for single character.",
+              "examples": [
+                "/Projects/Archive/",
+                "*/tmp/*"
+              ],
+              "title": "Exclude Search Path"
+            },
+            "description": "Exclude assets within this directory path. Same format as search_path \u2014 do NOT include the storage backend URL prefix. Supports wildcards: `*` for any characters, `?` for single character."
+          },
+          {
+            "name": "filter_url_regexp",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax).",
+              "examples": [
+                ".*[/]Vehicles[/].*",
+                "~(.*[/]temp[/].*)"
+              ],
+              "title": "Filter Url Regexp"
+            },
+            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax)."
+          },
+          {
+            "name": "search_in_scene",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Conduct the search within a specific scene. Provide the full URL for the asset including the storage backend URL prefix.",
+              "examples": [
+                "s3://bucket-name/Project/scene.usd"
+              ],
+              "title": "Search In Scene"
+            },
+            "description": "Conduct the search within a specific scene. Provide the full URL for the asset including the storage backend URL prefix."
+          },
+          {
+            "name": "filter_by_properties",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter assets by USD attributes where at least one root prim matches ALL listed conditions (AND logic). Format: `key=value` pairs comma-separated. Use `=~` prefix on value for wildcard matching. Examples: `class=vehicle` (exact), `class=~*vehicle*` (wildcard), `class=vehicle,material=metal` (both must match). Only a subset of indexed attributes is searchable.",
+              "examples": [
+                "class=vehicle",
+                "class=~*vehicle*",
+                "class=vehicle,material=metal"
+              ],
+              "title": "Filter By Properties"
+            },
+            "description": "Filter assets by USD attributes where at least one root prim matches ALL listed conditions (AND logic). Format: `key=value` pairs comma-separated. Use `=~` prefix on value for wildcard matching. Examples: `class=vehicle` (exact), `class=~*vehicle*` (wildcard), `class=vehicle,material=metal` (both must match). Only a subset of indexed attributes is searchable."
+          },
+          {
+            "name": "filter_by_properties_include_any",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter assets by USD attributes using OR logic \u2014 an asset matches if ANY of the listed property conditions match. Same format as filter_by_properties: `key=value` for exact, `key=~*pattern*` for wildcard. Example: `class=car,class=truck` matches assets with either class.",
+              "examples": [
+                "class=car,class=truck"
+              ],
+              "title": "Filter By Properties Include Any"
+            },
+            "description": "Filter assets by USD attributes using OR logic \u2014 an asset matches if ANY of the listed property conditions match. Same format as filter_by_properties: `key=value` for exact, `key=~*pattern*` for wildcard. Example: `class=car,class=truck` matches assets with either class."
+          },
+          {
+            "name": "exclude_filter_by_properties",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclude assets by USD attributes where at least one root prim matches (note: only supported for a subset of attributes indexed). Format: `attribute1=abc,attribute2=456` for exact matches or `*attribute1*=~*abc*,*attribute2*=~*456*` for wildcard matches",
+              "examples": [
+                "class=vehicle",
+                "class=~*draft*"
+              ],
+              "title": "Exclude Filter By Properties"
+            },
+            "description": "Exclude assets by USD attributes where at least one root prim matches (note: only supported for a subset of attributes indexed). Format: `attribute1=abc,attribute2=456` for exact matches or `*attribute1*=~*abc*,*attribute2*=~*456*` for wildcard matches"
+          },
+          {
+            "name": "filter_by_properties_numeric",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter assets by numeric USD attributes with comparison operators. Format: `property>value,property<=value`. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `physics:mass>1.0,physics:density<=500`",
+              "examples": [
+                "physics:mass>1.0",
+                "physics:mass>1.0,physics:density<=500"
+              ],
+              "title": "Filter By Properties Numeric"
+            },
+            "description": "Filter assets by numeric USD attributes with comparison operators. Format: `property>value,property<=value`. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `physics:mass>1.0,physics:density<=500`"
+          },
+          {
+            "name": "filter_by_tags",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter assets by tags. Format: `tag1=,=value2,tag3=value3`",
+              "examples": [
+                "reviewed=",
+                "=production",
+                "status=approved"
+              ],
+              "title": "Filter By Tags"
+            },
+            "description": "Filter assets by tags. Format: `tag1=,=value2,tag3=value3`"
+          },
+          {
+            "name": "min_bbox_x",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by minimum X axis dimension of the asset's bounding box of the default prim of the asset",
+              "examples": [
+                1.0
+              ],
+              "title": "Min Bbox X"
+            },
+            "description": "Filter by minimum X axis dimension of the asset's bounding box of the default prim of the asset"
+          },
+          {
+            "name": "min_bbox_y",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by minimum Y axis dimension of the asset's bounding box of the default prim of the asset",
+              "examples": [
+                1.0
+              ],
+              "title": "Min Bbox Y"
+            },
+            "description": "Filter by minimum Y axis dimension of the asset's bounding box of the default prim of the asset"
+          },
+          {
+            "name": "min_bbox_z",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by minimum Z axis dimension of the asset's bounding box of the default prim of the asset",
+              "examples": [
+                1.0
+              ],
+              "title": "Min Bbox Z"
+            },
+            "description": "Filter by minimum Z axis dimension of the asset's bounding box of the default prim of the asset"
+          },
+          {
+            "name": "max_bbox_x",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by maximum X axis dimension of the asset's bounding box of the default prim of the asset",
+              "examples": [
+                100.0
+              ],
+              "title": "Max Bbox X"
+            },
+            "description": "Filter by maximum X axis dimension of the asset's bounding box of the default prim of the asset"
+          },
+          {
+            "name": "max_bbox_y",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by maximum Y axis dimension of the asset's bounding box of the default prim of the asset",
+              "examples": [
+                100.0
+              ],
+              "title": "Max Bbox Y"
+            },
+            "description": "Filter by maximum Y axis dimension of the asset's bounding box of the default prim of the asset"
+          },
+          {
+            "name": "max_bbox_z",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by maximum Z axis dimension of the asset's bounding box of the default prim of the asset",
+              "examples": [
+                100.0
+              ],
+              "title": "Max Bbox Z"
+            },
+            "description": "Filter by maximum Z axis dimension of the asset's bounding box of the default prim of the asset"
+          },
+          {
+            "name": "bbox_use_scaled_dimensions",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Use scaled dimensions for bounding box filtering",
+              "default": true,
+              "title": "Bbox Use Scaled Dimensions"
+            },
+            "description": "Use scaled dimensions for bounding box filtering"
+          },
+          {
+            "name": "vision_metadata",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Uses a keyword match query on metadata fields that were generated using Vision Language Models. Format: `attribute1=abc,attribute2=456`",
+              "examples": [
+                "material=metal",
+                "color=red,style=modern"
+              ],
+              "title": "Vision Metadata"
+            },
+            "description": "Uses a keyword match query on metadata fields that were generated using Vision Language Models. Format: `attribute1=abc,attribute2=456`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/search_hybrid": {
@@ -3020,7 +3783,7 @@
           "AI Search"
         ],
         "summary": "Hybrid Search Post",
-        "description": "Search for 3D assets using combined text + vector + filter search with Reciprocal Rank Fusion scoring.\n\nThis is the **recommended endpoint** for AI agents and programmatic access. It combines:\n- **Hybrid Text Search**: Keyword matching across asset names, paths, USD properties, and AI-generated metadata\n- **Vector Similarity Search**: Semantic matching using SigLIP2 vision-language embeddings (1536 dims)\n- **Reciprocal Rank Fusion (RRF)**: Merges text and vector results into a single high-quality ranking\n- **Extensive Filtering**: File metadata, dates, USD properties, bounding box dimensions, tags\n- **VLM Validation**: Optional server-side validation of results using a Vision Language Model\n\n**Quick Start for AI Agents:**\n1. Set `hybrid_text_query` to a short description (2-5 words)\n2. Add a `vector_queries` entry with `field_name=\"siglip2-embedding.embedding\"`, `query_type=\"text\"`, same query text\n3. Set `file_extension_include=\"usd*\"` for USD assets\n4. Set `return_images=true` for visual inspection\n5. Use `limit=20-50` for exploration",
+        "description": "Search for 3D assets using combined text + vector + filter search with Reciprocal Rank Fusion scoring.\n\nThis is the **recommended endpoint** for AI agents and programmatic access. It combines:\n- **Hybrid Text Search**: Keyword matching across asset names, paths, USD properties, and AI-generated metadata\n- **Vector Similarity Search**: Semantic matching using SigLIP2 vision-language embeddings (1536 dims)\n- **Reciprocal Rank Fusion (RRF)**: Merges text and vector results into a single high-quality ranking\n- **Extensive Filtering**: File metadata, dates, USD properties, bounding box dimensions, tags\n- **VLM Validation**: Optional server-side validation of results using a Vision Language Model\n\n**Quick Start for AI Agents:**\n1. Set `hybrid_text_query` to a short description (2-5 words)\n2. Add a `vector_queries` entry with `field_name=\"siglip2-embedding.embedding\"`, `query_type=\"text\"`, same query text\n3. Set `file_extension_include=\"usd*\"` for USD assets\n4. Set `return_images=true` for visual inspection\n5. Use `limit=20-50` for exploration\n\n**Pagination:** pass `offset`, or better, the previous response's `next_cursor`\nback as `cursor` \u2014 it pins the ranking so pages do not overlap or skip. The\nresponse carries `next_cursor`, `has_more`, `paginable_total` (the page-count\nbasis \u2014 not `corpus_total`) and a `pagination` diagnostic block whose\n`depth_limit_reason` distinguishes \"no more results\" from \"cannot page further\nfor this query shape\". Depth depends on the shape: filter-only queries are\nunbounded, a text query is capped by the deployment's `pagination_max_offset`,\nand a multi-leg query is capped by the RRF fusion window. `validate_results=true`\nis single-page and cannot be combined with `offset`/`cursor`.",
         "operationId": "search_hybrid_post",
         "requestBody": {
           "content": {
@@ -4900,6 +5663,492 @@
       },
       "DeepSearchSearchRequestV2": {
         "properties": {
+          "file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Name",
+            "description": "Filter results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+            "examples": [
+              "robot.usd",
+              "*scene*"
+            ]
+          },
+          "exclude_file_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude File Name",
+            "description": "Exclude results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+            "examples": [
+              "draft*",
+              "*temp*"
+            ]
+          },
+          "file_extension_include": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Extension Include",
+            "description": "Filter results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+            "examples": [
+              "usd",
+              "usd*",
+              "jpg,png,gif"
+            ]
+          },
+          "file_extension_exclude": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Extension Exclude",
+            "description": "Exclude results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND.",
+            "examples": [
+              "jpg",
+              "jpg,png,gif",
+              "mdl"
+            ]
+          },
+          "created_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created After",
+            "description": "Filter results to only include assets created after a specified date",
+            "examples": [
+              "2023-01-01",
+              "2023-06-01"
+            ]
+          },
+          "created_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created Before",
+            "description": "Filter results to only include assets created before a specified date",
+            "examples": [
+              "2023-01-01",
+              "2023-06-01"
+            ]
+          },
+          "modified_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified After",
+            "description": "Filter results to only include assets modified after a specified date",
+            "examples": [
+              "2023-02-01",
+              "2023-07-01"
+            ]
+          },
+          "modified_before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified Before",
+            "description": "Filter results to only include assets modified before a specified date",
+            "examples": [
+              "2023-02-01",
+              "2023-07-01"
+            ]
+          },
+          "file_size_greater_than": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d+[KMGT]B$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size Greater Than",
+            "description": "Filter results to only include files larger than a specific size",
+            "examples": [
+              "1KB",
+              "10MB"
+            ]
+          },
+          "file_size_less_than": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d+[KMGT]B$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size Less Than",
+            "description": "Filter results to only include files smaller than a specific size",
+            "examples": [
+              "100MB",
+              "1GB"
+            ]
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By",
+            "description": "Filter results to only include assets created by a specific user. In case AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email.",
+            "examples": [
+              "ov_user"
+            ]
+          },
+          "exclude_created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude Created By",
+            "description": "Exclude assets created by a specific user from the results",
+            "examples": [
+              "ov_user"
+            ]
+          },
+          "modified_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified By",
+            "description": "Filter results to only include assets modified by a specific user. In the case, when AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email.",
+            "examples": [
+              "ov_user"
+            ]
+          },
+          "exclude_modified_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude Modified By",
+            "description": "Exclude assets modified by a specific user from the results",
+            "examples": [
+              "ov_user"
+            ]
+          },
+          "search_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Path",
+            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character.",
+            "examples": [
+              "/Projects/Vehicles/",
+              "/Samples/*"
+            ]
+          },
+          "exclude_search_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude Search Path",
+            "description": "Exclude assets within this directory path. Same format as search_path \u2014 do NOT include the storage backend URL prefix. Supports wildcards: `*` for any characters, `?` for single character.",
+            "examples": [
+              "/Projects/Archive/",
+              "*/tmp/*"
+            ]
+          },
+          "filter_url_regexp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Url Regexp",
+            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax).",
+            "examples": [
+              ".*[/]Vehicles[/].*",
+              "~(.*[/]temp[/].*)"
+            ]
+          },
+          "search_in_scene": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search In Scene",
+            "description": "Conduct the search within a specific scene. Provide the full URL for the asset including the storage backend URL prefix.",
+            "examples": [
+              "s3://bucket-name/Project/scene.usd"
+            ]
+          },
+          "filter_by_properties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter By Properties",
+            "description": "Filter assets by USD attributes where at least one root prim matches ALL listed conditions (AND logic). Format: `key=value` pairs comma-separated. Use `=~` prefix on value for wildcard matching. Examples: `class=vehicle` (exact), `class=~*vehicle*` (wildcard), `class=vehicle,material=metal` (both must match). Only a subset of indexed attributes is searchable.",
+            "examples": [
+              "class=vehicle",
+              "class=~*vehicle*",
+              "class=vehicle,material=metal"
+            ]
+          },
+          "filter_by_properties_include_any": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter By Properties Include Any",
+            "description": "Filter assets by USD attributes using OR logic \u2014 an asset matches if ANY of the listed property conditions match. Same format as filter_by_properties: `key=value` for exact, `key=~*pattern*` for wildcard. Example: `class=car,class=truck` matches assets with either class.",
+            "examples": [
+              "class=car,class=truck"
+            ]
+          },
+          "exclude_filter_by_properties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclude Filter By Properties",
+            "description": "Exclude assets by USD attributes where at least one root prim matches (note: only supported for a subset of attributes indexed). Format: `attribute1=abc,attribute2=456` for exact matches or `*attribute1*=~*abc*,*attribute2*=~*456*` for wildcard matches",
+            "examples": [
+              "class=vehicle",
+              "class=~*draft*"
+            ]
+          },
+          "filter_by_properties_numeric": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter By Properties Numeric",
+            "description": "Filter assets by numeric USD attributes with comparison operators. Format: `property>value,property<=value`. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `physics:mass>1.0,physics:density<=500`",
+            "examples": [
+              "physics:mass>1.0",
+              "physics:mass>1.0,physics:density<=500"
+            ]
+          },
+          "filter_by_tags": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter By Tags",
+            "description": "Filter assets by tags. Format: `tag1=,=value2,tag3=value3`",
+            "examples": [
+              "reviewed=",
+              "=production",
+              "status=approved"
+            ]
+          },
+          "min_bbox_x": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Bbox X",
+            "description": "Filter by minimum X axis dimension of the asset's bounding box of the default prim of the asset",
+            "examples": [
+              1.0
+            ]
+          },
+          "min_bbox_y": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Bbox Y",
+            "description": "Filter by minimum Y axis dimension of the asset's bounding box of the default prim of the asset",
+            "examples": [
+              1.0
+            ]
+          },
+          "min_bbox_z": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Bbox Z",
+            "description": "Filter by minimum Z axis dimension of the asset's bounding box of the default prim of the asset",
+            "examples": [
+              1.0
+            ]
+          },
+          "max_bbox_x": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Bbox X",
+            "description": "Filter by maximum X axis dimension of the asset's bounding box of the default prim of the asset",
+            "examples": [
+              100.0
+            ]
+          },
+          "max_bbox_y": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Bbox Y",
+            "description": "Filter by maximum Y axis dimension of the asset's bounding box of the default prim of the asset",
+            "examples": [
+              100.0
+            ]
+          },
+          "max_bbox_z": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Bbox Z",
+            "description": "Filter by maximum Z axis dimension of the asset's bounding box of the default prim of the asset",
+            "examples": [
+              100.0
+            ]
+          },
+          "bbox_use_scaled_dimensions": {
+            "type": "boolean",
+            "title": "Bbox Use Scaled Dimensions",
+            "description": "Use scaled dimensions for bounding box filtering",
+            "default": true
+          },
+          "vision_metadata": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vision Metadata",
+            "description": "Uses a keyword match query on metadata fields that were generated using Vision Language Models. Format: `attribute1=abc,attribute2=456`",
+            "examples": [
+              "material=metal",
+              "color=red,style=modern"
+            ]
+          },
           "description": {
             "anyOf": [
               {
@@ -4928,176 +6177,6 @@
             "title": "Image Similarity Search",
             "description": "Find visually similar assets by providing reference images. Accepts base64-encoded images (JPEG/PNG/GIF), data URLs (data:image/jpeg;base64,...), or asset URLs (omniverse:// or s3://). Up to 10 images. Can be combined with text search for multimodal queries."
           },
-          "file_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "File Name",
-            "description": "Filter results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
-          },
-          "exclude_file_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exclude File Name",
-            "description": "Exclude results by asset file name, allowing partial matches. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
-          },
-          "file_extension_include": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "File Extension Include",
-            "description": "Filter results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
-          },
-          "file_extension_exclude": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "File Extension Exclude",
-            "description": "Exclude results by file extension. Use wildcards: `*` for any number of characters, `?` for a single character. Separate terms with `,` for OR and `;` for AND."
-          },
-          "created_after": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Created After",
-            "description": "Filter results to only include assets created after a specified date"
-          },
-          "created_before": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Created Before",
-            "description": "Filter results to only include assets created before a specified date"
-          },
-          "modified_after": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Modified After",
-            "description": "Filter results to only include assets modified after a specified date"
-          },
-          "modified_before": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Modified Before",
-            "description": "Filter results to only include assets modified before a specified date"
-          },
-          "file_size_greater_than": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^\\d+[KMGT]B$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "File Size Greater Than",
-            "description": "Filter results to only include files larger than a specific size"
-          },
-          "file_size_less_than": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^\\d+[KMGT]B$"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "File Size Less Than",
-            "description": "Filter results to only include files smaller than a specific size"
-          },
-          "created_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Created By",
-            "description": "Filter results to only include assets created by a specific user. In case AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email."
-          },
-          "exclude_created_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exclude Created By",
-            "description": "Exclude assets created by a specific user from the results"
-          },
-          "modified_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Modified By",
-            "description": "Filter results to only include assets modified by a specific user. In the case, when AWS S3 bucket is used as a storage backend, this field corresponds to the owner's ID. In case of an Omniverse Nucleus server, this field may depend on the configuration, but typically corresponds to user email."
-          },
-          "exclude_modified_by": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exclude Modified By",
-            "description": "Exclude assets modified by a specific user from the results"
-          },
           "similarity_threshold": {
             "anyOf": [
               {
@@ -5124,198 +6203,6 @@
             ],
             "title": "Cutoff Threshold",
             "description": "Minimum raw engine score for VECTOR search legs only (text/keyword legs are never cut off). Applied per leg BEFORE Reciprocal Rank Fusion, so a cut hit can still appear if another leg ranks it. The scale is the engine's transformed score, not plain cosine: for innerproduct kNN over normalized SigLIP2 embeddings OpenSearch maps ip >= 0 to 1 + ip, so the useful range is roughly 1.0 (orthogonal) to 2.0 (identical); values below 1.0 are effectively no-ops. Leave unset to keep every vector hit."
-          },
-          "search_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Search Path",
-            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character."
-          },
-          "exclude_search_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exclude Search Path",
-            "description": "Exclude assets within this directory path. Same format as search_path \u2014 do NOT include the storage backend URL prefix. Supports wildcards: `*` for any characters, `?` for single character."
-          },
-          "filter_url_regexp": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filter Url Regexp",
-            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax)."
-          },
-          "search_in_scene": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Search In Scene",
-            "description": "Conduct the search within a specific scene. Provide the full URL for the asset including the storage backend URL prefix."
-          },
-          "filter_by_properties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filter By Properties",
-            "description": "Filter assets by USD attributes where at least one root prim matches ALL listed conditions (AND logic). Format: `key=value` pairs comma-separated. Use `=~` prefix on value for wildcard matching. Examples: `class=vehicle` (exact), `class=~*vehicle*` (wildcard), `class=vehicle,material=metal` (both must match). Only a subset of indexed attributes is searchable."
-          },
-          "filter_by_properties_include_any": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filter By Properties Include Any",
-            "description": "Filter assets by USD attributes using OR logic \u2014 an asset matches if ANY of the listed property conditions match. Same format as filter_by_properties: `key=value` for exact, `key=~*pattern*` for wildcard. Example: `class=car,class=truck` matches assets with either class."
-          },
-          "exclude_filter_by_properties": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exclude Filter By Properties",
-            "description": "Exclude assets by USD attributes where at least one root prim matches (note: only supported for a subset of attributes indexed). Format: `attribute1=abc,attribute2=456` for exact matches or `*attribute1*=~*abc*,*attribute2*=~*456*` for wildcard matches"
-          },
-          "filter_by_properties_numeric": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filter By Properties Numeric",
-            "description": "Filter assets by numeric USD attributes with comparison operators. Format: `property>value,property<=value`. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `physics:mass>1.0,physics:density<=500`"
-          },
-          "filter_by_tags": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Filter By Tags",
-            "description": "Filter assets by tags. Format: `tag1=,=value2,tag3=value3`"
-          },
-          "min_bbox_x": {
-            "anyOf": [
-              {
-                "type": "number",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Min Bbox X",
-            "description": "Filter by minimum X axis dimension of the asset's bounding box of the default prim of the asset"
-          },
-          "min_bbox_y": {
-            "anyOf": [
-              {
-                "type": "number",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Min Bbox Y",
-            "description": "Filter by minimum Y axis dimension of the asset's bounding box of the default prim of the asset"
-          },
-          "min_bbox_z": {
-            "anyOf": [
-              {
-                "type": "number",
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Min Bbox Z",
-            "description": "Filter by minimum Z axis dimension of the asset's bounding box of the default prim of the asset"
-          },
-          "max_bbox_x": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Bbox X",
-            "description": "Filter by maximum X axis dimension of the asset's bounding box of the default prim of the asset"
-          },
-          "max_bbox_y": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Bbox Y",
-            "description": "Filter by maximum Y axis dimension of the asset's bounding box of the default prim of the asset"
-          },
-          "max_bbox_z": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Bbox Z",
-            "description": "Filter by maximum Z axis dimension of the asset's bounding box of the default prim of the asset"
-          },
-          "bbox_use_scaled_dimensions": {
-            "type": "boolean",
-            "title": "Bbox Use Scaled Dimensions",
-            "description": "Use scaled dimensions for bounding box filtering",
-            "default": true
           },
           "return_images": {
             "type": "boolean",
@@ -5372,18 +6259,6 @@
             "description": "Maximum number of results to return (1-10000, default 32). Use 20-50 for initial exploration, 100+ for exhaustive search. Higher limits increase response time.",
             "default": 32
           },
-          "vision_metadata": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Vision Metadata",
-            "description": "Uses a keyword match query on metadata fields that were generated using Vision Language Models. Format: `attribute1=abc,attribute2=456`"
-          },
           "return_vision_generated_metadata": {
             "type": "boolean",
             "title": "Return Vision Generated Metadata",
@@ -5407,6 +6282,25 @@
             "title": "Validate Results",
             "description": "Validate results with VLM",
             "default": false
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Offset",
+            "description": "Number of results to skip \u2014 the simple, stateless way to reach page N. Prefer `cursor` from the previous response: it pins the ranking window so results stay consistent between pages, and it is the only way past OpenSearch's 10000-result window. How deep `offset` may go depends on the query shape: filter-only queries (no text/image/vector) are unbounded, a text query is capped by the deployment's pagination_max_offset, and a multi-leg (hybrid) query is capped by the RRF fusion window. Cannot be combined with validate_results=true.",
+            "default": 0
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor",
+            "description": "Opaque cursor from the previous response's `next_cursor` (v3) or `X-Next-Cursor` header (v2). Takes precedence over `offset`. The query must stay identical while paging \u2014 changing it invalidates the cursor with a 400 rather than silently re-ranking. Page size (`limit`) and the `return_*` response flags may change freely mid-walk. Cannot be combined with validate_results=true."
           },
           "scoring_config": {
             "anyOf": [
@@ -5800,6 +6694,30 @@
             ],
             "title": "Property",
             "description": "Resolved USD property key (env override applied) for property-backed fields; null for fields not backed by a single property."
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "Optional human-readable UI label; clients fall back to `name` when null."
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group",
+            "description": "Optional Explorer rail group this filter renders under; ungrouped fields share a default group."
           }
         },
         "type": "object",
@@ -5848,28 +6766,12 @@
         "title": "HybridTextConfig",
         "description": "Configuration for the text search leg of hybrid search.\n\nControls which fields are searched, how they're weighted, and how matches\nare combined across fields. The text leg runs in parallel with vector search,\nand results are merged via RRF.\n\nRecommended fields for USD asset search: name, name.simple, name.standard,\npath, usd_properties.value, usd_properties.key, __VISION_METADATA_FIELDS__."
       },
-      "IRFieldName": {
-        "type": "string",
-        "enum": [
-          "file_type",
-          "name",
-          "path_prefix",
-          "created_at",
-          "modified_at",
-          "size",
-          "created_by",
-          "tag",
-          "usd_property",
-          "polygon_count",
-          "dimension"
-        ],
-        "title": "IRFieldName"
-      },
       "IRFilter": {
         "properties": {
           "field": {
-            "$ref": "#/components/schemas/IRFieldName",
-            "description": "The field to filter on (one of the allowed enum values)."
+            "type": "string",
+            "title": "Field",
+            "description": "The field to filter on. The valid names are deployment-specific (they come from the deployment's filter catalog) \u2014 enumerate them with `GET /llm_parse/fields`."
           },
           "operator": {
             "$ref": "#/components/schemas/Operator",
@@ -6113,11 +7015,11 @@
             "description": "Confidence in the decision (0-1)"
           },
           "similarity_score": {
-            "type": "integer",
+            "type": "number",
             "maximum": 100.0,
             "minimum": 0.0,
             "title": "Similarity Score",
-            "description": "Query-asset relevancy score (0-100)"
+            "description": "Query-asset relevance 0-100 (float): P(Yes) x 100 for the logprob method, the generated value for generative; the rerank sort key"
           },
           "reasoning": {
             "type": "string",
@@ -6370,7 +7272,7 @@
           "total": {
             "type": "integer",
             "title": "Total",
-            "description": "Size of the RRF fusion candidate pool \u2014 i.e. the number of distinct documents that survived client-side reciprocal-rank fusion across all query legs after similarity-threshold filtering. Bounded by scoring_config.rrf_config.window_size (default 2 * (from + limit), capped at OpenSearch's index.max_result_window of 10000). This is NOT the corpus match count \u2014 see corpus_total for that."
+            "description": "Size of the RRF fusion candidate pool \u2014 i.e. the number of distinct documents that survived client-side reciprocal-rank fusion across all query legs after similarity-threshold filtering. Bounded by scoring_config.rrf_config.window_size (default 2 * (from + limit), capped at OpenSearch's index.max_result_window of 10000). This is NOT the corpus match count (see corpus_total) and NOT the page count basis (see paginable_total)."
           },
           "corpus_total": {
             "anyOf": [
@@ -6382,7 +7284,50 @@
               }
             ],
             "title": "Corpus Total",
-            "description": "Lower-bound estimate of the number of documents in the index matching the query and filters, computed as max(per-leg OpenSearch total_hits) across all executed legs. Equal to the true corpus match count for filter-only and single-leg queries; for multi-leg hybrid queries it underestimates the union when legs disagree (true union is in [max(legs), sum(legs)]). kNN/vector legs are bounded by window_size and contribute a floor only. May be absent for back-compat with older clients."
+            "description": "Lower-bound estimate of the number of documents in the index matching the query and filters, computed as max(per-leg OpenSearch total_hits) across all executed legs. Every leg now runs with track_total_hits=true, so each leg's own count is exact; the estimate is a lower bound only because legs may disagree on membership (true union is in [max(legs), sum(legs)]). Note the per-leg counts measure different things: a text leg counts documents matching the text query AND the filters, while a filter-only leg counts the filter set. An approximate-kNN leg is bounded by its k. Do NOT use this to compute page counts \u2014 use paginable_total. May be absent for back-compat with older clients."
+          },
+          "paginable_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paginable Total",
+            "description": "How many results are actually reachable by paging \u2014 the basis for page count (ceil(paginable_total / limit)). For a single-leg query this is the exact match count, bounded by the depth limit; for a multi-leg (RRF) query it is the size of the fusion window, which is typically far smaller than corpus_total. Render this, not corpus_total, in a paginator. CAVEAT: with deduplicate_by_hash=true this OVERSTATES, because OpenSearch counts documents before collapsing, not collapsed groups \u2014 expect fewer results than advertised. Access filtering can also shorten individual pages, so treat it as an upper bound rather than an exact count."
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "Opaque cursor for the next page. Pass it back as `cursor` \u2014 it pins the fusion window and resume position, so paging stays consistent. Absent when there is no further page."
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "description": "Whether a further page exists. Derived from the pagination state, NOT from len(hits) \u2014 post-retrieval filters (access permissions) can shorten a page without it being the last one.",
+            "default": false
+          },
+          "pagination": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pagination",
+            "description": "Diagnostics: the mode chosen (`leg` = paged natively by OpenSearch, `rrf` = paged inside the fusion window), the offset, the page size, and the depth limit with the reason for it \u2014 so a client can tell 'no more results' from 'cannot page further in this mode'."
           },
           "hits": {
             "items": {
@@ -6802,15 +7747,29 @@
                 "items": {
                   "type": "string"
                 },
-                "type": "array",
-                "maxItems": 8
+                "type": "array"
               },
               {
                 "type": "null"
               }
             ],
             "title": "Image Keys",
-            "description": "List of image keys for multiple views of the asset (up to 8). Mutually exclusive with asset_url/image_key."
+            "description": "List of image keys for multiple views of the asset. The deployment's view budget applies (USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION); requests exceeding it are rejected with 400. Mutually exclusive with asset_url/image_key."
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images",
+            "description": "Raw base64-encoded images (data URL or bare base64) to validate directly. When provided, the server validates these images as-is and does NOT fetch anything from the index. Mutually exclusive with asset_url/image_key/image_keys. The deployment view budget (USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION) applies."
           },
           "query_text": {
             "anyOf": [

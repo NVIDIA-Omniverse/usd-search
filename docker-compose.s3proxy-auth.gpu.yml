@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Authenticated S3 via s3proxy — GPU plugin overrides.
+#
+# Routes the GPU services from docker-compose.gpu-plugins.yml through s3proxy.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu-plugins.yml \
+#     -f docker-compose.s3proxy-auth.yml -f docker-compose.s3proxy-auth.gpu.yml up --build
+
+x-s3proxy-gpu-env: &s3proxy-gpu-env
+  S3_STORAGE_AWS_ENDPOINT_URL: http://s3proxy:80
+
+services:
+  rendering-job:
+    environment:
+      - S3_STORAGE_AWS_ENDPOINT_URL=http://s3proxy:80
+    depends_on:
+      s3proxy:
+        condition: service_healthy
+
+  monitor-worker-thumbnail-generation:
+    environment:
+      <<: *s3proxy-gpu-env
+
+  monitor-worker-rendering-to-embedding:
+    environment:
+      <<: *s3proxy-gpu-env

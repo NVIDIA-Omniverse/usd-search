@@ -16,6 +16,7 @@
 import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from enum import Enum
 from functools import lru_cache
@@ -100,6 +101,77 @@ def extract_numeric_properties(
 MAX_RETRIES = 5
 RETRY_WAIT_STRATEGY = wait_random_exponential(multiplier=2, max=60)
 
+# Naming convention used by _create_prim_property_index / _create_numeric_property_index,
+# duplicated here so seed_property_index_cache() can parse `SHOW INDEXES` results back into
+# property names without a live Neo4j round trip per property.
+_STRING_INDEX_PREFIX = "prim_property_"
+_NUMERIC_INDEX_TYPES = ("int", "float")
+
+
+class PropertyIndexCache:
+    """Process-lifetime record of which USD prim-property Neo4j indices already exist.
+
+    A fresh Neo4jDBBackend used to be constructed per HTTP request with its own empty
+    `_indexed_properties` set (see api/dependencies.py), so "already indexed" state never
+    survived past a single write: every distinct property name reissued
+    CREATE INDEX IF NOT EXISTS on every asset write, and Neo4j takes an exclusive schema
+    lock for each of these regardless of whether it's a no-op. This cache is owned by the
+    FastAPI app (app.state) and shared by every request in the process, so a property is
+    only ever (re-)created once per process lifetime.
+
+    String and numeric indices are tracked in separate namespaces on purpose: the old
+    single `_indexed_properties` set stored both `property_name` and
+    `f"{numeric_type}_{property_name}"` keys together, so a property literally named
+    e.g. `int_offset` could collide with the numeric-index bookkeeping key for a
+    different property `offset` of type `int`.
+    """
+
+    def __init__(self) -> None:
+        self._string_indexed: set[str] = set()
+        self._numeric_indexed: set[tuple[str, str]] = set()
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def is_string_indexed(self, property_name: str) -> bool:
+        return property_name in self._string_indexed
+
+    def mark_string_indexed(self, property_name: str) -> None:
+        self._string_indexed.add(property_name)
+
+    def is_numeric_indexed(self, property_name: str, numeric_type: str) -> bool:
+        return (numeric_type, property_name) in self._numeric_indexed
+
+    def mark_numeric_indexed(self, property_name: str, numeric_type: str) -> None:
+        self._numeric_indexed.add((numeric_type, property_name))
+
+    def lock_for(self, index_name: str) -> asyncio.Lock:
+        """A per-physical-index-name lock so concurrent requests that both see the same
+        never-before-seen property don't both race Neo4j's schema lock for it.
+
+        Keyed by the physical Neo4j index name (e.g. `prim_property_int_offset`), not by
+        (kind, property_name): a property literally named `int_offset` (string index) and
+        a numeric property `offset` of type `int` both target that same physical index
+        (see seed_property_index_cache's docstring), so they must serialize on the same
+        lock — otherwise both could race a concurrent CREATE INDEX for it.
+        """
+        lock = self._locks.get(index_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[index_name] = lock
+        return lock
+
+
+# Neo4j rejects any single property value larger than the index key limit (~8167 bytes on the
+# block store) when that property is backed by a range/TEXT index, failing the whole write
+# transaction. Values above this threshold are stored under a non-indexed `raw_property_` prefix
+# instead of the indexed `property_` prefix, and no index is created for them.
+MAX_INDEXED_PROPERTY_VALUE_BYTES = int(os.getenv("MAX_INDEXED_PROPERTY_VALUE_BYTES", "8000"))
+UNINDEXED_PROPERTY_PREFIX = "raw_property_"
+
+
+def property_value_too_large(value: object) -> bool:
+    """Return True if a string property value exceeds Neo4j's per-value index size limit."""
+    return isinstance(value, str) and len(value.encode("utf-8")) > MAX_INDEXED_PROPERTY_VALUE_BYTES
+
 
 class Neo4jSettings(BaseSettings):
     db_uri: str
@@ -115,7 +187,7 @@ def get_settings():
 
 
 class Neo4jDBBackend(BaseGraphDB):
-    def __init__(self, settings: Neo4jSettings):
+    def __init__(self, settings: Neo4jSettings, property_index_cache: Optional[PropertyIndexCache] = None):
         self.n_workers = settings.n_workers
         self.db_uri = settings.db_uri
         self.db_username = settings.db_username
@@ -124,7 +196,10 @@ class Neo4jDBBackend(BaseGraphDB):
         self.driver = AsyncGraphDatabase.driver(self.db_uri, auth=(self.db_username, self.db_password))
         self._active_session = None
 
-        self._indexed_properties = set()
+        # Falls back to a private, request-scoped cache when the caller doesn't share one
+        # (e.g. direct construction in tests) — see PropertyIndexCache's docstring for why
+        # a *shared* instance (app.state.property_index_cache in production) matters.
+        self._property_index_cache = property_index_cache if property_index_cache is not None else PropertyIndexCache()
 
     @property
     def _session(self) -> AsyncSession:
@@ -192,23 +267,57 @@ class Neo4jDBBackend(BaseGraphDB):
         query = "CREATE INDEX asset_url IF NOT EXISTS FOR (a:Asset) ON (a.url)"
         await self._session.run(query)
 
+    async def seed_property_index_cache(self) -> None:
+        """Populate the shared PropertyIndexCache from Neo4j's own index catalog.
+
+        Runs once at process startup (see api/__init__.py's lifespan) so a freshly
+        started process — or one started after another replica already indexed a
+        property — doesn't reissue CREATE INDEX, and pay for its exclusive schema lock,
+        for properties Neo4j has already indexed.
+
+        Parses index *names*, not the indexed property key: both encode the property
+        name using the same `{numeric_type}_{property_name}` template for numeric
+        indices, so a property literally named e.g. `int_offset` is indistinguishable
+        from the numeric index for a property named `offset` of type `int` either way.
+        This is a pre-existing ambiguity in the naming scheme (see docs/plans), not
+        introduced by this parsing step; on a false classification the affected
+        property's next write simply reissues its CREATE INDEX once (self-correcting)
+        rather than being permanently skipped.
+        """
+        result = await self._session.run("SHOW INDEXES YIELD name")
+        async for record in result:
+            name = record["name"]
+            if not name.startswith(_STRING_INDEX_PREFIX):
+                continue
+            remainder = name[len(_STRING_INDEX_PREFIX) :]
+            for numeric_type in _NUMERIC_INDEX_TYPES:
+                prefix = f"{numeric_type}_"
+                if remainder.startswith(prefix):
+                    self._property_index_cache.mark_numeric_indexed(remainder[len(prefix) :], numeric_type)
+                    break
+            else:
+                self._property_index_cache.mark_string_indexed(remainder)
+
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
         retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
     )
     async def _create_prim_property_index(self, session: AsyncSession, property_name: str):
-        if property_name in self._indexed_properties:
+        cache = self._property_index_cache
+        if cache.is_string_indexed(property_name):
             return
-        query = (
-            f"CREATE INDEX `prim_property_{property_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{property_name}`)"
-        )
-        logger.debug("create_prim_property_index query: %s", query)
-        await session.run(query)
-        query = f"CREATE TEXT INDEX `text_prim_property_{property_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{property_name}`)"
-        logger.debug("create_prim_property_index query: %s", query)
-        await session.run(query)
-        self._indexed_properties.add(property_name)
+        async with cache.lock_for(f"{_STRING_INDEX_PREFIX}{property_name}"):
+            if cache.is_string_indexed(property_name):
+                return
+            safe_name = sanitize_for_cypher(property_name)
+            query = f"CREATE INDEX `prim_property_{safe_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{safe_name}`)"
+            logger.debug("create_prim_property_index query: %s", query)
+            await session.run(query)
+            query = f"CREATE TEXT INDEX `text_prim_property_{safe_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{safe_name}`)"
+            logger.debug("create_prim_property_index query: %s", query)
+            await session.run(query)
+            cache.mark_string_indexed(property_name)
 
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
@@ -216,14 +325,17 @@ class Neo4jDBBackend(BaseGraphDB):
         retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
     )
     async def _create_numeric_property_index(self, session: AsyncSession, property_name: str, numeric_type: str):
-        index_key = f"{numeric_type}_{property_name}"
-        if index_key in self._indexed_properties:
+        cache = self._property_index_cache
+        if cache.is_numeric_indexed(property_name, numeric_type):
             return
-
-        query = f"CREATE INDEX `prim_property_{numeric_type}_{property_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{numeric_type}_{property_name}`)"
-        logger.debug("create_numeric_property_index query: %s", query)
-        await session.run(query)
-        self._indexed_properties.add(index_key)
+        async with cache.lock_for(f"{_STRING_INDEX_PREFIX}{numeric_type}_{property_name}"):
+            if cache.is_numeric_indexed(property_name, numeric_type):
+                return
+            safe_name = sanitize_for_cypher(property_name)
+            query = f"CREATE INDEX `prim_property_{numeric_type}_{safe_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{numeric_type}_{safe_name}`)"
+            logger.debug("create_numeric_property_index query: %s", query)
+            await session.run(query)
+            cache.mark_numeric_indexed(property_name, numeric_type)
 
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
@@ -688,7 +800,7 @@ class Neo4jDBBackend(BaseGraphDB):
 
         query = f"""
             MATCH (p:Prim)
-            WHERE {filters} AND point.distance(p.bbox_midpoint, Point({{x: {center_x}, y: {center_y}, z: {center_z}}})) < {radius} 
+            WHERE {filters} AND point.distance(p.bbox_midpoint, Point({{x: {center_x}, y: {center_y}, z: {center_z}}})) < {radius}
             RETURN p as prim, point.distance(p.bbox_midpoint, Point({{x: {center_x}, y: {center_y}, z: {center_z}}})) as distance ORDER BY distance LIMIT {limit}
         """
         logger.debug("get_prims_within_radius_of_a_point query: %s", query)
@@ -848,11 +960,14 @@ class Neo4jDBBackend(BaseGraphDB):
 
         for prim in prims:
             # Create string property indexes
-            for property_name in prim.properties.keys():
-                await self._create_prim_property_index(self._session, property_name)
+            for property_name, property_value in prim.properties.items():
+                # Oversized values are stored unindexed (see _create_multiple_prims), so skip
+                # creating an index that Neo4j would refuse to populate for them.
+                if not property_value_too_large(property_value):
+                    await self._create_prim_property_index(self._session, property_name)
 
                 # Check if this property has numeric values and create numeric indexes
-                _, numeric_value, numeric_type = detect_numeric_property(prim.properties[property_name])
+                _, numeric_value, numeric_type = detect_numeric_property(property_value)
                 if numeric_value is not None:
                     numeric_key = f"{numeric_type}_{property_name}"
                     if numeric_key not in numeric_properties_seen:
@@ -934,8 +1049,13 @@ class Neo4jDBBackend(BaseGraphDB):
                 if prim.parent == "/":
                     prim_data["extra"]["root_prim"] = True
                 if properties_str:
-                    # Store original string properties
-                    prim_data["extra"].update({f"property_{k}": v for k, v in prim.properties.items()})
+                    # Store original string properties. Values larger than Neo4j's index size
+                    # limit go under a non-indexed `raw_property_` prefix so the write does not
+                    # fail on the per-value index limit; they are folded back into `properties`
+                    # on read (see Prim.from_db).
+                    for k, v in prim.properties.items():
+                        prefix = UNINDEXED_PROPERTY_PREFIX if property_value_too_large(v) else "property_"
+                        prim_data["extra"][f"{prefix}{k}"] = v
                     # Store numeric properties alongside string properties
                     numeric_props = extract_numeric_properties(prim.properties)
                     prim_data["extra"].update(numeric_props)

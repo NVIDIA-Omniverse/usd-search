@@ -26,7 +26,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 export VERSION=$(cat VERSION.md | tr -d '[:space:]')
-export REPO=nvcr.io/omniverse/deeptag-internal/siglip2-triton
+export REPO=nvcr.io/m3sujtetvf5w/usdsearch/siglip2-triton
 
 echo "========================================"
 echo "Publishing SigLIP2 Triton Docker images"

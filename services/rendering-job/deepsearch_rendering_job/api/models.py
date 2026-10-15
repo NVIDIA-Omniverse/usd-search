@@ -39,19 +39,10 @@ class ReadinessResponse(BaseModel):
     reason: Optional[str] = Field(default=None, title="reason for the status")
 
 
-class KitProcessInfo(BaseModel):
-    worker_id: str = Field(..., title="worker ID")
-    pid: int = Field(..., title="process ID")
-    memory_usage: int = Field(..., title="memory usage in MB")
-    memory_limit: Optional[int] = Field(default=None, title="memory limit in MB (unlimited if None)")
-    memory_usage_percentage: Optional[float] = Field(default=None, title="memory usage percentage (None if unlimited)")
-
-
 class WorkerInfo(BaseModel):
     active_requests: int = Field(..., title="number of active requests")
     max_requests: int = Field(..., title="maximum number of requests")
     waiting_requests: int = Field(..., title="number of waiting requests")
-    kit_processes: Optional[List[KitProcessInfo]] = Field(default=None, title="list of kit processes")
 
 
 class GeneralInfo(BaseModel):

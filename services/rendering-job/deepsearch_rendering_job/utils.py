@@ -13,54 +13,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
 import base64
 import hashlib
 import io
 import logging
-import resource
-import socket
-import time
-import zlib
+import struct
 from asyncio import Semaphore
-from asyncio.subprocess import Process
-from contextlib import closing
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 import orjson
-import psutil
 from PIL import Image
 
-from .models import (
-    RenderingStatus,
-    kit_process_memory_gauge,
-    kit_process_memory_gauge_percentage,
-    kit_process_pid_gauge,
-    kit_process_rendering_time_gauge,
-    kit_process_rendering_time_percentage_gauge,
-    waiting_requests_gauge,
-)
-from .secure_pickle import RENDERING_APPROVED_CLASSES
-from .secure_pickle import loads as _secure_loads
+from .models import RenderingStatus, waiting_requests_gauge
 
 logger = logging.getLogger(__name__)
 
-
-def find_free_port() -> int:
-    """Find available port on the system
-
-    Returns:
-        int: port number
-    """
-    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as _socket:
-        _socket.bind(("", 0))
-        _socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        return int(_socket.getsockname()[1])
+# Wire format for a rendered payload: a magic header, a little-endian uint32
+# length, the orjson metadata block, then the compressed ``.npz`` array block.
+_PAYLOAD_MAGIC = b"DSRP1\0"
 
 
 def get_key(url: str) -> str:
     return hashlib.sha256(str(url).encode()).hexdigest()
+
+
+def redact_url(url: str) -> str:
+    """Log-safe form of a user-supplied URL: drop credentials, query, fragment; escape control chars.
+
+    Query strings routinely carry secrets (S3 presigned ``X-Amz-Signature``), userinfo can hold
+    ``user:pass``, and a decoded CR/LF would let a caller forge log lines.
+    """
+    url = str(url)
+    try:
+        parts = urlsplit(url)
+        netloc = parts.hostname or ""
+        if ":" in netloc:  # IPv6 literal
+            netloc = f"[{netloc}]"
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"
+        url = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except ValueError:
+        url = url.split("?", 1)[0].split("#", 1)[0]
+        if "://" in url:  # still drop userinfo from the unparseable authority
+            scheme, rest = url.split("://", 1)
+            authority, sep, path = rest.partition("/")
+            url = f"{scheme}://{authority.rsplit('@', 1)[-1]}{sep}{path}"
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in url)
 
 
 def _flatten_images(images: List[Any]) -> List[Any]:
@@ -109,34 +109,63 @@ def normalize_payload_images(content: Any, key: str = "images") -> Any:
     return content
 
 
-def unpickle_data(input: str) -> Union[str, dict]:
-    """Deserialize numpy data using :func:`pickle.dumps` functionality"""
+def serialize_payload(data: Any, compress: bool = True) -> str:
+    """Serialize a rendered payload to a binary-safe, base64 wire string.
+
+    Arrays go in an ``.npz`` block and the rest (camera metadata, bounding boxes)
+    in an orjson block, so no ``pickle`` is involved. A plain status string is
+    passed through unchanged. ``compress`` is writer-only; :func:`deserialize_payload`
+    reads either form.
+    """
+    if not isinstance(data, dict):
+        return str(data)
+
+    arrays = {key: np.asarray(value) for key, value in data.items() if isinstance(value, np.ndarray)}
+    meta = {key: value for key, value in data.items() if not isinstance(value, np.ndarray)}
+
+    array_buffer = io.BytesIO()
+    save_arrays = np.savez_compressed if compress else np.savez
+    save_arrays(array_buffer, **arrays)
+    meta_bytes = orjson.dumps({"order": list(data.keys()), "meta": meta}, option=orjson.OPT_SERIALIZE_NUMPY)
+
+    frame = _PAYLOAD_MAGIC + struct.pack("<I", len(meta_bytes)) + meta_bytes + array_buffer.getvalue()
+    return base64.b64encode(frame).decode("ascii")
+
+
+def deserialize_payload(input: str) -> Any:
+    """Reconstruct a rendered payload produced by :func:`serialize_payload`."""
     status_map = {
         RenderingStatus.load_error: RenderingStatus.load_error,
         RenderingStatus.error: RenderingStatus.error,
         RenderingStatus.timeout: RenderingStatus.timeout,
         RenderingStatus.invalid_mtl_names: RenderingStatus.invalid_mtl_names,
+        RenderingStatus.empty_scene: RenderingStatus.empty_scene,
     }
     if input in status_map:
         return status_map[input]
     if input.startswith("Error rendering"):
         return RenderingStatus.render_error
 
-    input_bytes = input.encode("latin1")
-    decompressed_bytes = zlib.decompress(input_bytes)
-    data = _secure_loads(decompressed_bytes, approved_imports=RENDERING_APPROVED_CLASSES)
+    frame = base64.b64decode(input.encode("ascii"))
+    if not frame.startswith(_PAYLOAD_MAGIC):
+        raise ValueError("Unrecognized rendered payload format")
+
+    offset = len(_PAYLOAD_MAGIC)
+    (meta_len,) = struct.unpack_from("<I", frame, offset)
+    offset += struct.calcsize("<I")
+    header = orjson.loads(frame[offset : offset + meta_len])
+    array_bytes = frame[offset + meta_len :]
+
+    with np.load(io.BytesIO(array_bytes), allow_pickle=False) as npz:
+        arrays = {key: npz[key] for key in npz.files}
+
+    meta = header["meta"]
+    data = {key: (arrays[key] if key in arrays else meta[key]) for key in header["order"]}
     return normalize_payload_images(data)
 
 
 def image_to_base64(input, format: str = "JPEG") -> str:
-    """Covert image to base64 format
-
-    Args:
-        input: PIL image type
-
-    Returns:
-        str: base64 encoding of an image
-    """
+    """Convert image to base64 format."""
     with io.BytesIO() as output:
         input.convert("RGB").save(output, format=format)
         content = base64.b64encode(output.getvalue()).decode("ascii")
@@ -148,7 +177,6 @@ def extract_images_from_payload(content: dict, key: str = "images") -> List[str]
     if images is None or (hasattr(images, "__len__") and len(images) == 0):
         return []
 
-    # Detect background-only images (uniform color with std <= 1.0)
     has_content = any(not hasattr(im, "std") or im.std() > 1.0 for im in images)
     if not has_content:
         logger.warning("All %d images are background-only, returning empty list", len(images))
@@ -161,158 +189,42 @@ def extract_camera_metadata_from_payload(content: dict, key: str = "camera_metad
     return [orjson.dumps(data, option=orjson.OPT_SERIALIZE_NUMPY) for data in content[key]]
 
 
-def set_memory_limit(max_mem_mb: int):
-    """Set a hard memory limit for the subprocess (Unix only)."""
-    print(f"Setting memory limit to {max_mem_mb} MB")
-    max_bytes = max_mem_mb * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (max_bytes, max_bytes))
+class TrackingSemaphore(Semaphore):
+    """Semaphore that tracks free slots and waiters with plain counters.
 
-
-async def memory_limit_watcher(
-    process: Process, max_mem_mb: int, worker_id: Optional[str] = None
-) -> Optional[RenderingStatus]:
-    """Watch the memory usage of the process and kill it if it exceeds the limit.
-
-    Args:
-        process: The process to watch
-        max_mem_mb: Maximum memory in MB
-        worker_id: Optional worker ID for metrics labeling. If None, will use PID.
+    ``asyncio.Semaphore`` exposes waiter state only through the loop-bound
+    ``_waiters`` deque, which is unreliable across event loops (e.g. the test
+    client portal loop).  This subclass maintains ``value`` (free slots) and
+    ``waiters`` (callers blocked on acquisition) as simple integers so the
+    readiness and process-limit checks behave consistently.
     """
-    p = psutil.Process(process.pid)
 
-    # Determine the worker_id label - use provided worker_id or fallback to PID
-    worker_label = worker_id if worker_id is not None else f"pid_{process.pid}"
+    def __init__(self, value: int = 1) -> None:
+        super().__init__(value)
+        self.value = value
+        self.waiters = 0
 
-    oom_killed = False
-    while True:
-        if process.returncode is not None:
-            logger.info("Process returned code: %s", process.returncode)
-            break
-        rss_mb = p.memory_info().rss / 1024 / 1024
-        percentage = (rss_mb / max_mem_mb) * 100
-
-        # kit process memory labels
-        kit_process_memory_labels = {
-            "worker_id": worker_label,
-            "memory_limit": max_mem_mb if max_mem_mb > 0 else None,
-        }
-        # update prometheus metrics
-        kit_process_memory_gauge.labels(**kit_process_memory_labels).set(rss_mb)
-        kit_process_memory_gauge_percentage.labels(**kit_process_memory_labels).set(percentage)
-        kit_process_pid_gauge.labels(worker_id=worker_label).set(process.pid)
-        # issue a waring in case 95% percent of memory is reached
-        if percentage > 95:
-            logger.warning(
-                "Memory usage is high for %s: RSS %.1f MB (%.1f%%), process will be killed if exceeded %d MB",
-                worker_label,
-                rss_mb,
-                percentage,
-                max_mem_mb,
-            )
+    async def acquire(self) -> bool:
+        if self.value <= 0:
+            self.waiters += 1
+            try:
+                await super().acquire()
+            except BaseException:
+                self.waiters -= 1
+                raise
+            self.waiters -= 1
         else:
-            logger.debug("RSS for %s: %.1f MB (%.1f%%)", worker_label, rss_mb, percentage)
-        if rss_mb > max_mem_mb:
-            process.terminate()
-            process.kill()
-            await process.wait()
-            oom_killed = True
-            logger.warning("Killed process %s at %.1f MB RSS", worker_label, rss_mb)
-            break
-        await asyncio.sleep(0.5)
+            await super().acquire()
+        self.value -= 1
+        return True
 
-    kit_process_pid_gauge.labels(worker_id=worker_label).set(0)
-    kit_process_memory_gauge.labels(**kit_process_memory_labels).set(0)
-    kit_process_memory_gauge_percentage.labels(**kit_process_memory_labels).set(0)
-    if oom_killed:
-        return RenderingStatus.out_of_memory
-    return None
-
-
-async def rendering_timeout_watcher(
-    process: Process, worker_id: Optional[str] = None, timeout: Optional[float] = None
-) -> Optional[RenderingStatus]:
-    """Watch the memory usage of the process and kill it if it exceeds the limit.
-
-    Args:
-        process: The process to watch
-        max_mem_mb: Maximum memory in MB
-        worker_id: Optional worker ID for metrics labeling. If None, will use PID.
-    """
-    start_time = time.time()
-
-    # Determine the worker_id label - use provided worker_id or fallback to PID
-    worker_label = worker_id if worker_id is not None else f"pid_{process.pid}"
-
-    timed_out = False
-    while True:
-        if process.returncode is not None:
-            logger.info("Process returned code: %s", process.returncode)
-            break
-
-        time_left = timeout - (time.time() - start_time)
-
-        # kit process rendering time labels
-        kit_process_rendering_time_labels = {"worker_id": worker_label}
-        # update prometheus metrics
-        kit_process_rendering_time_gauge.labels(**kit_process_rendering_time_labels).set(time.time() - start_time)
-        kit_process_rendering_time_percentage_gauge.labels(**kit_process_rendering_time_labels).set(
-            (time.time() - start_time) / timeout * 100
-        )
-
-        # issue a waring in case 5% percent of time is left
-        if time_left / timeout < 0.05:
-            logger.warning("Rendering timeout for %s: %.1f seconds left", worker_label, time_left)
-        else:
-            logger.debug("Rendering timeout for %s: %.1f seconds left", worker_label, time_left)
-        if time_left <= 0:
-            process.terminate()
-            process.kill()
-            await process.wait()
-            logger.warning("Killed process %s due to rendering timeout", worker_label)
-            timed_out = True
-            break
-        await asyncio.sleep(0.5)
-
-    kit_process_rendering_time_gauge.labels(**kit_process_rendering_time_labels).set(0)
-    kit_process_rendering_time_percentage_gauge.labels(**kit_process_rendering_time_labels).set(0)
-    if timed_out:
-        return RenderingStatus.timeout
-    return None
-
-
-async def create_process_with_memory_limit_and_timeout(
-    *args,
-    max_mem_mb: int,
-    worker_id: Optional[str] = None,
-    timeout: Optional[float] = None,
-    **kwargs,
-) -> Tuple[Process, Optional[asyncio.Task], Optional[asyncio.Task]]:
-    """Create a process with memory limit monitoring.
-
-    Args:
-        *args: Process arguments
-        max_mem_mb: Maximum memory in MB (if <= 0, no limit is enforced)
-        worker_id: Optional worker ID for metrics labeling
-        timeout: Optional rendering timeout in seconds
-        **kwargs: Additional process arguments
-
-    Returns:
-        The created process
-    """
-    process = await asyncio.create_subprocess_exec(*args, **kwargs)
-    memory_watcher_task = None
-    timeout_watcher_task = None
-    if max_mem_mb > 0:
-        memory_watcher_task = asyncio.create_task(memory_limit_watcher(process, max_mem_mb, worker_id=worker_id))
-    if timeout is not None and timeout > 0:
-        timeout_watcher_task = asyncio.create_task(
-            rendering_timeout_watcher(process, worker_id=worker_id, timeout=timeout)
-        )
-    return process, memory_watcher_task, timeout_watcher_task
+    def release(self) -> None:
+        self.value += 1
+        super().release()
 
 
 async def update_waiting_requests_gauge(semaphore: Optional[Semaphore]) -> None:
-    if isinstance(semaphore, Semaphore):
-        waiting_requests_gauge.set(len(semaphore._waiters) if semaphore._waiters is not None else 0)
+    if isinstance(semaphore, TrackingSemaphore):
+        waiting_requests_gauge.set(semaphore.waiters)
     else:
         waiting_requests_gauge.set(0)

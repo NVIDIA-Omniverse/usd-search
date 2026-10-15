@@ -26,6 +26,7 @@ from queue import Empty
 from typing import AsyncIterator, Dict, List, Optional, Tuple, Union
 
 from cache.src import (
+    AssetData,
     CacheConnectionError,
     GenericPluginStatus,
     JobItem,
@@ -52,6 +53,7 @@ from opentelemetry.sdk.resources import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from plugins import BasePlugin, Plugins
+from plugins.metrics import set_phase_metrics
 from prometheus_client import Counter, Gauge, Histogram
 
 from search_utils.hashing_utils import get_hash
@@ -84,6 +86,26 @@ if SENTRY_DSN:
     sentry_sdk.init(
         dsn=SENTRY_DSN,
     )
+
+
+class PluginPhaseMetricsPublisher:
+    """Binds a plugin's phase timings to this worker's Prometheus metrics.
+
+    Implements ``plugins.models.PluginPhaseMetrics``. The plugin knows the phase
+    names and their durations; the deployment labels and the registry live here,
+    so the worker hands one of these to the plugin it runs.
+    """
+
+    def __init__(self, duration: Histogram, failures: Counter, label_values: List[str]) -> None:
+        self._duration = duration
+        self._failures = failures
+        self._label_values = label_values
+
+    def observe_phase(self, phase: str, seconds: float) -> None:
+        self._duration.labels(*self._label_values, phase).observe(seconds)
+
+    def count_failure_phase(self, phase: str) -> None:
+        self._failures.labels(*self._label_values, phase).inc()
 
 
 class MonitorWorker(AssetdbMS):
@@ -172,6 +194,12 @@ class MonitorWorker(AssetdbMS):
         self.metric_processed_items: Optional[Counter] = None
         self.metric_item_processing_time: Optional[Histogram] = None
         self.metric_full_batch_processing_time: Optional[Histogram] = None
+        self.metric_item_status: Optional[Counter] = None
+        self.metric_phase_duration: Optional[Histogram] = None
+        self.metric_item_failure_phase: Optional[Counter] = None
+        # Label values shared by every per-item metric, in labelnames order minus
+        # the trailing per-observation label (`status` / `phase`).
+        self._plugin_label_values: List[str] = []
 
         # init prom metrics
         if self.use_prom_metrics:
@@ -286,6 +314,72 @@ class MonitorWorker(AssetdbMS):
             "Count of items processed by the worker",
             labelnames=list(self.prom_labels.keys()) + ["worker_type", "plugin_name"],
         ).labels(*self.prom_labels.values(), farm_label, self._worker_config.plugin_name)
+
+        # Left unbound (no .labels() here): `status` varies per item, so the label
+        # set is only complete at increment time. This is what turns an opaque
+        # failure rate into a breakdown — e.g. AGS failures split by reason code.
+        self.metric_item_status = Counter(
+            "omnideepsearch_worker_item_status_total",
+            "Count of per-asset plugin outcomes, by the terminal status the plugin assigned",
+            labelnames=list(self.prom_labels.keys()) + ["worker_type", "plugin_name", "status"],
+        )
+        self._plugin_label_values = list(self.prom_labels.values()) + [
+            farm_label,
+            self._worker_config.plugin_name,
+        ]
+
+        # Phases a plugin measures inside processing one item — for the asset-graph
+        # plugin these come from the kit-worker sidecar (Kit startup, stage open,
+        # traversal), which is a subprocess of another service and so invisible to
+        # this worker's own timers. `phase` is bound at observation time.
+        # The buckets span the whole plausible range, from a sub-millisecond
+        # traversal to a build that runs into the 1800 s timeout, because one
+        # bucket list is shared by every phase.
+        self.metric_phase_duration = Histogram(
+            "omnideepsearch_worker_phase_duration_seconds",
+            "Duration of a named phase of processing a single item, as reported by the plugin",
+            buckets=(
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1.0,
+                2.5,
+                5.0,
+                10.0,
+                30.0,
+                60.0,
+                120.0,
+                300.0,
+                600.0,
+                1200.0,
+                1800.0,
+                float("inf"),
+            ),
+            labelnames=list(self.prom_labels.keys()) + ["worker_type", "plugin_name", "phase"],
+        )
+        # The phase an item died in. A separate counter rather than a label on the
+        # histogram above: a killed build has no duration to record, only a place
+        # it stopped.
+        self.metric_item_failure_phase = Counter(
+            "omnideepsearch_worker_item_failure_phase_total",
+            "Count of items whose processing died in a given phase",
+            labelnames=list(self.prom_labels.keys()) + ["worker_type", "plugin_name", "phase"],
+        )
+        # Plugins measure phases but do not own metrics — the registry and these
+        # labels live here, so hand them a sink bound to both. Registered for the
+        # process, not on `self._plugin`: `plugin_pipeline` builds its own plugin
+        # instance per batch, and that is the one that does the work.
+        set_phase_metrics(
+            PluginPhaseMetricsPublisher(
+                duration=self.metric_phase_duration,
+                failures=self.metric_item_failure_phase,
+                label_values=self._plugin_label_values,
+            )
+        )
 
         self.metric_full_batch_processing_time = Histogram(
             "omnideepsearch_worker_batch_processing_duration_seconds",
@@ -404,7 +498,8 @@ class MonitorWorker(AssetdbMS):
                     modified_date_seconds=it.modified_date_seconds,
                 ).get_hash(),
                 prediction=(dataclasses.asdict(result[r]) if dataclasses.is_dataclass(result[r]) else result[r]),
-                asset_data={"plugins": {plugin_name: "added"}},
+                # one result per plugin, so this names the single plugin that owns it
+                asset_data=AssetData(plugins={plugin_name: "added"}),
                 asset_status=result[r]["asset_status"],
             )
             for r, it in zip(result, omni_items)
@@ -607,6 +702,8 @@ class MonitorWorker(AssetdbMS):
                     # store item status
                     asset_status: PluginItemStatus = r["asset_status"]
                     logger.info("setting '%s' status to %s", r["uri"], asset_status.status)
+                    if self.metric_item_status is not None:
+                        self.metric_item_status.labels(*self._plugin_label_values, str(asset_status.status)).inc()
                     await self.cache_client.add_asset_status(
                         plugin_name=p_name,
                         uri=r["uri"],
@@ -673,7 +770,13 @@ class MonitorWorker(AssetdbMS):
             if self.farm_client is not None and not await self.farm_client.is_available():
                 raise ConnectionError(f"Rendering client ({self.farm_client}) is not available")
 
-            if self.farm_client is not None and self.farm_client.ds_renderer_config.pending_job_limit >= 0:
+            # pending_job_limit == 0 is a self-contradicting throttle: dispatching
+            # anything immediately makes pending >= 1, which can never satisfy
+            # "0 pending allowed" again through normal operation - the worker
+            # would block forever after its very first dispatch. Treat 0 (and
+            # negative) the same as "disabled", matching pending_job_limit's own
+            # documented default of -1.
+            if self.farm_client is not None and self.farm_client.ds_renderer_config.pending_job_limit > 0:
                 pending_jobs = await self.farm_client.get_pending_jobs()
                 while len(pending_jobs) > self.farm_client.ds_renderer_config.pending_job_limit:
                     logger.debug(
