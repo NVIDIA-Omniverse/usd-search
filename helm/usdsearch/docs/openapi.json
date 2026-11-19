@@ -3,7 +3,7 @@
   "info": {
     "title": "USD Search and Asset Graph Search APIs",
     "description": "# USD Search API Overview\n**USD Search API** is a collection of cloud-native microservices that enable developers, creators, and workflow specialists to efficiently search through vast collections of OpenUSD data, images, and other assets using natural language or image-based inputs.\nWith these production-ready microservices, developers can deploy USD Search API onto their own infrastructure. With USD Search API\u2019s artificial intelligence (AI) features, you can quickly locate untagged and unstructured 3D data and digital assets, saving time navigating unstructured, untagged 3D data. USD Search API is capable of searching and indexing 3D asset databases, as well as navigating complex 3D scenes to perform spatial searches, without requiring manual tagging of assets.\n## Features\n- **Natural Language Searches:** - Utilize AI to search for images and USD-based 3D models using simple, descriptive language.\n- **Image Similarity Searches:** - Find images similar to a reference image through AI-driven image comparisons.\n- **Metadata Filtering:** - Filter search results by file name, file type, creation/modification dates, file size, and creator/modifier metadata.\n- **USD Content Filtering with Asset Graph Search:** - When used with the Asset Graph Search, search capabilities are expanded to include filtering based on USD properties and object dimensions.\n- **Multiple Storage Backend Support:** - Compatible with various storage backends, including AWS S3 buckets and Omniverse Nucleus server.\n- **Advanced File Name, Extension, and Path Filters:** - Use wildcards for broad or specific file name and extension searches.\n- **Date and Size Range Filtering:** - Specify assets created or modified within certain date ranges or file sizes larger or smaller than a designated threshold.\n- **User-based Filtering:** - Filter assets based on their creator or modifier, allowing for searches tailored to particular users' contributions.\n- **Embedding-based Similarity Threshold:** - Set a similarity threshold for more nuanced control over search results in embedding-based searches.\n- **Custom Search Paths and Scenes:** - Specify search locations within the storage backend or conduct searches within specific scenes for targeted results.\n- **Return Detailed Results:** - Option to include images, metadata, root prims, and predictions in the search results.\n\n# Asset Graph Search (AGS) API Overview\n**Asset Graph Search (AGS)** provides advanced querying capabilities for assets and USD trees indexed in a graph database. It supports proximity queries based on coordinates or prims to find objects within specified areas or radii, sorted by distance, and includes transformation options for vector alignment. The API also offers dependency and reverse dependency searches, helping to identify all assets referenced in a scene or scenes containing a particular asset, which can optimize scene loading and track dependency changes. By combining different query types, the AGS API enables complex scenarios for scene understanding, manipulation, and generation. Integrated with USD Search it provides in-scene search functionality.\n## Features\n- **Proximity Queries:** - Find objects within a specified bounding box or radius. - Results sorted by distance with options for vector alignment using a transformation matrix.\n- **USD Property Queries:** - Enables querying objects in a 3D scene using USD properties, such as finding all assets with a specific semantic label.\n- **Asset Dependency Searches:** - Identify all assets referenced in a scene \u2014 including USD references, material references, or textures. - Reverse search to find all scenes containing a particular asset.\n- **Combined Query Capabilities:** - Enable complex scenarios for enhanced scene understanding, manipulation, and generation.\n- **Integration with USD Search:** - Provides in-scene search functionality.\n",
-    "version": "1.5.0"
+    "version": "1.5.1"
   },
   "servers": [
     {
@@ -1238,12 +1238,12 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "exclusiveMinimum": 0,
-              "description": "Page size",
+              "minimum": 0,
+              "description": "Page size (0 = no limit)",
               "default": 1000,
               "title": "Limit"
             },
-            "description": "Page size"
+            "description": "Page size (0 = no limit)"
           }
         ],
         "responses": {
@@ -1319,12 +1319,12 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "exclusiveMinimum": 0,
-              "description": "Page size",
+              "minimum": 0,
+              "description": "Page size (0 = no limit)",
               "default": 1000,
               "title": "Limit"
             },
-            "description": "Page size"
+            "description": "Page size (0 = no limit)"
           }
         ],
         "responses": {
@@ -1404,12 +1404,12 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "exclusiveMinimum": 0,
-              "description": "Page size",
+              "minimum": 0,
+              "description": "Page size (0 = no limit)",
               "default": 1000,
               "title": "Limit"
             },
-            "description": "Page size"
+            "description": "Page size (0 = no limit)"
           }
         ],
         "responses": {
@@ -1489,12 +1489,12 @@
             "required": false,
             "schema": {
               "type": "integer",
-              "exclusiveMinimum": 0,
-              "description": "Page size",
+              "minimum": 0,
+              "description": "Page size (0 = no limit)",
               "default": 1000,
               "title": "Limit"
             },
-            "description": "Page size"
+            "description": "Page size (0 = no limit)"
           }
         ],
         "responses": {
@@ -1584,7 +1584,7 @@
           "Storage Backend"
         ],
         "summary": "Get Storage Backend Info",
-        "description": "Display some information about the storage backend(s), to which the USD Search API instance is connected to.\n\nA single Storage API deployment can serve several buckets / namespace roots. These are discovered via\n``ListTopLevelAddresses`` and reported as one entry per root; backends that expose a single root (or a\nStorage API server without discovery support) report their configured ``base_uri``.",
+        "description": "Display some information about the storage backend(s), to which the USD Search API instance is connected to.\n\nA single Storage API deployment can serve several buckets / namespace roots. These are discovered via\n``ListTopLevelAddresses`` and reported as one entry per root; backends that expose a single root (or a\nStorage API server without discovery support) report their configured ``base_uri``. When the Storage\nAPI backend's ``allowed_top_level_addresses`` is configured, only that subset is reported.",
         "operationId": "get_storage_backend_info_info_backend_storage_get",
         "parameters": [
           {
@@ -1680,7 +1680,7 @@
           "Asset"
         ],
         "summary": "On-demand asset processing",
-        "description": "USD Search processes all assets on the storage backend in the background. This, however, may\ntake time depending on the amount of data on the storage backend and the amount of available resources,\nwhich could lead to delays in specific assets appearing in the search index. In order to address this\nand prioritize processing of specific assets, it is possible to use this endpoint to trigger\nindexing of a specific asset on demand.\n\nWhen triggering processing of a specific asset URL the user could decide, with which plugin the\nasset needs to be processed. By default, when no plugin is selected - the service will trigger\nprocessing for all plugins that could work with this asset type. Please find below the list of\nsupported plugins:\n\n* **asset_graph_generation**: \n    Constructs several graphs based on the prim hierarchy of a USD file. This plugin is an essential component of Asset Graph Service (AGS).\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **image_to_embedding**: \n    Extracts CLIP embeddings from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *apng, png, dib, msp, xpm, avif, vst, bmp, flc, rgba, fit, ftu, sgi, ps, j2k, vda, hdf, ras, jp2, tif, psd, dcx, dds, jpeg, pbm, jpe, bw, blp, jpc, grib, icb, h5, bufr, pfm, qoi, tga, cur, jpg, ftc, fits, gbr, pgm, emf, j2c, fli, exr, iim, webp, jpx, avifs, icns, gif, mpeg, xbm, jfif, eps, pcd, pnm, jpf, im, mpg, rgb, ico, ppm, wmf, pxr, pcx, tiff*\n\n* **image_to_vision_metadata**: \n    Extracts VLM-generated metadata from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *apng, png, dib, msp, xpm, avif, vst, bmp, flc, rgba, fit, ftu, sgi, ps, j2k, vda, hdf, ras, jp2, tif, psd, dcx, dds, jpeg, pbm, jpe, bw, blp, jpc, grib, icb, h5, bufr, pfm, qoi, tga, cur, jpg, ftc, fits, gbr, pgm, emf, j2c, fli, exr, iim, webp, jpx, avifs, icns, gif, mpeg, xbm, jfif, eps, pcd, pnm, jpf, im, mpg, rgb, ico, ppm, wmf, pxr, pcx, tiff*\n\n* **rendering_to_embedding**: \n    Renders the asset and extracts CLIP embeddings from the generated preview images.\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **rendering_to_vision_metadata**: \n    Renders the asset and extracts VLM-generated metadata using the generated preview images.\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **thumbnail_generation**: \n    Renders the asset uploads one of the rendered images to the storage backend to serve as a thumbnail for this asset.\n    \n    * This plugin supports the following data types: *usdz, usdc, usd, usda*\n\n* **thumbnail_to_embedding**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract CLIP embeddings.\n    \n    * This plugin supports the following data types: *any*\n\n* **thumbnail_to_vision_metadata**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract VLM-generated metadata.\n    \n    * This plugin supports the following data types: *any*\n\n\n**NOTE**: If some of the plugins are not enabled for the USD Search instance, selecting them for the\n*plugins* parameter setting will have not effect. Please reach out to your USD Search service administrator\nif you would like to enable certain plugin functionality. The list of plugins that are enabled for\nthis USD Search instance could be retrieved using **/info/plugins** endpoint.",
+        "description": "USD Search processes all assets on the storage backend in the background. This, however, may\ntake time depending on the amount of data on the storage backend and the amount of available resources,\nwhich could lead to delays in specific assets appearing in the search index. In order to address this\nand prioritize processing of specific assets, it is possible to use this endpoint to trigger\nindexing of a specific asset on demand.\n\nWhen triggering processing of a specific asset URL the user could decide, with which plugin the\nasset needs to be processed. By default, when no plugin is selected - the service will trigger\nprocessing for all plugins that could work with this asset type. Please find below the list of\nsupported plugins:\n\n* **asset_graph_generation**: \n    Constructs several graphs based on the prim hierarchy of a USD file. This plugin is an essential component of Asset Graph Service (AGS).\n    \n    * This plugin supports the following data types: *usdc, usdz, usd, usda*\n\n* **image_to_embedding**: \n    Extracts CLIP embeddings from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *iim, grib, cur, eps, hdf, apng, avif, tiff, ps, pnm, h5, bmp, tif, webp, j2c, pcx, jp2, j2k, xbm, jpc, im, mpeg, pcd, rgba, dds, emf, icns, ras, png, sgi, xpm, jpx, dcx, fits, mpg, fli, fit, blp, gbr, jfif, jpg, pbm, psd, tga, icb, vst, jpf, bw, msp, rgb, pfm, avifs, ftu, exr, ppm, ico, jpe, wmf, dib, ftc, flc, pgm, pxr, vda, gif, qoi, jpeg, bufr*\n\n* **image_to_vision_metadata**: \n    Extracts VLM-generated metadata from the images that are found on the storage backend.\n    \n    * This plugin supports the following data types: *iim, grib, cur, eps, hdf, apng, avif, tiff, ps, pnm, h5, bmp, tif, webp, j2c, pcx, jp2, j2k, xbm, jpc, im, mpeg, pcd, rgba, dds, emf, icns, ras, png, sgi, xpm, jpx, dcx, fits, mpg, fli, fit, blp, gbr, jfif, jpg, pbm, psd, tga, icb, vst, jpf, bw, msp, rgb, pfm, avifs, ftu, exr, ppm, ico, jpe, wmf, dib, ftc, flc, pgm, pxr, vda, gif, qoi, jpeg, bufr*\n\n* **rendering_to_embedding**: \n    Renders the asset and extracts CLIP embeddings from the generated preview images.\n    \n    * This plugin supports the following data types: *usdc, usdz, usd, usda*\n\n* **rendering_to_vision_metadata**: \n    Renders the asset and extracts VLM-generated metadata using the generated preview images.\n    \n    * This plugin supports the following data types: *usdc, usdz, usd, usda*\n\n* **thumbnail_generation**: \n    Renders the asset uploads one of the rendered images to the storage backend to serve as a thumbnail for this asset.\n    \n    * This plugin supports the following data types: *usdc, usdz, usd, usda*\n\n* **thumbnail_to_embedding**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract CLIP embeddings.\n    \n    * This plugin supports the following data types: *any*\n\n* **thumbnail_to_vision_metadata**: \n    For any asset stored on the storage backend this plugin relies on the thumbnail of this asset to extract VLM-generated metadata.\n    \n    * This plugin supports the following data types: *any*\n\n\n**NOTE**: If some of the plugins are not enabled for the USD Search instance, selecting them for the\n*plugins* parameter setting will have not effect. Please reach out to your USD Search service administrator\nif you would like to enable certain plugin functionality. The list of plugins that are enabled for\nthis USD Search instance could be retrieved using **/info/plugins** endpoint.",
         "operationId": "submit_for_processing_process_asset_get",
         "parameters": [
           {
@@ -2488,6 +2488,28 @@
               "Density at most 500": {
                 "summary": "Filter by density <= 500",
                 "value": "physics:density<=500"
+              }
+            }
+          },
+          {
+            "name": "filter_by_properties_version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Filter assets by version-valued USD attributes using version ordering. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `simready_metadata_validation__profile_version>=2.0.0`",
+              "default": "",
+              "title": "Filter By Properties Version"
+            },
+            "description": "Filter assets by version-valued USD attributes using version ordering. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `simready_metadata_validation__profile_version>=2.0.0`",
+            "examples": {
+              "Profile version at least 2.0.0": {
+                "summary": "Filter by SimReady profile version >= 2.0.0",
+                "value": "simready_metadata_validation__profile_version>=2.0.0"
+              },
+              "Profile version range": {
+                "summary": "Filter by SimReady profile version between 2.0.0 and 3.0.0",
+                "value": "simready_metadata_validation__profile_version>=2.0.0,simready_metadata_validation__profile_version<=3.0.0"
               }
             }
           },
@@ -3401,14 +3423,14 @@
                   "type": "null"
                 }
               ],
-              "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character.",
+              "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character. Note: the path is always interpreted against the asset's internal storage URL. If this deployment publishes rewritten (e.g. `https://`) asset URLs, a path segment that only exists in the rewritten form will not match.",
               "examples": [
                 "/Projects/Vehicles/",
                 "/Samples/*"
               ],
               "title": "Search Path"
             },
-            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character."
+            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character. Note: the path is always interpreted against the asset's internal storage URL. If this deployment publishes rewritten (e.g. `https://`) asset URLs, a path segment that only exists in the rewritten form will not match."
           },
           {
             "name": "exclude_search_path",
@@ -3445,14 +3467,14 @@
                   "type": "null"
                 }
               ],
-              "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax).",
+              "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax). The pattern is matched against the asset's **internal** storage URL. If this deployment publishes rewritten asset URLs (e.g. `https://` instead of `s3://`), a pattern that *begins with a literal* rewritten prefix is translated for you \u2014 including inside a whole-pattern exclusion, `~(<prefix>temp/.*)`. A pattern that expresses that prefix as a pattern rather than a literal is not, and will match nothing. When in doubt, write the pattern without a scheme/host prefix (e.g. `.*[/]Vehicles[/].*`), which works either way.",
               "examples": [
                 ".*[/]Vehicles[/].*",
                 "~(.*[/]temp[/].*)"
               ],
               "title": "Filter Url Regexp"
             },
-            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax)."
+            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax). The pattern is matched against the asset's **internal** storage URL. If this deployment publishes rewritten asset URLs (e.g. `https://` instead of `s3://`), a pattern that *begins with a literal* rewritten prefix is translated for you \u2014 including inside a whole-pattern exclusion, `~(<prefix>temp/.*)`. A pattern that expresses that prefix as a pattern rather than a literal is not, and will match nothing. When in doubt, write the pattern without a scheme/host prefix (e.g. `.*[/]Vehicles[/].*`), which works either way."
           },
           {
             "name": "search_in_scene",
@@ -3562,6 +3584,28 @@
               "title": "Filter By Properties Numeric"
             },
             "description": "Filter assets by numeric USD attributes with comparison operators. Format: `property>value,property<=value`. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `physics:mass>1.0,physics:density<=500`"
+          },
+          {
+            "name": "filter_by_properties_version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter assets by version-valued USD attributes (e.g. `2.0.0`) using version ordering, so `2.10.0` > `2.9.0`. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Stored values that are not versions never match. Example: `simready_metadata_validation__profile_version>=2.0.0`",
+              "examples": [
+                "simready_metadata_validation__profile_version>=2.0.0",
+                "simready_metadata_validation__profile_version>=2.0.0,simready_metadata_validation__profile_version<=3.0.0"
+              ],
+              "title": "Filter By Properties Version"
+            },
+            "description": "Filter assets by version-valued USD attributes (e.g. `2.0.0`) using version ordering, so `2.10.0` > `2.9.0`. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Stored values that are not versions never match. Example: `simready_metadata_validation__profile_version>=2.0.0`"
           },
           {
             "name": "filter_by_tags",
@@ -4016,6 +4060,122 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/QueryRelevanceValidationResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "HTTPBasic": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/v3/deepsearch/vlm_validate/search_result_batch": {
+      "post": {
+        "tags": [
+          "Relevance verification"
+        ],
+        "summary": "Validate a page of search results with VLM",
+        "description": "Judges up to 100 results against one query in ONE request; each item takes the single-result route's asset fields and gets its verdict and cache. `stream` (default true) answers NDJSON as each result lands: `{\"id\", \"verdict\"}` or `{\"id\", \"error\"}` per result, a blank heartbeat line, `{\"fatal\", \"error_type\", \"retryable\"}` when the model is unreachable or refuses the request (the stream ends there), and `{\"done\": {\"completed\", \"errored\"}}` last; a stream without `done` was cut. `stream: false` answers one JSON body once every result is judged (a fatal error is the single route's 503).",
+        "operationId": "validate_result_batch_endpoint_v3_deepsearch_vlm_validate_search_result_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "stream=false: one JSON body; stream=true (default): NDJSON, one object per line",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchValidateResponse"
+                }
+              },
+              "application/x-ndjson": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/BatchValidateResult"
+                    },
+                    {
+                      "properties": {
+                        "fatal": {
+                          "type": "string"
+                        },
+                        "error_type": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "model": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "fatal",
+                        "error_type",
+                        "retryable"
+                      ],
+                      "title": "BatchValidateFatal"
+                    },
+                    {
+                      "properties": {
+                        "done": {
+                          "properties": {
+                            "completed": {
+                              "type": "integer"
+                            },
+                            "errored": {
+                              "type": "integer"
+                            }
+                          },
+                          "type": "object",
+                          "required": [
+                            "completed",
+                            "errored"
+                          ]
+                        }
+                      },
+                      "type": "object",
+                      "required": [
+                        "done"
+                      ],
+                      "title": "BatchValidateDone"
+                    }
+                  ]
                 }
               }
             }
@@ -5661,6 +5821,212 @@
         "type": "object",
         "title": "AGSAssetData"
       },
+      "BatchValidateItem": {
+        "properties": {
+          "asset_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Url",
+            "description": "Asset URL to validate (mutually exclusive with image_key/image_keys)"
+          },
+          "image_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Key",
+            "description": "Single image key to validate (mutually exclusive with asset_url/image_keys)"
+          },
+          "image_keys": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Keys",
+            "description": "List of image keys for multiple views of the asset. The deployment's view budget applies (USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION); requests exceeding it are rejected with 400. Mutually exclusive with asset_url/image_key."
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Images",
+            "description": "Raw base64-encoded images (data URL or bare base64) to validate directly. When provided, the server validates these images as-is and does NOT fetch anything from the index. Mutually exclusive with asset_url/image_key/image_keys. The deployment view budget (USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION) applies."
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path",
+            "description": "The asset's file path (its search hit's source.path): a text query's logprob judge reads it when USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_FACTS lists \"path\". Omit the facts to judge the image alone."
+          },
+          "vlm_metadata_caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vlm Metadata Caption",
+            "description": "The asset's vision-metadata caption: read when USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_FACTS lists \"vlm_metadata_caption\" (`caption` accepted too)."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Id",
+            "description": "The caller's id for this result, echoed on its result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "BatchValidateItem",
+        "description": "One result of a batch: a single-result request's asset fields, plus the caller's id."
+      },
+      "BatchValidateRequest": {
+        "properties": {
+          "query_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Text",
+            "description": "Text query to validate against"
+          },
+          "query_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Image",
+            "description": "Base64 image query to validate against"
+          },
+          "stream": {
+            "type": "boolean",
+            "title": "Stream",
+            "description": "true (default): one NDJSON line per result as it lands; false: one JSON answer at the end.",
+            "default": true
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BatchValidateItem"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Items",
+            "description": "The results to judge, in display order: they are judged in this order."
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "BatchValidateRequest",
+        "description": "Request body for batch validation: a page of results judged against one query."
+      },
+      "BatchValidateResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/BatchValidateResult"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed"
+          },
+          "errored": {
+            "type": "integer",
+            "title": "Errored"
+          }
+        },
+        "type": "object",
+        "required": [
+          "results",
+          "completed",
+          "errored"
+        ],
+        "title": "BatchValidateResponse",
+        "description": "A batch's results (stream=false), in the order they landed."
+      },
+      "BatchValidateResult": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QueryRelevanceValidationResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "BatchValidateResult",
+        "description": "One result of a batch: its verdict, or why it has none."
+      },
       "DeepSearchSearchRequestV2": {
         "properties": {
           "file_name": {
@@ -5897,7 +6263,7 @@
               }
             ],
             "title": "Search Path",
-            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character.",
+            "description": "Limit search to assets within this directory path on the storage backend. Do NOT include the storage backend URL prefix (e.g., use '/Projects/Vehicles/' not 'omniverse://server/Projects/Vehicles/'). Supports wildcards: `*` for any characters, `?` for single character. Note: the path is always interpreted against the asset's internal storage URL. If this deployment publishes rewritten (e.g. `https://`) asset URLs, a path segment that only exists in the rewritten form will not match.",
             "examples": [
               "/Projects/Vehicles/",
               "/Samples/*"
@@ -5929,7 +6295,7 @@
               }
             ],
             "title": "Filter Url Regexp",
-            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax).",
+            "description": "Specify an asset URL filter in the [Lucene Regexp format](https://www.elastic.co/guide/en/elasticsearch/reference/5.6/query-dsl-regexp-query.html#regexp-syntax). The pattern is matched against the asset's **internal** storage URL. If this deployment publishes rewritten asset URLs (e.g. `https://` instead of `s3://`), a pattern that *begins with a literal* rewritten prefix is translated for you \u2014 including inside a whole-pattern exclusion, `~(<prefix>temp/.*)`. A pattern that expresses that prefix as a pattern rather than a literal is not, and will match nothing. When in doubt, write the pattern without a scheme/host prefix (e.g. `.*[/]Vehicles[/].*`), which works either way.",
             "examples": [
               ".*[/]Vehicles[/].*",
               "~(.*[/]temp[/].*)"
@@ -6012,6 +6378,22 @@
             "examples": [
               "physics:mass>1.0",
               "physics:mass>1.0,physics:density<=500"
+            ]
+          },
+          "filter_by_properties_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter By Properties Version",
+            "description": "Filter assets by version-valued USD attributes (e.g. `2.0.0`) using version ordering, so `2.10.0` > `2.9.0`. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Stored values that are not versions never match. Example: `simready_metadata_validation__profile_version>=2.0.0`",
+            "examples": [
+              "simready_metadata_validation__profile_version>=2.0.0",
+              "simready_metadata_validation__profile_version>=2.0.0,simready_metadata_validation__profile_version<=3.0.0"
             ]
           },
           "filter_by_tags": {
@@ -6912,6 +7294,44 @@
         ],
         "title": "Metadata"
       },
+      "NameMatchConfig": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "description": "Whether hits whose name or path holds every query word get the vote.",
+            "default": true
+          },
+          "weight": {
+            "type": "number",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Weight",
+            "description": "RRF weight of the name vote (its rank constant is rrf_config.query_rank_constants['name'], else rank_constant).",
+            "default": 1.0
+          },
+          "min_words": {
+            "type": "integer",
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Min Words",
+            "description": "A query of this many words or more (after stopwords) gets the vote.",
+            "default": 2
+          },
+          "rare_word_hits": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Rare Word Hits",
+            "description": "A shorter query (one word) gets the vote only when at most this many of the returned hits hold its word: a product name ('allegro') yes, a common noun ('table', 'car') no. 0 never.",
+            "default": 1
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NameMatchConfig",
+        "description": "The name vote: one more RRF vote for hits whose name or path holds every query word.\n\nRank fusion sees ranks, not scores, so the asset a query names (\"allegro hand\" -> allegro_hand.usd) can lose to\nlook-alikes that sit moderately high in both the text and the vector leg. The vote is read from the hits the legs\nalready returned (their name and path), so it costs no extra query. Words are whole words: a name or path is split\nat anything not a letter or digit, at camelCase and at letter/digit boundaries (\"AllegroHand\" -> allegro, hand;\n\"onrobot\" does not hold \"robot\"), a plural counts (\"robot\" ~ \"Robots\"), and a query word with a digit matches the\nstart of a part (\"m900\" ~ \"m900ib280\"). Stopwords and one-character words are left out of the query. A query of\nmin_words words or more gets the vote; a shorter one only when its word is rare among the returned hits\n(rare_word_hits). It applies only when the request fuses several legs."
+      },
       "Operator": {
         "type": "string",
         "enum": [
@@ -7077,7 +7497,7 @@
             },
             "type": "object",
             "title": "Query Rank Constants",
-            "description": "Override rank_constant for specific search legs, keyed by leg name (e.g., {\"hybrid\": 30, \"text_to_vector\": 90}). Valid leg names: \"hybrid\" (text leg), \"text_to_vector\" (description embedding), \"image_similarity\", and \"vector_<n>\" for explicit vector queries."
+            "description": "Override rank_constant for specific search legs, keyed by leg name (e.g., {\"hybrid\": 30, \"text_to_vector\": 90}). Valid leg names: \"hybrid\" (text leg), \"name\" (the name vote), \"text_to_vector\" (description embedding), \"image_similarity\", and \"vector_<n>\" for explicit vector queries."
           }
         },
         "type": "object",
@@ -7206,6 +7626,10 @@
             "type": "object",
             "title": "Vector Fields",
             "description": "Vector search fields configuration. Key is the field name (e.g., 'siglip2-embedding.embedding'), value is the field config with dimension and weight."
+          },
+          "name_match": {
+            "$ref": "#/components/schemas/NameMatchConfig",
+            "description": "The name vote: an extra RRF vote for hits whose name or path holds every query word."
           }
         },
         "additionalProperties": true,
@@ -7606,13 +8030,14 @@
         "enum": [
           "text",
           "hybrid",
+          "name",
           "filter_only",
           "text_to_vector",
           "image_similarity",
           "vector"
         ],
         "title": "SearchType",
-        "description": "Identifies which search strategy produced a score explanation.\n\n- TEXT: Keyword/full-text search leg.\n- HYBRID: Combined text + vector search with RRF fusion (the recommended default).\n- FILTER_ONLY: No text/vector query \u2014 results are purely from filters.\n- TEXT_TO_VECTOR: Text query converted to embedding for vector search.\n- IMAGE_SIMILARITY: Image-based vector search using visual embeddings.\n- VECTOR: Direct vector search with a pre-computed embedding array."
+        "description": "Identifies which search strategy produced a score explanation.\n\n- TEXT: Keyword/full-text search leg.\n- HYBRID: Combined text + vector search with RRF fusion (the recommended default).\n- NAME: Name vote: hits whose name or path holds every query word, as whole words (no extra query).\n- FILTER_ONLY: No text/vector query \u2014 results are purely from filters.\n- TEXT_TO_VECTOR: Text query converted to embedding for vector search.\n- IMAGE_SIMILARITY: Image-based vector search using visual embeddings.\n- VECTOR: Direct vector search with a pre-computed embedding array.\n\nNew values may be added in minor releases; clients must accept values they do not recognise."
       },
       "StatsResponse": {
         "properties": {
@@ -7717,6 +8142,30 @@
       },
       "ValidateResultRequest": {
         "properties": {
+          "query_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Text",
+            "description": "Text query to validate against"
+          },
+          "query_image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Image",
+            "description": "Base64 image query to validate against"
+          },
           "asset_url": {
             "anyOf": [
               {
@@ -7771,7 +8220,7 @@
             "title": "Images",
             "description": "Raw base64-encoded images (data URL or bare base64) to validate directly. When provided, the server validates these images as-is and does NOT fetch anything from the index. Mutually exclusive with asset_url/image_key/image_keys. The deployment view budget (USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION) applies."
           },
-          "query_text": {
+          "path": {
             "anyOf": [
               {
                 "type": "string"
@@ -7780,10 +8229,10 @@
                 "type": "null"
               }
             ],
-            "title": "Query Text",
-            "description": "Text query to validate against"
+            "title": "Path",
+            "description": "The asset's file path (its search hit's source.path): a text query's logprob judge reads it when USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_FACTS lists \"path\". Omit the facts to judge the image alone."
           },
-          "query_image": {
+          "vlm_metadata_caption": {
             "anyOf": [
               {
                 "type": "string"
@@ -7792,8 +8241,8 @@
                 "type": "null"
               }
             ],
-            "title": "Query Image",
-            "description": "Base64 image query to validate against"
+            "title": "Vlm Metadata Caption",
+            "description": "The asset's vision-metadata caption: read when USDSEARCH_VISION_VALIDATION_LOGPROB_ASSET_FACTS lists \"vlm_metadata_caption\" (`caption` accepted too)."
           }
         },
         "type": "object",

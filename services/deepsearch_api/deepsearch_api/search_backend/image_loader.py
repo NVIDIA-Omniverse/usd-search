@@ -15,9 +15,13 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import AsyncIterator, Dict, List, Optional
 
 from opensearchpy import AsyncOpenSearch
+from opensearchpy.exceptions import NotFoundError
+from opensearchpy.helpers import async_scan
+
+from .exceptions import ImageCacheReadError
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,10 @@ class BaseImageLoader(ABC):
     async def load_images(self, image_ids: List[str]) -> Dict[str, Optional[str]]:
         """Load multiple images by their IDs."""
         pass
+
+    async def fetch_image(self, image_id: str) -> Optional[str]:
+        """Like ``load_image``, but raises ``ImageCacheReadError`` when the read fails; ``None`` means absent."""
+        return await self.load_image(image_id)
 
 
 class OpenSearchImageLoader(BaseImageLoader):
@@ -58,25 +66,35 @@ class OpenSearchImageLoader(BaseImageLoader):
             image_id: The image ID to load
 
         Returns:
-            Base64 encoded image data or None if not found
+            Base64 encoded image data or None if not found (or the read failed)
         """
         try:
-            response = await self.client.get(index=self.image_cache_index, id=image_id)
-
-            # Extract image data from the response
-            source = response.get("_source", {})
-
-            # Look for common image field names
-            for field_name in ["siglip2-embedding-ver3.0-image", "image", "image_data"]:
-                if field_name in source:
-                    return source[field_name]
-
-            logger.warning(f"No image data found for image ID {image_id}")
-            return None
-
-        except Exception as e:
+            return await self.fetch_image(image_id)
+        except ImageCacheReadError as e:
             logger.warning(f"Failed to load image {image_id}: {e}")
             return None
+
+    async def fetch_image(self, image_id: str) -> Optional[str]:
+        try:
+            response = await self.client.get(index=self.image_cache_index, id=image_id)
+        except NotFoundError as e:
+            # Only a missing document means "absent"; a missing index (index_not_found_exception) is also a 404 but
+            # means the cache itself is unavailable.
+            if isinstance(e.info, dict) and e.info.get("found") is False:
+                logger.warning(f"Image not found: {image_id}")
+                return None
+            raise ImageCacheReadError(f"Image cache read failed for image ID {image_id}: {e}") from e
+        except Exception as e:
+            raise ImageCacheReadError(f"Image cache read failed for image ID {image_id}: {e}") from e
+
+        # Look for common image field names
+        source = response.get("_source", {})
+        for field_name in ["siglip2-embedding-ver3.0-image", "image", "image_data"]:
+            if field_name in source:
+                return source[field_name]
+
+        logger.warning(f"No image data found for image ID {image_id}")
+        return None
 
     async def load_images(self, image_ids: List[str]) -> Dict[str, Optional[str]]:
         """
@@ -123,6 +141,22 @@ class OpenSearchImageLoader(BaseImageLoader):
         except Exception as e:
             logger.error(f"Failed to load images {image_ids}: {e}")
             return {image_id: None for image_id in image_ids}
+
+    async def image_count(self) -> int:
+        """How many images the image cache index holds."""
+        response = await self.client.count(index=self.image_cache_index)
+        return int(response["count"])
+
+    async def image_ids(self, page: int = 500) -> AsyncIterator[str]:
+        """Every image id of the image cache index, in index order (a scroll that reads no image data)."""
+        async for hit in async_scan(
+            self.client,
+            query={"query": {"match_all": {}}, "_source": False},
+            index=self.image_cache_index,
+            size=page,
+            scroll="5m",
+        ):
+            yield hit["_id"]
 
 
 class MockImageLoader(BaseImageLoader):

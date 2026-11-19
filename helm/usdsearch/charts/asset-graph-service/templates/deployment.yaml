@@ -82,6 +82,8 @@ spec:
               value: {{ .Values.sentry_dsn | default .Values.global.sentry_dsn | default "" }}
             - name: N_WORKERS
               value: {{ .Values.graphdb.n_workers | default 20 | quote }}
+            - name: PROPERTY_TEXT_INDEX_FIELDS
+              value: {{ join "," (.Values.graphdb.textIndexProperties | default list) | quote }}
             # base_logging reads $LOGGING_CONFIG, defaulting to /logging.yml —
             # the copy baked into the image. Without this the ConfigMap mounted
             # below is present in the pod and never opened, so `loggingConfig`

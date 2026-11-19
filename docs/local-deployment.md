@@ -133,7 +133,7 @@ account popover; `?server=<key>` deep-links an index. Selecting an index
 re-points search, thumbnails, and the per-index filter catalog
 (`GET /llm_parse/fields`) together. The schema and fallback order are
 documented in
-[`services/explorer/public/runtime-config.js`](../services/explorer/public/runtime-config.js);
+[`services/explorer/dist/runtime-config.js`](../services/explorer/dist/runtime-config.js);
 on Kubernetes set the same two env vars via `deepsearch-explorer.extraEnvVars`
 (example in [`helm/usdsearch/values.yaml`](../helm/usdsearch/values.yaml)).
 
@@ -173,13 +173,3 @@ where the gateway gates API routes with the stack's `OV_USERNAME` /
 Tip: `/search` and `/search_hybrid` accept `return_root_prims=true` — a
 non-empty `root_prims` on a hit proves the asset-graph worker finished that
 asset, which is handy for deterministically detecting graphed scenes.
-
-## End-to-end test harness
-
-`ci/quickstart/` ships a parametric runner (`run_tests_quickstart.sh`) and a
-sequential driver (`run_all.sh`) covering six configs: `public-s3`,
-`public-s3-vlm`, `private-s3`, `private-s3-vlm`, `nucleus`, `nucleus-vlm`.
-Each brings up base + GPU plugins (+ VLM overlay where applicable) with
-`docker compose up -d --wait --build`, polls `/search` until an asset is
-indexed, runs the smoke script with bumped timeouts, and tears down with
-`down -v` on exit. Not wired into GitLab CI yet (needs GPU runners).

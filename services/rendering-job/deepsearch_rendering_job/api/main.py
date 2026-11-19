@@ -39,6 +39,7 @@ from ..models import (
     RenderingStatus,
     response_status_gauge,
 )
+from ..render_worker import start_usd_cache_gc
 from ..utils import TrackingSemaphore
 from .config import CACHE_MAXSIZE, CACHE_TTL, get_api_description, get_package_version
 from .health import router as health_router
@@ -65,8 +66,11 @@ async def lifespan(app: FastAPI):
     app.state.worker_settings = worker_settings
     for rendering_status in RenderingStatus:
         response_status_gauge.labels(status=rendering_status.value).set(0)
+    usd_cache_gc = start_usd_cache_gc()
     yield
     # Cleanup (if needed)
+    if usd_cache_gc is not None:
+        usd_cache_gc.cancel()
     app.state.cache.clear()
 
 

@@ -40,6 +40,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all \
 # every installed version is accounted for in THIRD_PARTY_NOTICE.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl libssl3t64 curl \
+    libbrotli1 apt libapt-pkg6.0t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # UID/GID of the runtime user. Defaults to 1000/1000/ubuntu, which the Ubuntu
@@ -78,21 +79,25 @@ RUN mkdir /cache && chown ${USER_ID}:${GROUP_ID} /cache && chmod 777 /cache
 # Python deps go into a virtualenv on the base's Python 3.12: the base ships some
 # Python packages as Debian packages (e.g. python3-numpy 1.26.4) that pip cannot
 # replace in the system site-packages. Owned by the runtime user, so ovrtx's
-# in-package caches and test-time `pip install` stay writable.
-RUN python3 -m venv /opt/venv && chown -R ${USER_ID}:${GROUP_ID} /opt/venv
+# in-package caches and test-time `pip install` stay writable. `venv` seeds the pip the
+# base bundles (24.0, flagged by the CVE scan), so it is upgraded right away.
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip==26.3 \
+    && chown -R ${USER_ID}:${GROUP_ID} /opt/venv
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH}
 
 # Install the locked runtime dependencies exported from the single workspace-root
 # uv.lock for a reproducible build; the application itself is installed --no-deps
 # below. The root pyproject's find-links wheels/ must exist for any uv invocation
-# even though this service pulls nothing from it.
-RUN pip install --no-cache-dir uv==0.12.23
+# even though this service pulls nothing from it. `--no-cache` keeps uv's cache (and its
+# sdists `.git` marker, flagged by the image content scan) out of the image.
+RUN pip install --no-cache-dir uv==0.13.7
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN mkdir -p wheels
 COPY services/rendering-job ./services/rendering-job
-RUN uv export --frozen --no-dev --no-emit-project --package deepsearch-rendering-job --format requirements-txt -o /tmp/requirements.txt \
+RUN uv export --no-cache --frozen --no-dev --no-emit-project --package deepsearch-rendering-job --format requirements-txt -o /tmp/requirements.txt \
     && pip install --no-cache-dir -r /tmp/requirements.txt
 
 # ovrtx is pinned in requirements-gpu.txt, not here; the real binary wheel comes from

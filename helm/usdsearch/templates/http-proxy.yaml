@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+{{ if and .Values.httpProxy.enabled .Values.api_gateway_deployment.enabled -}}
+{{- if and .Values.httpProxy.authExtension.enabled (not .Values.httpProxy.tls.enabled) -}}
+{{- fail "httpProxy.authExtension.enabled=true requires httpProxy.tls.enabled=true: Contour authorizes only virtual hosts that terminate TLS" -}}
+{{- end -}}
+{{-  $proxies := dict "rest" (dict
+                                "hostPrefix" ""
+                                "targetSvc" (include "deepsearch-global.apiGatewayName" $)
+                                "targetPort" (index .Values "api-gateway").service.ports.http
+                                "path" (.Values.httpProxy.path | default "/")
+                                "protocol" ""
+                                "values" (mustMergeOverwrite
+                                       (deepCopy $.Values.httpProxy)
+                                       (deepCopy $.Values.httpProxy.rest))
+                          )
+-}}
+{{-  range $type, $config := $proxies }}
+{{-  $fqdn := print $config.hostPrefix $config.values.fqdn.host "." $config.values.fqdn.domain -}}
+---
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: {{ print (include "deepsearch-global.apiGatewayName" $) "-" $type }}
+  {{- $annotations := deepCopy ($config.values.annotations | default dict) }}
+  {{- if and ($.Values.global.omniverse_discovery).enabled (ne (trimSuffix "/" $config.path) "") }}
+  {{- /* The Discovery Service appends this to the virtualhost URL in its external catalog. */}}
+  {{- $_ := set $annotations "discovery.omniverse.nvidia.com/base-path" (trimSuffix "/" $config.path) }}
+  {{- end }}
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  labels:
+    {{- include "deepsearch-global.labels" $ | nindent 4 }}
+spec:
+  virtualhost:
+    fqdn: {{ $fqdn }}
+    {{- if $config.values.tls.enabled }}
+    tls:
+      secretName: {{ include "deepsearch-global.tlsSecretName" $ }}
+    {{- end }}
+    corsPolicy: {{ $config.values.corsPolicy | toYaml | nindent 6 }}
+
+    {{- if $config.values.authExtension.enabled }}
+    authorization:
+      responseTimeout: {{ $config.values.authExtension.responseTimeout }}
+      extensionRef:
+        name: {{ $config.values.authExtension.extensionRef.name }}
+        namespace: {{ $config.values.authExtension.extensionRef.namespace | default $.Release.Namespace }}
+    {{- end }}
+  routes:
+    - conditions:
+        - prefix: {{ $config.path }}
+      {{- if ne (trimSuffix "/" $config.path) "" }}
+      # The gateway serves its routes at the root: strip the ingress prefix.
+      # No `prefix:` so the rewrite applies to whatever prefix the condition
+      # matched (an explicit one must equal it exactly, e.g. "/api/").
+      pathRewritePolicy:
+        replacePrefix:
+          - replacement: /
+      # Lets the gateway keep its redirects under the prefix.
+      requestHeadersPolicy:
+        set:
+          - name: X-Forwarded-Prefix
+            value: {{ trimSuffix "/" $config.path }}
+      {{- end }}
+      timeoutPolicy: {{ $config.values.timeoutPolicy | toYaml | nindent 8 }}
+      services:
+        - name: {{ $config.targetSvc }}
+          port: {{ $config.targetPort }}
+          {{- ternary "" ((print "protocol: " $config.protocol) | nindent 10) (empty $config.protocol) }}
+{{  end -}}
+{{- else -}}
+### HTTPProxy (ingress) is disabled, see .Values.httpProxy.enabled and .Values.api_gateway_deployment.enabled
+{{- end }}

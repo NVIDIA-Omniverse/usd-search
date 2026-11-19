@@ -17,10 +17,15 @@ import logging
 from typing import List, Literal, Optional
 
 from llm_client import ValidationConfig
+from llm_client.validation.validation_fields import image_cache_path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
+
+# Where the API keeps prepared asset views by default: a disk-backed directory any container user can create
+# (/var/tmp is world-writable and, unlike /tmp in the Helm chart, not RAM-backed). Helm mounts an emptyDir here.
+DEFAULT_IMAGE_CACHE_DIR = "/var/tmp/usdsearch-validation-images"
 
 
 class ValidationSettings(BaseSettings):
@@ -149,6 +154,38 @@ class ValidationSettings(BaseSettings):
         "their stored size. Part of the verdict cache identity when > 0. "
         "See docs/vlm-validation.md ('Server configuration').",
     )
+    image_format: Literal["png", "jpeg"] = Field(
+        default="png",
+        description="Encoding of every image sent to the VLM: png (default, lossless) or jpeg (quality 90, "
+        "transparency on white; 55-85 % less image-encoding CPU per verdict at 448 px). Part of the verdict cache "
+        "identity when jpeg. See docs/vlm-validation.md ('Server configuration').",
+    )
+    image_cache_dir: Optional[str] = Field(
+        default=DEFAULT_IMAGE_CACHE_DIR,
+        description="Directory where prepared asset views (decoded, fitted to image_max_px, re-encoded) are kept "
+        f"across checks for every API process on the host; default {DEFAULT_IMAGE_CACHE_DIR} (on), empty = off. "
+        "Bounded by image_cache_max_mb and image_cache_min_free_mb. Fill it with "
+        "`python -m deepsearch_api.validation.warm_image_cache`. See docs/vlm-validation.md ('Server configuration').",
+    )
+    image_cache_max_mb: int = Field(
+        default=2048,
+        ge=1,
+        description="MiB of prepared views kept in image_cache_dir; past it views are prepared per check.",
+    )
+    image_cache_min_free_mb: int = Field(
+        default=1024, ge=0, description="MiB the disk of image_cache_dir keeps free: no view is written below it."
+    )
+    image_cache_memory_mb: int = Field(
+        default=0,
+        ge=0,
+        description="MiB of prepared views each API process also keeps in memory, in front of image_cache_dir or "
+        "alone without a writable disk; 0 (default) = off.",
+    )
+
+    @field_validator("image_cache_dir")
+    @classmethod
+    def _blank_image_cache_dir_is_off(cls, value: Optional[str]) -> Optional[str]:
+        return image_cache_path(value)
 
     @field_validator("max_images_per_validation")
     @classmethod
@@ -187,4 +224,9 @@ class ValidationSettings(BaseSettings):
             logprob_asset_path_max_chars=self.logprob_asset_path_max_chars,
             logprob_asset_caption_max_chars=self.logprob_asset_caption_max_chars,
             image_max_px=self.image_max_px,
+            image_format=self.image_format,
+            image_cache_dir=self.image_cache_dir,
+            image_cache_max_mb=self.image_cache_max_mb,
+            image_cache_min_free_mb=self.image_cache_min_free_mb,
+            image_cache_memory_mb=self.image_cache_memory_mb,
         )

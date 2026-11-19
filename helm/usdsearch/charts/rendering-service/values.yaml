@@ -169,14 +169,17 @@ settings:
   # them at the cacheVolumes below persists them across restarts and (for shaders) across
   # replicas sharing the same volume.
   usd_cache:
-    # Caps the resolver cache's on-disk footprint (bytes). Keep this comfortably under
-    # cacheVolumes.cache's emptyDir sizeLimit so the client library's own cleanup trips
-    # before Kubernetes hits the volume's hard limit.
+    # Budget for the resolver cache's on-disk footprint (bytes), enforced by the
+    # service itself: once usage exceeds it, least-recently-used files are evicted
+    # down to `cleanup_threshold` of it. "0" disables eviction. Keep this comfortably
+    # under cacheVolumes.cache's emptyDir sizeLimit, leaving headroom for what renders
+    # download between two checks: exceeding the sizeLimit makes the kubelet evict the
+    # whole pod, failing its in-flight renders.
     max_size_bytes: "85899345920"  # 80Gi, under the 100Gi cacheVolumes.cache default
-    # Fraction of max_size_bytes that triggers cache eviction.
+    # Fraction of max_size_bytes that eviction brings usage down to.
     cleanup_threshold: 0.8
-    # How often (seconds) the resolver checks whether cleanup_threshold is exceeded.
-    garbage_collection_interval_seconds: 300
+    # How often (seconds) the cache size is checked.
+    garbage_collection_interval_seconds: 60
 
 # --
 # extra environment variables

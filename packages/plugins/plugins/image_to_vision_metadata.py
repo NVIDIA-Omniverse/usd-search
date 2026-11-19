@@ -37,7 +37,11 @@ from .exceptions import MetadataException
 from .image_to_embedding import ImageToEmbedding
 from .models import PluginProcessingResult
 from .vision_metadata_utils import (
+    ASSET_HINT_FIELD,
+    VIEW_LABELS_FIELD,
+    asset_hint_from_path,
     encode_vlm_images,
+    encode_vlm_images_with_indices,
     uniformly_sample,
     vision_metadata_asset_state_hash,
 )
@@ -134,10 +138,35 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
             previews = [list(b[self.batch_data_field]) for b in batch_data]
 
             base64_images_list = []
-            for sample_preview in previews:
-                base64_images_list.append(self.encode_vlm_images(sample_preview))
+            labels_list: list[Optional[list[str]]] = []
+            hints: list[Optional[str]] = []
+            for item, sample_preview in zip(batch_data, previews):
+                encoded, kept = encode_vlm_images_with_indices(sample_preview, config=self.config, logger=self.logger)
+                base64_images_list.append(encoded)
+                labels = item.get(VIEW_LABELS_FIELD)
+                if labels is not None and len(labels) != len(sample_preview):
+                    self.logger.warning(
+                        "%s: %d view labels for %d images; sending the views unlabelled",
+                        item["omni_path"],
+                        len(labels),
+                        len(sample_preview),
+                    )
+                    labels = None
+                labels_list.append([str(labels[i]) for i in kept] if labels is not None else None)
+                hint = item.get(ASSET_HINT_FIELD)
+                if not hint and self.config.vlm_asset_hint:
+                    hint = asset_hint_from_path(item["omni_path"])
+                hints.append(hint or None)
+                if labels is not None or hint:
+                    self.logger.info(
+                        "%s: %d view(s) %s, name hint %s",
+                        item["omni_path"],
+                        len(encoded),
+                        labels_list[-1],
+                        "on" if hint else "off",
+                    )
 
-            output_dict = await self.get_os_content(base64_images_list)
+            output_dict = await self.get_os_content(base64_images_list, labels_list=labels_list, hints=hints)
 
             sample_ind = [sample_ids[i] for i in indices]
             assert len(sample_ind) == len(
@@ -151,10 +180,21 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
             )
         return processed_results
 
-    async def _invoke_vlm_fn(self, base64_images: list[str]) -> BaseModel:
+    async def _invoke_vlm_fn(
+        self,
+        base64_images: list[str],
+        image_labels: Optional[list[str]] = None,
+        asset_hint: Optional[str] = None,
+    ) -> BaseModel:
+        # Only pass what is set, so the default request is the one sent before.
+        extra = {}
+        if image_labels is not None:
+            extra["image_labels"] = image_labels
+        if asset_hint:
+            extra["asset_hint"] = asset_hint
         try:
             res = await asyncio.wait_for(
-                self.metadata_generation.agenerate(base64_images=base64_images),
+                self.metadata_generation.agenerate(base64_images=base64_images, **extra),
                 timeout=self.config.vlm_agenerate_timeout,
             )
         except asyncio.TimeoutError:
@@ -168,10 +208,21 @@ class ImageToVisionMetadata(ImageToEmbedding, BasePlugin):
             return MetadataException(error=f"A VLM invocation error occurred while generating metadata {e}")
         return res
 
-    async def get_os_content(self, base64_images_list) -> dict:
+    async def get_os_content(
+        self,
+        base64_images_list,
+        labels_list: Optional[list[Optional[list[str]]]] = None,
+        hints: Optional[list[Optional[str]]] = None,
+    ) -> dict:
         vision_generated_metadata: MetadataException | BaseModel
+        count = len(base64_images_list)
+        labels_list = labels_list if labels_list is not None else [None] * count
+        hints = hints if hints is not None else [None] * count
         vision_generated_metadata_list: list[MetadataException | BaseModel] = await asyncio.gather(
-            *[self._invoke_vlm_fn(base64_images) for base64_images in base64_images_list]
+            *[
+                self._invoke_vlm_fn(base64_images, image_labels=labels, asset_hint=hint)
+                for base64_images, labels, hint in zip(base64_images_list, labels_list, hints)
+            ]
         )
         os_content = {"vision_generated_metadata": []}
         for vision_generated_metadata in vision_generated_metadata_list:

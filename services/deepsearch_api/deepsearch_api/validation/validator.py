@@ -16,6 +16,7 @@
 import asyncio
 import hashlib
 import logging
+import threading
 from collections import OrderedDict
 from typing import Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
@@ -24,7 +25,7 @@ from llm_client import Validation
 from llm_client.exceptions import LLMBadRequestException, LLMException, ParsingException
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
-from prometheus_client import Counter
+from prometheus_client import Counter, Gauge
 
 from ..cache import RedisValidationCache
 from .config import ValidationSettings
@@ -48,6 +49,48 @@ def _cache_events() -> Counter:
             ["outcome"],
         )
     return _CACHE_EVENTS
+
+
+# Prepared asset views by outcome (llm_client's reference image cache: hit / miss / written / not_kept / bypass);
+# created like _CACHE_EVENTS, only when the cache is on.
+_IMAGE_CACHE_EVENTS: Optional[Counter] = None
+
+
+def _image_cache_events() -> Counter:
+    global _IMAGE_CACHE_EVENTS
+    if _IMAGE_CACHE_EVENTS is None:
+        _IMAGE_CACHE_EVENTS = Counter(
+            "vlm_validation_image_cache_events_total",
+            "VLM validation prepared asset views by outcome (hit/miss/written/not_kept/bypass).",
+            ["outcome"],
+        )
+    return _IMAGE_CACHE_EVENTS
+
+
+# How full the reference image cache is, read from it at each scrape (the latest cache this process opened): its
+# full flag (1 while the last write found the scope at max_mb or the disk at min_free_mb), the bytes of its views and
+# the bytes free on its disk. Created like _CACHE_EVENTS, only when the cache has a directory.
+_IMAGE_CACHE_GAUGES: Optional[Tuple[Gauge, Gauge, Gauge]] = None
+
+
+def _watch_image_cache(image_cache) -> None:
+    global _IMAGE_CACHE_GAUGES
+    if _IMAGE_CACHE_GAUGES is None:
+        _IMAGE_CACHE_GAUGES = (
+            Gauge(
+                "vlm_validation_image_cache_full",
+                "1 while the VLM validation image cache is full (at max_mb, or its disk at min_free_mb): new views "
+                "are prepared per check.",
+            ),
+            Gauge(
+                "vlm_validation_image_cache_bytes", "Bytes of prepared asset views in the VLM validation image cache."
+            ),
+            Gauge("vlm_validation_image_cache_free_bytes", "Bytes free on the disk of the VLM validation image cache."),
+        )
+    full, used, free = _IMAGE_CACHE_GAUGES
+    full.set_function(lambda: float(image_cache.full))
+    used.set_function(lambda: float(image_cache.disk_bytes()[0]))
+    free.set_function(lambda: float(image_cache.disk_bytes()[1]))
 
 
 class VLMValidationError(RuntimeError):
@@ -165,6 +208,19 @@ class SearchResultValidator:
     ) -> None:
         self.settings = settings
         self._validation = Validation(config=settings.to_validation_config())
+        image_cache = self._validation.image_cache
+        if image_cache is not None:
+            events = _image_cache_events()
+            image_cache.on_event = lambda outcome: events.labels(outcome=outcome).inc()
+            logger.info("VLM validation reference image cache: %s", image_cache.describe())
+            if image_cache.directory is not None:
+                _watch_image_cache(image_cache)
+                # What earlier runs left under the root (other settings' directories unused for a day, temp files of
+                # writers that died) goes at every start too, not only when the warm-up runs.
+                self._image_cache_sweep = threading.Thread(
+                    target=image_cache.sweep, name="vlm-image-cache-sweep", daemon=True
+                )
+                self._image_cache_sweep.start()
         self._semaphore = asyncio.Semaphore(settings.max_concurrent)
         # Full config identity (model + params + prompts + schema + endpoint) as a
         # single digest. Part of every cache key so any config change — a new model,

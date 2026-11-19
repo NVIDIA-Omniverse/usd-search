@@ -49,6 +49,7 @@ from urllib.parse import urlparse
 
 import psutil
 
+from .cache_gc import run_cache_gc
 from .exceptions import LoadError, OutOfMemoryError, TimeoutError, UnknownBackendError
 from .models import (
     Authentication,
@@ -65,6 +66,28 @@ logger = logging.getLogger(__name__)
 
 _POLL_INTERVAL = 0.1
 _KILL_JOIN_TIMEOUT = 5.0
+
+
+def start_usd_cache_gc() -> Optional["asyncio.Task[None]"]:
+    """Start bounding the shared resolver cache, if there is one, on the running loop.
+
+    Render children all download into ``OVRTX_USD_CACHE_DIR`` and never evict from it,
+    so the long-lived parent keeps it under ``OVRTX_CACHE_MAX_SIZE_BYTES`` (0 disables).
+    Without ``OVRTX_USD_CACHE_DIR`` each child caches inside its private config dir,
+    which is removed after every render, so there is nothing to bound.
+    """
+    cache_dir = os.getenv("OVRTX_USD_CACHE_DIR")
+    max_size_bytes = int(os.getenv("OVRTX_CACHE_MAX_SIZE_BYTES", str(20 * 1024**3)))
+    if not cache_dir or max_size_bytes <= 0:
+        return None
+    return asyncio.create_task(
+        run_cache_gc(
+            cache_dir,
+            max_size_bytes,
+            float(os.getenv("OVRTX_CACHE_CLEANUP_THRESHOLD", "0.8")),
+            float(os.getenv("OVRTX_CACHE_GC_INTERVAL_SECONDS", "60")),
+        )
+    )
 
 
 def get_camera_positions(render_settings: Optional[Dict[str, Any]] = None) -> List[Any]:
@@ -202,6 +225,24 @@ def _render_one(
         )
 
 
+def _reap_children() -> None:
+    """Reap every already-exited child of this process.
+
+    The NVIDIA driver's NGX component forks an ``nvidia-ngx-updater`` per DLSS feature
+    while the renderer comes up and never waits for them; the binary is not in the
+    image, so they exit at once and stay zombies.  Left unreaped, they are orphaned to
+    PID 1 when the render child exits, and the server running as PID 1 never reaps
+    them either, so every render leaked a few PIDs for the life of the pod.
+    """
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return  # no children left
+        if pid == 0:
+            return  # only still-running children left
+
+
 def _child_render(conn: Connection, spec: Dict[str, Any]) -> None:
     """Child entry point: render every URL in ``spec`` and stream results back.
 
@@ -253,6 +294,7 @@ def _child_render(conn: Connection, spec: Dict[str, Any]) -> None:
         except Exception:  # pylint: disable=broad-except
             pass
     finally:
+        _reap_children()
         conn.close()
 
 

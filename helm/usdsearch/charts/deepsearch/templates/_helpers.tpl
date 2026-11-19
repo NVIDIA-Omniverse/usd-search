@@ -35,6 +35,49 @@ License agreement
 {{- end -}}
 
 {{/*
+Bytes in a Kubernetes quantity ("20Gi", "500M", "1073741824").
+*/}}
+{{- define "deepsearch.quantityToBytes" -}}
+  {{- if kindIs "string" . -}}
+    {{- $number := regexFind "^[0-9]+(\\.[0-9]+)?" . -}}
+    {{- $suffix := trimPrefix $number . -}}
+    {{- $multipliers := dict "" 1 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+    {{- if or (not $number) (not (hasKey $multipliers $suffix)) -}}
+      {{- fail (printf "cannot parse %q as a quantity (expected e.g. 20Gi, 500M or a byte count)" .) -}}
+    {{- end -}}
+    {{- mulf (float64 $number) (index $multipliers $suffix) | int64 -}}
+  {{- else -}}
+    {{- int64 . -}}
+  {{- end -}}
+{{- end -}}
+
+{{/*
+kit-worker asset cache budget in bytes, from a `kit_worker.cache` map; empty
+when there is none. An unset `max_size` defaults to 75% of `size_limit`, so the
+graph builder evicts before the kubelet evicts the pod; `0` disables eviction.
+*/}}
+{{- define "deepsearch.kitWorkerCacheBudget" -}}
+  {{- $maxSize := .max_size -}}
+  {{- $limit := 0 -}}
+  {{- with .size_limit -}}
+    {{- $limit = include "deepsearch.quantityToBytes" . | int64 -}}
+  {{- end -}}
+  {{- if or (kindIs "invalid" $maxSize) (eq (toString $maxSize) "") -}}
+    {{- if $limit -}}
+      {{- div (mul $limit 3) 4 -}}
+    {{- end -}}
+  {{- else -}}
+    {{- $budget := include "deepsearch.quantityToBytes" $maxSize | int64 -}}
+    {{- if and $limit (ge $budget $limit) -}}
+      {{- fail (printf "kit_worker.cache.max_size (%v) must be below kit_worker.cache.size_limit (%v): the size limit evicts the whole plugin-worker pod, the budget is what keeps the cache under it" $maxSize .size_limit) -}}
+    {{- end -}}
+    {{- if gt $budget 0 -}}
+      {{- $budget -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+
+{{/*
 Plugin config
 */}}
 {{- define "deepsearch.plugin-config" -}}
@@ -278,6 +321,8 @@ monitor-crawler computes cache hashes for every metadata plugin.
   value: {{ .input.max_request_bytes | int64 | quote }}
 - name: VLM_METADATA_REVISION
   value: {{ .metadata_revision | quote }}
+- name: VLM_ASSET_HINT
+  value: {{ ternary "true" "false" (eq (lower (toString .asset_hint)) "true") | quote }}
 {{- end -}}
 
 {{/*

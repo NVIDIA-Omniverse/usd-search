@@ -14,8 +14,9 @@
 # limitations under the License.
 
 import asyncio
+import base64
 import logging
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from asset_graph_service_client import AGSAssetGraphApi, ApiClient
 from asset_graph_service_client.api.usd_graph_api import USDGraphApi
@@ -26,12 +27,17 @@ from asset_graph_service_client.exceptions import (
 )
 from deepsearch_api.models import Prim
 from deepsearch_api.routers_v2.models import SearchFilterFields
+from deepsearch_api.search_backend.asset_images import resolve_asset_image_ids
+from deepsearch_api.search_backend.exceptions import (
+    ImageCacheReadError,
+    ImageQueryNotFoundError,
+)
+from deepsearch_api.search_backend.image_loader import BaseImageLoader
 from deepsearch_api.search_backend.main import SearchBackendClientV2
 from deepsearch_api.search_backend.models import (
     DeepSearchSearchRequestV2,
     SearchResponse,
     SearchResult,
-    VectorQuery,
     VectorQueryType,
 )
 from deepsearch_api.search_backend.response_models import StatsResponse
@@ -43,6 +49,7 @@ from search_utils.url_mapping import normalize_upstream_document
 from . import OPENSEARCH_MAX_RESULT_WINDOW
 from .pagination import (
     PageSpec,
+    PaginationError,
     PaginationMode,
     build_cursor,
     decode_cursor,
@@ -51,8 +58,18 @@ from .pagination import (
     rebase_cursor,
 )
 
+if TYPE_CHECKING:
+    from deepsearch_api.cache import RedisImageResolutionCache
+
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+_ASSET_URL_SCHEMES = ("s3://", "omniverse://")
+
+
+def _is_asset_url(query: Any) -> bool:
+    """Whether an image query is a storage URL to load, rather than inline (base64) image data."""
+    return isinstance(query, str) and query.startswith(_ASSET_URL_SCHEMES)
 
 
 async def get_instance_prims_from_search_results(
@@ -169,99 +186,76 @@ class FilteredSearchClient:
         ags_client: ApiClient,
         storage_client: Optional[StorageClient] = None,
         validate_access: bool = False,
+        image_loader: Optional[BaseImageLoader] = None,
+        image_resolution_cache: Optional["RedisImageResolutionCache"] = None,
     ):
         self.search_client = search_client
         self.ags_client = ags_client
         self.storage_client = storage_client
         self.validate_access = validate_access
+        self.image_loader = image_loader
+        self.image_resolution_cache = image_resolution_cache
         self.usd_graph_api = USDGraphApi(api_client=self.ags_client)
 
     @property
     def storage_backend_host(self) -> str:
         return self.storage_client.telemetry_host
 
+    async def _load_query_image(self, url: str) -> bytes:
+        """Bytes to embed for an image query given as an asset URL: its indexed view, else its sidecar thumbnail.
+
+        Raises ``ImageQueryNotFoundError`` when neither exists or the caller cannot see the asset, and
+        ``ImageCacheReadError`` when the image cache could not be read and there is no sidecar to fall back to.
+        """
+        if self._access_filtering_enabled:
+            # The indexed image is read with service credentials, so check visibility explicitly (as GET /images does).
+            async for batch in self.storage_client.batch_verify_access([RemoteFileUri(url)]):
+                if not any(result.exists for result in batch):
+                    raise ImageQueryNotFoundError(f"No image available for image query asset '{url}'")
+
+        cache_error: Optional[ImageCacheReadError] = None
+        if self.image_loader is not None:
+            image_ids = await resolve_asset_image_ids(url, self, self.image_resolution_cache) or []
+            image_id = next((i for i in image_ids if i), None)
+            try:
+                image_b64 = await self.image_loader.fetch_image(image_id) if image_id else None
+            except ImageCacheReadError as e:
+                logger.warning("Image cache read failed for image query asset %s: %s", url, e)
+                cache_error, image_b64 = e, None
+            if image_b64:
+                return base64.b64decode(image_b64)
+
+        # Not indexed (yet), or no image loader: try the sidecar thumbnail on storage.
+        if self.storage_client is not None:
+            try:
+                thumbnail = await self.storage_client.load_thumbnail(uri=RemoteFileUri(url), mode=ThumbnailLoadMode.one)
+            except (FileNotFoundError, NotImplementedError):
+                logger.debug("No sidecar thumbnail for image query asset %s", url)
+            else:
+                return (thumbnail[0] if isinstance(thumbnail, list) else thumbnail).data
+
+        if cache_error is not None:
+            raise cache_error
+        raise ImageQueryNotFoundError(f"No image available for image query asset '{url}'")
+
     async def _download_remote_images(
         self,
         search_request: DeepSearchSearchRequestV2,
     ) -> DeepSearchSearchRequestV2:
-        """Process image queries by downloading images from S3 or Omniverse URLs.
-
-        Args:
-            search_request: The search request containing vector queries
-
-        Returns:
-            Modified search request with downloaded image data
-        """
-        if not search_request.vector_queries and not search_request.image_similarity_search:
+        """Load the image behind every asset-URL image query into the request's downloaded-image store."""
+        urls = [img for img in search_request.image_similarity_search or [] if _is_asset_url(img)]
+        urls += [
+            q.query
+            for q in search_request.vector_queries or []
+            if q.query_type == VectorQueryType.IMAGE and _is_asset_url(q.query)
+        ]
+        urls = list(dict.fromkeys(urls))
+        if not urls:
             return search_request
 
-        # Handle image_similarity_search field if present
-        if search_request.image_similarity_search:
-
-            async def download_image(image_query: str) -> str:
-                """Helper function to download a single image"""
-                if isinstance(image_query, str) and image_query.startswith(("s3://", "omniverse://")):
-                    if not self.storage_client:
-                        logger.warning(f"Storage client not provided, skipping image download for {image_query}")
-                        return image_query
-                    # Use load_thumbnail to get an efficient image representation
-                    thumbnail_data = await self.storage_client.load_thumbnail(
-                        uri=RemoteFileUri(image_query),
-                        mode=ThumbnailLoadMode.one,
-                    )
-                    # thumbnail_data will be either a tuple or list of tuples, we want the first image
-                    image_data = thumbnail_data[0] if isinstance(thumbnail_data, list) else thumbnail_data
-                    search_request.set_downloaded_image(image_query, image_data.data)
-                    return image_query  # Return URL, actual data is stored in _downloaded_images
-                return image_query
-
-            # Process all images in parallel
-            processed_images = await asyncio.gather(
-                *[download_image(img) for img in search_request.image_similarity_search],
-                return_exceptions=False,
-            )
-            search_request.image_similarity_search = processed_images
-
-        # Handle vector queries
-        async def process_vector_query(query: VectorQuery) -> VectorQuery | None:
-            """Helper function to process a single vector query"""
-            if query.query_type != VectorQueryType.IMAGE:
-                return query
-
-            image_query = query.query
-            if not isinstance(image_query, str):
-                return query
-
-            if image_query.startswith(("s3://", "omniverse://")):
-                if not self.storage_client:
-                    logger.warning(f"Storage client not provided, skipping image download for {image_query}")
-                    return None
-
-                # Use load_thumbnail to get an efficient image representation
-                thumbnail_data = await self.storage_client.load_thumbnail(
-                    uri=RemoteFileUri(image_query),
-                    mode=ThumbnailLoadMode.one,
-                )
-                # thumbnail_data will be either a tuple or list of tuples, we want the first image
-                image_data = thumbnail_data[0] if isinstance(thumbnail_data, list) else thumbnail_data
-                search_request.set_downloaded_image(image_query, image_data.data)  # image_data[0] is the bytes
-                # Return query with original URL, actual data is stored in _downloaded_images
-                return VectorQuery(
-                    field_name=query.field_name,
-                    query_type=query.query_type,
-                    query=image_query,
-                )
-            return query
-
-        # Process all vector queries in parallel
-        if search_request.vector_queries:
-            processed_vector_queries = await asyncio.gather(
-                *[process_vector_query(query) for query in search_request.vector_queries],
-                return_exceptions=False,
-            )
-            # Filter out None values (failed downloads)
-            search_request.vector_queries = [q for q in processed_vector_queries if q is not None]
-
+        images = await asyncio.gather(*[self._load_query_image(url) for url in urls])
+        for url, image in zip(urls, images):
+            search_request.set_downloaded_image(url, image)
         return search_request
 
     async def get_usd_properties_stats(self, filters: Optional[SearchFilterFields] = None) -> StatsResponse:
@@ -366,6 +360,16 @@ class FilteredSearchClient:
 
         return search_results
 
+    def _with_window_pinned_to_the_requested_page(
+        self,
+        page: PageSpec,
+        search_request: DeepSearchSearchRequestV2,
+        target: int,
+    ) -> PageSpec:
+        """Size the fusion window before the over-fetch below inflates the limit it would be read from."""
+        window = page.window or self.search_client.default_window_size(search_request, page.raw_offset + target)
+        return page.model_copy(update={"window": window})
+
     async def _search_filling_page(
         self,
         search_request: DeepSearchSearchRequestV2,
@@ -385,10 +389,20 @@ class FilteredSearchClient:
         Two offsets diverge here and the cursor carries both: ``raw_offset`` is
         the position in the backend's ordering to resume from, ``offset`` is how
         many hits the caller has actually received.
+
+        Raises:
+            PaginationError: the cursor resumes somewhere ``from``/``size``
+                cannot reach, which only a replayed cursor can ask for.
         """
+        if not page.search_after and page.raw_offset >= OPENSEARCH_MAX_RESULT_WINDOW:
+            raise PaginationError(
+                f"Pagination offset {page.raw_offset} exceeds the maximum supported depth "
+                f"({OPENSEARCH_MAX_RESULT_WINDOW}) for this query."
+            )
+
         accepted: List[SearchResult] = []
         raw_offset = page.raw_offset
-        resume = page
+        resume = self._with_window_pinned_to_the_requested_page(page, search_request, target)
         response: Optional[SearchResponse] = None
         # True when the page filled up part-way through a batch, leaving visible
         # hits behind that the next page must not skip.
@@ -405,11 +419,15 @@ class FilteredSearchClient:
                 if remaining <= 0:
                     break
 
+                window_room = (
+                    OPENSEARCH_MAX_RESULT_WINDOW if resume.search_after else OPENSEARCH_MAX_RESULT_WINDOW - raw_offset
+                )
+                if window_room <= 0:
+                    break
+
                 # Over-fetch: most callers can see most results, so one round trip
                 # usually suffices. The refills below cover the ones who cannot.
-                search_request.limit = min(
-                    remaining * self.search_client.access_filter_overfetch_factor, OPENSEARCH_MAX_RESULT_WINDOW
-                )
+                search_request.limit = min(remaining * self.search_client.access_filter_overfetch_factor, window_room)
                 response = await self.search_client.search(
                     search_request=search_request,
                     url_whitelist=url_whitelist,
@@ -605,11 +623,7 @@ class FilteredSearchClient:
         # Step 2: Get scene asset whitelist
         url_whitelist = await self._get_scene_asset_whitelist(search_request)
 
-        # Step 3: Resolve the page. Deliberately after the image download, so the
-        # query fingerprint is taken over the request as the backend will actually
-        # see it — downloading can drop a vector query whose image failed to load,
-        # and a fingerprint computed before that would not match the one the next
-        # page recomputes.
+        # Step 3: Resolve the page
         if page is None:
             page = page_spec_for_request(search_request, self.search_client.pagination_max_offset)
             if from_ and not page.is_paginating:

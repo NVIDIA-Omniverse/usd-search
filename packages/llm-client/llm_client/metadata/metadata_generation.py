@@ -20,17 +20,18 @@ chosen by ``MetadataGenerationConfig.model`` (default a Gemini Pro preview).
 """
 
 # standard modules
+import json
 import logging
 import os
 import sys
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 # third party modules
 import backoff
 from langchain_classic.output_parsers import OutputFixingParser
 from langchain_core.messages.ai import AIMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # local / proprietary modules
@@ -47,6 +48,28 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_PARSING_SUPPORTED = sys.version_info >= (3, 12)
 LANGFUSE_ENABLED = os.getenv("LANGFUSE_ENABLED", "false").lower() in ("true", "1")
+
+
+# Appended only when the caller labels its views or passes a name hint; without
+# them the prompt is byte-identical to before.
+LABELLED_VIEWS_SECTION = (
+    "## Labelled views\n"
+    "Each image is labelled with the view it shows (e.g. front, right, back, left, open). "
+    'A view labelled "open" shows the asset with its moving parts (doors, drawers, lids) '
+    "opened: use it to tell what the object is and which parts move, but describe the object "
+    "itself, not one moment of it."
+)
+ASSET_HINT_SECTION = (
+    "## Name hint\n"
+    "What the asset's publisher says it is (its maker or brand, product name, model and file name): "
+    "{hint}. The publishers are the manufacturers and partners who made these assets: always use "
+    "their brand, company and product names and model numbers where the hint gives them, in the "
+    'caption, object_type, queries and tags (for example "FANUC CRX-10iA collaborative robot '
+    'arm"). Ignore any part of it that is only a hash or a random id. Describe what the views '
+    "show; if the hint names a different kind of object than the views clearly show, follow the "
+    "views for what the object is."
+)
+ASSET_HINT_MAX_CHARS = 600
 
 
 def _is_permanent_llm_error(exc: Exception) -> bool:
@@ -76,11 +99,46 @@ class MetadataGenerationConfig(BaseSettings):
         "Env: USDSEARCH_VISION_METADATA_EXTRA_BODY (JSON).",
     )
     max_tokens: int = Field(default=4096)
-    temperature: float = Field(default=0.0)
+    temperature: Optional[float] = Field(default=0.0)
+    structured_output_method: Optional[Literal["json_schema", "json_mode", "function_calling"]] = Field(
+        default=None,
+        description="langchain's structured-output method; unset = json_schema, except json_mode for a "
+        "Claude model (the Inference Hub turns a schema into a forced tool call Claude Opus 5.x refuses). "
+        "Env: USDSEARCH_VISION_METADATA_STRUCTURED_OUTPUT_METHOD.",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="usdsearch_vision_metadata_", populate_by_name=True, protected_namespaces=()
     )
+
+    @field_validator("reasoning_effort", "structured_output_method", mode="before")
+    @classmethod
+    def blank_is_unset(cls, value):
+        # An empty env var means "send none" (e.g. a model that rejects the field).
+        return None if isinstance(value, str) and not value.strip() else value
+
+
+def is_claude_model(model: str) -> bool:
+    return "claude" in model.lower()
+
+
+def request_settings(config: MetadataGenerationConfig) -> dict:
+    """The temperature, reasoning effort and structured-output method actually sent for ``config.model``.
+
+    Claude (Opus 5.x) on the Inference Hub rejects ``temperature`` and a forced tool call, and takes no
+    ``reasoning_effort``: for a Claude model none of the three is sent and the output is requested as
+    JSON (``json_mode``) unless a method is configured. Every other model keeps its configured values."""
+    if is_claude_model(config.model):
+        return {
+            "temperature": None,
+            "reasoning_effort": None,
+            "method": config.structured_output_method or "json_mode",
+        }
+    return {
+        "temperature": config.temperature,
+        "reasoning_effort": config.reasoning_effort,
+        "method": config.structured_output_method,
+    }
 
 
 class MetadataGeneration:
@@ -100,15 +158,16 @@ class MetadataGeneration:
         self._metadata = metadata or Metadata()
         self._system_prompt = system_prompt or self.DEFAULT_SYSTEM_PROMPT
 
+        settings = request_settings(self._config)
         self.client = LLMClient(
             model=self._config.model,
             connection=connection,
             max_tokens=self._config.max_tokens,
-            temperature=self._config.temperature,
-            reasoning_effort=self._config.reasoning_effort,
+            temperature=settings["temperature"],
+            reasoning_effort=settings["reasoning_effort"],
             extra_body=self._config.extra_body,
         )
-        self.client.with_structured_output(schema=self._metadata.base_model)
+        self.client.with_structured_output(schema=self._metadata.base_model, method=settings["method"])
 
         pydantic_parser: PydanticOutputParser[BaseModel] = PydanticOutputParser(
             pydantic_object=self._metadata.base_model
@@ -154,10 +213,21 @@ class MetadataGeneration:
             logger.error("Failed to parse VLM output: %s", e, exc_info=True)
             raise ParsingException(f"Error parsing VLM output: {e}") from e
 
-    def prepare_prompt(self, prompt: Optional[str], extra_context: Optional[str]) -> str:
+    def prepare_prompt(
+        self,
+        prompt: Optional[str],
+        extra_context: Optional[str],
+        image_labels: Optional[list[str]] = None,
+        asset_hint: Optional[str] = None,
+    ) -> str:
         final_prompt = prompt if prompt is not None else self.prompt
         if extra_context:
             final_prompt = f"Additional context about the object: {extra_context}\n\n{final_prompt}"
+        if image_labels:
+            final_prompt = f"{final_prompt}\n\n{LABELLED_VIEWS_SECTION}"
+        hint = " ".join((asset_hint or "").split())[:ASSET_HINT_MAX_CHARS]
+        if hint:
+            final_prompt = f"{final_prompt}\n\n{ASSET_HINT_SECTION.format(hint=json.dumps(hint))}"
         return final_prompt
 
     def _extract_content(self, response: Any) -> str:
@@ -213,9 +283,20 @@ class MetadataGeneration:
         parse_output: bool = True,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        image_labels: Optional[list[str]] = None,
+        asset_hint: Optional[str] = None,
     ) -> BaseModel | str:
+        """``image_labels`` names each image in order ("front", "spin 2", "open");
+        ``asset_hint`` is what the publisher says the asset is (maker, product name,
+        model, file name); the prompt has the model use those names and follow the
+        views for what the object is. Both default to None, which leaves the request
+        exactly as before."""
         llm_only = base64_images is None
-        prepared_prompt = self.prepare_prompt(prompt, extra_context)
+        if image_labels is not None:
+            image_labels = [" ".join(str(label).split()) for label in image_labels]
+            if base64_images is None or len(image_labels) != len(base64_images) or not all(image_labels):
+                raise ValueError("image_labels must name every image, in order")
+        prepared_prompt = self.prepare_prompt(prompt, extra_context, image_labels=image_labels, asset_hint=asset_hint)
         kwargs = self._build_invoke_kwargs(max_tokens, temperature)
         kwargs.update(self._get_langfuse_kwargs())
 
@@ -238,6 +319,8 @@ class MetadataGeneration:
                 label_images=True,
                 **kwargs,
             )
+            if image_labels is not None:
+                invoke_kwargs["image_labels"] = image_labels
             try:
                 response = await ainvoke_fn(prompt=prepared_prompt, **invoke_kwargs)
             except ParsingException as e:

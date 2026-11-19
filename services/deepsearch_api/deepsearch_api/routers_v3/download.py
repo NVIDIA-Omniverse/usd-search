@@ -38,11 +38,16 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasicCredentials
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from starlette.requests import Request
 
 from search_utils.asset_uri import is_search_path_uri, uri_path_spellings
-from search_utils.storage_client import RemoteFileUri, StorageClient
+from search_utils.storage_client import (
+    RemoteFileUri,
+    StorageClient,
+    VerifyBatchAccessResponse,
+)
 from search_utils.url_mapping import (
     normalize_upstream_document,
     rewrite_response_document,
@@ -66,6 +71,34 @@ def _log_safe(value: object) -> str:
     return _LOG_CTRL_CHARS.sub(" ", str(value))
 
 
+_NO_SIZE_REPORTED = "no_size_reported"
+_NOT_FOUND = "not_found"
+_MAX_REASON_CHARS = 200
+
+
+def _error_status(exc: BaseException) -> str:
+    """Report the status a storage failure carries, either itself or on the error it wraps."""
+    for candidate in (exc, exc.__cause__):
+        response = getattr(candidate, "response", None)
+        if not isinstance(response, dict):
+            continue
+        error = response.get("Error")
+        code = (error or {}).get("Code") or response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code:
+            return str(code)
+    return ""
+
+
+def _error_reason(exc: Exception) -> str:
+    """Describe a failure even when the exception itself stringifies to nothing."""
+    reason = type(exc).__name__
+    message = _log_safe(exc).strip()[:_MAX_REASON_CHARS]
+    if message:
+        reason = f"{reason}: {message}"
+    status = _error_status(exc)
+    return f"{reason} ({status})" if status else reason
+
+
 # Mirrors the AGS routers' access-verification toggle so the bundle honours the
 # same ACL policy as the dependency-graph endpoints it builds on.
 ENABLE_ACCESS_VERIFICATION = os.getenv("ENABLE_ACCESS_VERIFICATION", "true").lower() in ("true", "1")
@@ -76,10 +109,10 @@ class DownloadSettings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="download_")
 
-    # Max transitive dependencies to pull from the asset graph for one bundle
-    # (None = unlimited, the default — some scenes legitimately reference more
-    # than any fixed cap; set DOWNLOAD_MAX_DEPENDENCIES to bound it).
-    max_dependencies: Optional[int] = None
+    # Max transitive dependencies to pull from the asset graph for one bundle;
+    # 0 = unlimited (default) — some scenes legitimately reference more than any
+    # fixed cap; set DOWNLOAD_MAX_DEPENDENCIES to bound it.
+    max_dependencies: int = Field(0, ge=0)
     # Max dependency depth to traverse (None = unbounded).
     max_dependency_depth: Optional[int] = None
     # Concurrent per-file downloads while assembling the ZIP (env: DOWNLOAD_CONCURRENCY).
@@ -108,6 +141,20 @@ class DownloadSettings(BaseSettings):
     # Emit a span per bundle member — the only thing covering body-transfer
     # time. One extra span per file; set false where scenes are huge.
     trace_files: bool = True
+    # A dependency URL holding this placeholder names a set of UDIM tiles, not a
+    # file. Graphs built before the builder expanded it record it verbatim; the
+    # bundler then checks tiles udim_probe_first_tile..udim_probe_last_tile
+    # (inclusive; one existence check each; four-digit tiles, 1001-9999) and
+    # bundles those that exist.
+    udim_token: str = Field("<UDIM>", min_length=1)
+    udim_probe_first_tile: int = Field(1001, ge=1001, le=9999)
+    udim_probe_last_tile: int = Field(1099, ge=1001, le=9999)
+
+    @model_validator(mode="after")
+    def _ordered_udim_range(self) -> "DownloadSettings":
+        if self.udim_probe_first_tile > self.udim_probe_last_tile:
+            raise ValueError("DOWNLOAD_UDIM_PROBE_FIRST_TILE must not exceed DOWNLOAD_UDIM_PROBE_LAST_TILE")
+        return self
 
 
 def _strip_scheme(uri: str) -> str:
@@ -224,23 +271,31 @@ async def _collect_dependency_uris(
 
     stats keys:
       - dependencies_reported: total dependency entries returned by the graph
+      - dependencies_truncated: the graph returned as many entries as
+        `max_dependencies` allowed, so the bundle may be missing files
+      - dependencies_unavailable: the graph could not be read at all, so the
+        bundle holds the root asset alone and no dependency was even considered
       - skipped_deleted: deps the graph marks as deleted
       - skipped_not_found / skipped_access_denied: excluded, backend said which
       - skipped_no_access_or_missing: excluded by a backend that cannot separate
         "forbidden" from "absent" (Nucleus)
       - skipped_resolved_elsewhere: not storage objects at all
       - respelled: adopted under their percent-decoded URL (see below)
+      - udim_expanded: ``<UDIM>`` placeholder URLs replaced by their existing tiles
       - skipped: list of {url, reason} for every excluded dependency
     """
     uris: list[str] = [asset_url]
     stats = {
         "dependencies_reported": 0,
+        "dependencies_truncated": False,
+        "dependencies_unavailable": False,
         "skipped_deleted": 0,
         "skipped_not_found": 0,
         "skipped_access_denied": 0,
         "skipped_no_access_or_missing": 0,
         "skipped_resolved_elsewhere": 0,
         "respelled": 0,
+        "udim_expanded": 0,
         "skipped": [],
     }
     try:
@@ -258,6 +313,7 @@ async def _collect_dependency_uris(
             _log_safe(asset_url),
             _log_safe(exc),
         )
+        stats["dependencies_unavailable"] = True
         return uris, stats
 
     # AGS is gateway-exposed in its own right, so on a deployment that publishes
@@ -269,6 +325,14 @@ async def _collect_dependency_uris(
     asset_dependencies = normalize_upstream_document(asset_dependencies)
 
     stats["dependencies_reported"] = len(asset_dependencies)
+    if settings.max_dependencies and stats["dependencies_reported"] >= settings.max_dependencies:
+        stats["dependencies_truncated"] = True
+        logger.warning(
+            "Dependency list for %s hit the %d-entry cap; the bundle may be incomplete. "
+            "Raise or unset DOWNLOAD_MAX_DEPENDENCIES.",
+            _log_safe(asset_url),
+            settings.max_dependencies,
+        )
 
     def _skip(url: str, reason: str) -> None:
         stats[f"skipped_{reason}"] += 1
@@ -285,13 +349,25 @@ async def _collect_dependency_uris(
         else:
             dep_urls.append(a.url)
 
+    # Verdicts the UDIM probes already fetched; the access check reuses them.
+    probe_verdicts: dict[str, VerifyBatchAccessResponse] = {}
+    if dep_urls:
+        with phase("udim_expand_ms"):
+            tiles, probe_verdicts = await _expand_udim_patterns(dep_urls, storage_client, settings)
+        if tiles:
+            stats["udim_expanded"] = len(tiles)
+            dep_urls = [tile for url in dep_urls for tile in tiles.get(url, [url])]
+
     if ENABLE_ACCESS_VERIFICATION and dep_urls:
         # Timed separately from the graph call: this is an existence/ACL check
         # per dependency (batched 500 at a time), and on a large scene it —
         # not the Asset Graph Service — is what `dependency_resolve_ms` is
         # mostly made of.
         with phase("dependency_acl_ms"):
-            verdicts = await service.check_access(dep_urls, storage_client)
+            unchecked = [u for u in dep_urls if u not in probe_verdicts]
+            verdicts = dict(probe_verdicts)
+            if unchecked:
+                verdicts.update(await service.check_access(unchecked, storage_client))
             missing = [u for u in dep_urls if _may_be_respelled(verdicts.get(u))]
             respelled = await _respell_missing(missing, storage_client) if missing else {}
 
@@ -305,6 +381,11 @@ async def _collect_dependency_uris(
             else:
                 _skip(u, service.skip_reason(verdicts.get(u)))
         dep_urls = resolved
+    elif dep_urls:
+        respelled = await _respell_unverified(dep_urls, storage_client, probe_verdicts, phase)
+        if respelled:
+            stats["respelled"] += len(respelled)
+            dep_urls = [respelled.get(u, u) for u in dep_urls]
 
     seen = {asset_url}
     for url in dep_urls:
@@ -312,6 +393,143 @@ async def _collect_dependency_uris(
             seen.add(url)
             uris.append(url)
     return uris, stats
+
+
+#: A UDIM tile number, 1001-9999, as it appears in a listed file name.
+_UDIM_TILE = r"(1\d{3}|[2-9]\d{3})"
+
+
+async def _expand_udim_patterns(
+    urls: list[str],
+    storage_client: StorageClient,
+    settings: "DownloadSettings",
+) -> tuple[dict[str, list[str]], dict[str, VerifyBatchAccessResponse]]:
+    """Map each ``<UDIM>`` dependency URL to the tile URLs that exist, in tile order.
+
+    Nothing is stored under the literal placeholder, so a graph built before the
+    builder expanded it (OMPE-119479) holds a URL that can never resolve, and the
+    tiles the scene renders with are absent from the graph. A pattern with no
+    existing tile is left out of the map, so it is still reported as skipped —
+    the texture really is missing.
+
+    As in the builder's ``expand_udim``, each texture folder is listed once.
+    Only patterns whose folder cannot be listed, or lists no tile, fall back to
+    probing ``udim_probe_first_tile..udim_probe_last_tile`` in one batch. The
+    verdicts those probes fetched are returned too, so the access check that
+    follows does not ask for them again.
+
+    Each URL is tried under every spelling (``uri_path_spellings``): a graph built
+    before ``graph_url`` can hold the path percent-encoded — the placeholder too,
+    as ``%3CUDIM%3E`` — while the backend keys the tiles raw. Per tile, the first
+    spelling found is kept, the original first, as ``_respell_missing`` does.
+    """
+    token = settings.udim_token
+    patterns = {url: spellings for url in urls if (spellings := [s for s in uri_path_spellings(url) if token in s])}
+    if not patterns:
+        return {}, {}
+    found = await _list_udim_tiles(patterns, storage_client, token)
+    verdicts: dict[str, VerifyBatchAccessResponse] = {}
+    unlisted = {url: spellings for url, spellings in patterns.items() if url not in found}
+    if unlisted:
+        probed, verdicts = await _probe_udim_tiles(unlisted, storage_client, settings)
+        found.update(probed)
+    if found:
+        logger.info(
+            "Bundled %d UDIM tile(s) for %d placeholder dependency URL(s) the asset graph stored verbatim, e.g. %s",
+            sum(len(t) for t in found.values()),
+            len(found),
+            _log_safe(next(iter(found))),
+        )
+    return {url: found[url] for url in patterns if url in found}, verdicts
+
+
+def _split_udim_spelling(spelling: str, token: str) -> Optional[tuple[str, str, str]]:
+    """``(folder, prefix, suffix)`` around a placeholder in the file name, else ``None``."""
+    folder, _, name = spelling.rpartition("/")
+    if not folder or token not in name:
+        return None
+    prefix, _, suffix = name.partition(token)
+    return folder, prefix, suffix
+
+
+async def _list_udim_tiles(
+    patterns: dict[str, list[str]], storage_client: StorageClient, token: str
+) -> dict[str, list[str]]:
+    """The tiles each pattern's folder listing holds, one listing per folder and prefix.
+
+    A tile URL is the pattern's own spelling with the tile number filled in, so
+    it keeps the URL form the graph uses even when the listing reports another
+    (S3 lists ``s3://`` keys for an ``https://`` dependency).
+    """
+    listings = {
+        (parts[0], f"{parts[0]}/{parts[1]}"): None
+        for spellings in patterns.values()
+        for spelling in spellings
+        if (parts := _split_udim_spelling(spelling, token))
+    }
+    names = dict(
+        zip(
+            listings,
+            await asyncio.gather(*(_listed_names(storage_client, folder, prefix) for folder, prefix in listings)),
+        )
+    )
+    found: dict[str, list[str]] = {}
+    for url, spellings in patterns.items():
+        tiles: dict[int, str] = {}
+        for spelling in spellings:  # the original spelling first: it wins a tile both spell
+            if not (parts := _split_udim_spelling(spelling, token)):
+                continue
+            folder, prefix, suffix = parts
+            tile = re.compile(re.escape(prefix) + _UDIM_TILE + re.escape(suffix))
+            for name in names.get((folder, f"{folder}/{prefix}")) or ():
+                if match := tile.fullmatch(name):
+                    tiles.setdefault(int(match.group(1)), spelling.replace(token, match.group(1), 1))
+        if tiles:
+            found[url] = [tiles[n] for n in sorted(tiles)]
+    return found
+
+
+async def _listed_names(storage_client: StorageClient, folder_uri: str, literal_prefix_uri: str) -> Optional[set[str]]:
+    """File names directly inside ``folder_uri`` the backend lists, or ``None`` if it cannot list it."""
+    folder = folder_uri.rpartition("/")[2]
+    names: set[str] = set()
+    try:
+        async for uri in storage_client.list_uris_with_prefix(
+            literal_prefix_uri=literal_prefix_uri, folder_uri=folder_uri
+        ):
+            parent, _, name = uri.rstrip("/").rpartition("/")
+            # A prefix listing (S3) also reaches keys in subfolders that share the prefix.
+            if parent.rpartition("/")[2] == folder:
+                names.add(name)
+    except Exception as exc:  # noqa: BLE001 — an unlistable folder falls back to probing
+        logger.debug("Could not list %s for UDIM tiles: %s", _log_safe(folder_uri), _log_safe(exc))
+        return None
+    return names
+
+
+async def _probe_udim_tiles(
+    patterns: dict[str, list[str]], storage_client: StorageClient, settings: "DownloadSettings"
+) -> tuple[dict[str, list[str]], dict[str, VerifyBatchAccessResponse]]:
+    """Check the configured tile range under every spelling, in one batch, and return the verdicts too."""
+    token = settings.udim_token
+    tile_numbers = range(settings.udim_probe_first_tile, settings.udim_probe_last_tile + 1)
+    # (url, tile) -> that tile under each spelling, in preference order.
+    tiles = {
+        (url, n): [spelling.replace(token, str(n), 1) for spelling in spellings]
+        for url, spellings in patterns.items()
+        for n in tile_numbers
+    }
+    verdicts = await service.check_access(list({c: None for cs in tiles.values() for c in cs}), storage_client)
+    found: dict[str, list[str]] = {}
+    for (url, _), candidates in tiles.items():
+        for candidate in candidates:
+            verdict = verdicts.get(candidate)
+            # A tile that exists but is unreadable still counts: the access check
+            # that follows then reports it as access_denied instead of dropping it.
+            if verdict is not None and (verdict.exists or verdict.access_denied is True):
+                found.setdefault(url, []).append(candidate)
+                break
+    return found, verdicts
 
 
 #: Every `skipped_*` counter, in the order a bundle summary reports them.
@@ -328,6 +546,8 @@ def _bundle_summary(dep_stats: dict, downloaded: int, failed: int) -> dict:
     """The per-bundle summary shared by the preview, the manifest and the header."""
     return {
         "dependencies_reported": dep_stats["dependencies_reported"],
+        "dependencies_truncated": dep_stats["dependencies_truncated"],
+        "dependencies_unavailable": dep_stats["dependencies_unavailable"],
         "downloaded": downloaded,  # includes the root asset
         **{key: dep_stats[key] for key in _SKIP_COUNTERS},
         "respelled": dep_stats["respelled"],
@@ -383,6 +603,25 @@ async def _respell_missing(
             *[_log_safe(x) for x in next(iter(adopted.items()))],
         )
     return adopted
+
+
+async def _respell_unverified(
+    urls: list[str],
+    storage_client: StorageClient,
+    probe_verdicts: dict[str, VerifyBatchAccessResponse],
+    phase,
+) -> dict[str, str]:
+    """Map dependency URLs to a spelling that resolves, when no ACL pass checked them."""
+    candidates = [url for url in urls if len(uri_path_spellings(url)) > 1]
+    if not candidates:
+        return {}
+    with phase("dependency_acl_ms"):
+        verdicts = {url: probe_verdicts[url] for url in candidates if url in probe_verdicts}
+        unchecked = [url for url in candidates if url not in verdicts]
+        if unchecked:
+            verdicts.update(await service.check_access(unchecked, storage_client))
+        missing = [url for url in candidates if _may_be_respelled(verdicts.get(url))]
+        return await _respell_missing(missing, storage_client) if missing else {}
 
 
 @router.get(
@@ -500,6 +739,8 @@ async def download_asset(
                 asset_url, async_ags_client, storage_client, settings, phase=_phase
             )
         stats["dependencies_reported"] = dep_stats["dependencies_reported"]
+        stats["dependencies_truncated"] = dep_stats["dependencies_truncated"]
+        stats["dependencies_unavailable"] = dep_stats["dependencies_unavailable"]
         # Unchanged meaning — every non-deletion skip — so existing dashboards stay
         # valid; the new counters break it down without replacing it.
         stats["n_skipped_no_access"] = (
@@ -510,11 +751,15 @@ async def download_asset(
         stats["n_skipped_deleted"] = dep_stats["skipped_deleted"]
         stats["n_skipped_resolved_elsewhere"] = dep_stats["skipped_resolved_elsewhere"]
         stats["n_respelled"] = dep_stats["respelled"]
+        stats["n_udim_expanded"] = dep_stats["udim_expanded"]
         span.set_attribute("file_count", len(uris))
         span.set_attribute("dependencies_skipped", sum(dep_stats[key] for key in _SKIP_COUNTERS))
         for key in _SKIP_COUNTERS:
             span.set_attribute(key, dep_stats[key])
         span.set_attribute("dependencies_respelled", dep_stats["respelled"])
+        span.set_attribute("dependencies_udim_expanded", dep_stats["udim_expanded"])
+        span.set_attribute("dependencies_truncated", dep_stats["dependencies_truncated"])
+        span.set_attribute("dependencies_unavailable", dep_stats["dependencies_unavailable"])
 
         # Size-only mode: HEAD every file (no body transfer) and report the bundle
         # size so a UI can show it before the user commits to a full download.
@@ -525,9 +770,13 @@ async def download_asset(
                 async with head_semaphore:
                     try:
                         item = await storage_client.head_item(uri)
-                        return uri, (item.size if item and item.size is not None else None), None
+                        if item is None:
+                            return uri, None, _NOT_FOUND
+                        if item.size is None:
+                            return uri, None, _NO_SIZE_REPORTED
+                        return uri, item.size, None
                     except Exception as exc:  # noqa: BLE001 — best-effort per file
-                        return uri, None, str(exc)
+                        return uri, None, _error_reason(exc)
 
             with _phase("size_check_ms"):
                 head_results = await asyncio.gather(*[_head(u) for u in uris])
@@ -653,7 +902,7 @@ async def download_asset(
                         logger.warning("Failed to download %s: %s", _log_safe(uri), _log_safe(exc))
                         if fetch_span is not None:
                             fetch_span.set_attribute("error_type", type(exc).__name__)
-                        return uri, None, str(exc)
+                        return uri, None, _error_reason(exc)
                     finally:
                         fetch_durations.append((time.perf_counter() - started) * 1000)
 

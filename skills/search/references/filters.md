@@ -68,6 +68,9 @@ raw text — never block the search on the parser.
     (e.g. `wikidata_class=~*rack with shelves*`). `key=` matches existence.
     Also: `filter_by_properties_include_any` (OR), `exclude_filter_by_properties`
     (NOT), `filter_by_properties_numeric` (ranges, e.g. `__polygon_count<5000`).
+    Version strings (`"3.0.0"`) are not numeric: use `filter_by_properties_version`
+    (e.g. `simready_metadata_validation__profile_version>=2.0.0`), which compares
+    with version ordering.
   - In the Explorer's USD Properties input the same is typed as `key=value`
     (exact) or `key:: value` (pattern → `key=~*value*`).
 - **Date**: `created_after`, `modified_after` (`YYYY-MM-DD`)

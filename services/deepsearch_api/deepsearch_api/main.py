@@ -59,7 +59,9 @@ from deepsearch_api.search_backend.embeddings import (
     USDSearchEmbeddingClient,
 )
 from deepsearch_api.search_backend.exceptions import (
+    ImageCacheReadError,
     ImageProcessingError,
+    ImageQueryNotFoundError,
     ScoringConfigQueryMismatchError,
 )
 from deepsearch_api.search_backend.main import SearchBackendClientV2, SearchSettings
@@ -398,6 +400,22 @@ async def image_processing_error(request: Request, exc: ImageProcessingError) ->
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content={"error": "Image processing error.", "details": str(exc)},
+    )
+
+
+@app.exception_handler(ImageQueryNotFoundError)
+async def image_query_not_found_error(request: Request, exc: ImageQueryNotFoundError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"error": "Image query not found.", "details": rewrite_response_text(str(exc))},
+    )
+
+
+@app.exception_handler(ImageCacheReadError)
+async def image_cache_read_error(request: Request, exc: ImageCacheReadError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"error": "Image cache temporarily unavailable.", "details": rewrite_response_text(str(exc))},
     )
 
 

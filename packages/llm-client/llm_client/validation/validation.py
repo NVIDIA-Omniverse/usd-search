@@ -23,9 +23,11 @@ using one shared Inference Hub connection and the model from ``ValidationConfig`
 import asyncio
 import base64
 import hashlib
+import inspect
 import io
 import logging
 import math
+import os
 import re
 import threading
 from typing import Any, Mapping, Optional, Sequence
@@ -33,7 +35,8 @@ from typing import Any, Mapping, Optional, Sequence
 # third party modules
 import backoff
 import orjson
-from PIL import Image, ImageOps
+import PIL
+from PIL import Image, ImageOps, features
 from pydantic import BaseModel, ValidationError
 
 # local / proprietary modules
@@ -44,6 +47,7 @@ from ..exceptions import (
     LLMLengthException,
     ParsingException,
 )
+from .image_cache import MB, SCOPE_CHARS, ReferenceImageCache
 from .validation_fields import ValidationConfig, ValidationFields
 
 logger = logging.getLogger(__name__)
@@ -159,6 +163,35 @@ LOGPROB_JUDGE_PROMPT_IMAGE_TEXT_QUERY = (
 # Distinct query images whose encoding is kept (see Validation._encode_query_image).
 QUERY_IMAGE_MEMO_SIZE = 4
 
+# image_format: jpeg. Quality 90 at 448 px is what SimReady Central's validator sends the same engine. Transparency
+# is composited onto white because that is what a vLLM-served model saw in a transparent PNG: vLLM's media loader
+# (v0.29 multimodal/image.py convert_image_mode, default rgba_background_color (255, 255, 255)) pastes any image
+# with transparency (RGBA, LA, PA, or a tRNS key on a non-RGB image) onto white before the model's processor sees
+# it; an RGB image passes as it is.
+JPEG_QUALITY = 90
+JPEG_BACKGROUND = (255, 255, 255)
+# Chroma subsampling, passed explicitly so the cache identity pins it: 2 = 4:2:0, what Pillow picks by itself at quality
+# 90, so the bytes are the ones it sent before this was explicit.
+JPEG_SUBSAMPLING = 2
+
+# What turns a stored image into the view a check sends: the methods, the settings and the constants they read. The
+# reference image cache's scope (Validation.image_encoding_identity) holds all of it, the methods by their code, so
+# a change to any of them never serves a view prepared before it (tests/test_validation_image_cache.py checks the
+# lists against the methods' code).
+IMAGE_ENCODER_METHODS = (
+    "_encode_image",
+    "_load_image",
+    "_is_base64",
+    "_base64_to_image",
+    "_fit",
+    "_to_rgb",
+    "_image_to_base64",
+)
+IMAGE_ENCODER_SETTINGS = ("image_max_px", "image_format", "min_base64_detect_len")
+IMAGE_ENCODER_CONSTANTS = ("JPEG_QUALITY", "JPEG_BACKGROUND", "JPEG_SUBSAMPLING")
+# Pillow's libraries that decode a stored image or encode a view.
+IMAGE_CODECS = ("jpg", "libjpeg_turbo", "zlib", "zlib_ng", "webp")
+
 
 class _EncodedQueryImage:
     """One query image's encoding: set once by the thread that computes it, read by every verdict that asks."""
@@ -199,10 +232,16 @@ class Validation:
             "path": self._config.logprob_asset_path_max_chars,
             "vlm_metadata_caption": self._config.logprob_asset_caption_max_chars,
         }
+        self._image_cache = self._open_image_cache()
 
     @property
     def config(self) -> ValidationConfig:
         return self._config
+
+    @property
+    def image_cache(self) -> Optional[ReferenceImageCache]:
+        """The reference image cache (``image_cache_dir`` / ``image_cache_memory_mb``), or ``None`` when off."""
+        return self._image_cache
 
     @property
     def model(self) -> str:
@@ -264,6 +303,16 @@ class Validation:
         # when on, so verdicts cached before the knob existed keep their fingerprint.
         if self._config.image_max_px > 0:
             identity["image_max_px"] = self._config.image_max_px
+        # A lossy encode changes the pixels too (with image_max_px, so does the reduced-scale JPEG decode it
+        # brings). Recorded only for jpeg, so png verdicts keep their fingerprint and a future format never shares
+        # JPEG's settings.
+        if self._config.image_format == "jpeg":
+            identity["image_format"] = {
+                "format": "jpeg",
+                "quality": JPEG_QUALITY,
+                "subsampling": "4:2:0",
+                "background": list(JPEG_BACKGROUND),
+            }
         # The log-prob method ignores the structured system_prompt/output_schema and
         # instead reads P(Yes)/P(No) from the one-word judge call, so its
         # verdict-changing inputs are the judge prompts + token/threshold config. Fold
@@ -305,11 +354,53 @@ class Validation:
         blob = orjson.dumps(self.config_identity(), option=orjson.OPT_SORT_KEYS)
         return hashlib.sha256(blob).hexdigest()
 
+    def image_encoding_identity(self) -> dict[str, Any]:
+        """Everything besides the stored image that shapes a prepared asset view: the reference image cache's scope.
+
+        The image settings and constants the encoder reads, Pillow's version and its codecs' versions, and a digest
+        of the encoder methods' code (as this class defines them). Not part of the verdict identity: a cached view is
+        byte-identical to the one prepared per check.
+        """
+        code = hashlib.sha256()
+        for name in IMAGE_ENCODER_METHODS:
+            code.update(inspect.getsource(getattr(type(self), name)).encode("utf-8"))
+        codecs: dict[str, Optional[str]] = {}
+        for name in IMAGE_CODECS:
+            try:
+                codecs[name] = features.version(name)
+            except Exception:  # a library this Pillow does not know
+                codecs[name] = None
+        return {
+            "settings": {name: getattr(self._config, name) for name in IMAGE_ENCODER_SETTINGS},
+            "constants": {name: globals()[name] for name in IMAGE_ENCODER_CONSTANTS},
+            "pillow": PIL.__version__,
+            "codecs": codecs,
+            "code": code.hexdigest(),
+        }
+
+    def _open_image_cache(self) -> Optional[ReferenceImageCache]:
+        """The reference image cache the config asks for, or ``None``: off, or its scope cannot be read."""
+        config = self._config
+        if not config.image_cache_dir and config.image_cache_memory_mb <= 0:
+            return None
+        try:
+            blob = orjson.dumps(self.image_encoding_identity(), option=orjson.OPT_SORT_KEYS)
+        except Exception as e:  # e.g. the encoder's source is not installed
+            logger.warning("Reference image cache off: cannot read what shapes a prepared view (%s)", e)
+            return None
+        scope = hashlib.sha256(blob).hexdigest()[:SCOPE_CHARS]
+        return ReferenceImageCache(
+            os.path.join(config.image_cache_dir, scope) if config.image_cache_dir else None,
+            max_bytes=config.image_cache_max_mb * MB,
+            min_free_bytes=config.image_cache_min_free_mb * MB,
+            memory_bytes=config.image_cache_memory_mb * MB,
+        )
+
     @staticmethod
-    def _image_to_base64(image: Image.Image, format: str = "PNG") -> str:
-        """Convert a PIL Image to base64 string."""
+    def _image_to_base64(image: Image.Image, format: str = "PNG", **save_options) -> str:
+        """Convert a PIL Image to base64 string (``save_options`` go to ``Image.save``, e.g. a JPEG ``quality``)."""
         buffer = io.BytesIO()
-        image.save(buffer, format=format)
+        image.save(buffer, format=format, **save_options)
         buffer.seek(0)
         return base64.b64encode(buffer.read()).decode("utf-8")
 
@@ -343,14 +434,19 @@ class Validation:
         image_data = base64.b64decode(base64_string)
         return Image.open(io.BytesIO(image_data))
 
-    def _load_image(self, image_input: str | Image.Image) -> Image.Image:
+    def _load_image(self, image_input: str | Image.Image, draft_px: int = 0) -> Image.Image:
         """Load an image from a file path, base64 string, or return the PIL Image directly.
 
-        Honors the EXIF orientation tag: the loaded image is re-encoded to PNG
+        Honors the EXIF orientation tag: the loaded image is re-encoded
         before it reaches the VLM (``_image_to_base64``), which strips EXIF —
         without the transpose a rotated query photo would be judged sideways
         (mirroring the embedding-side fix in this same flow). Pipeline-rendered
         thumbnails carry no orientation tag, so they pass through unchanged.
+
+        ``draft_px`` > 0 decodes a JPEG file at the smallest DCT scale (1/2, 1/4, 1/8) that still covers the box
+        the image is fitted to (longest edge ``draft_px``): a 1024-px thumbnail at 512 for 448, a 1920x1080 photo
+        at 480x270 for 448x252. About a third of the CPU of a full decode and resize. A file that already fits,
+        other formats and PIL images load as they are.
         """
         if isinstance(image_input, Image.Image):
             image = image_input
@@ -359,6 +455,11 @@ class Validation:
                 image = self._base64_to_image(image_input)
             else:
                 image = Image.open(image_input)
+            if draft_px > 0 and image.format == "JPEG" and max(image.size) > draft_px:
+                width, height = image.size
+                longest = max(width, height)
+                # The fitted box, rounded up: draft never decodes below the size it is asked for.
+                image.draft(None, (-(-width * draft_px // longest), -(-height * draft_px // longest)))
         else:
             raise ValueError(f"Unsupported image input type: {type(image_input)}")
         return ImageOps.exif_transpose(image) or image
@@ -367,7 +468,7 @@ class Validation:
         """Shrink ``image`` so its longest edge is at most ``config.image_max_px`` (in place unless its mode changes).
 
         No-op when the knob is 0 or the image already fits (never enlarged). The mode is
-        changed only where the resize or the PNG re-encode needs it: palette and 1-bit
+        changed only where the resize or the PNG encode needs it: palette and 1-bit
         images would otherwise resample with NEAREST, and CMYK/YCbCr cannot be saved as
         PNG. Everything else keeps its mode, so an alpha channel survives (flattening it
         would turn transparent regions into their stored colour and change the verdict).
@@ -384,19 +485,43 @@ class Validation:
         image.thumbnail((max_px, max_px), Image.Resampling.LANCZOS)
         return image
 
+    @staticmethod
+    def _to_rgb(image: Image.Image) -> Image.Image:
+        """``image`` as RGB for a JPEG, the way vLLM's convert_image_mode turns the PNG it is sent into RGB: an RGB
+        image as it is (a tRNS key too), any other transparency (alpha, or a tRNS key on P/L) composited onto
+        ``JPEG_BACKGROUND`` (white), everything else converted."""
+        if image.mode == "RGB":
+            return image
+        if image.mode in ("RGBA", "RGBa", "LA", "La", "PA") or "transparency" in image.info:
+            rgba = image.convert("RGBA")
+            flat = Image.new("RGB", rgba.size, JPEG_BACKGROUND)
+            flat.paste(rgba, mask=rgba.getchannel("A"))
+            return flat
+        return image.convert("RGB")
+
     def _encode_image(self, image_input: str | Image.Image) -> str:
-        """Load, fit to ``image_max_px`` and base64-PNG-encode one image (query or reference)."""
-        image = self._load_image(image_input)
+        """Load, fit to ``image_max_px`` and base64-encode one image (query or reference) as ``image_format``.
+
+        jpeg: a JPEG file decodes at a reduced DCT scale (``_load_image``), the image is fitted as for png and then
+        flattened to RGB on white, so a vLLM-served model sees the png path's pixels up to the JPEG loss (and, for a
+        JPEG thumbnail, the reduced-scale decode).
+        """
+        jpeg = self._config.image_format == "jpeg"
+        image = self._load_image(image_input, draft_px=self._config.image_max_px if jpeg else 0)
         if image is image_input:
             # exif_transpose returns a copy on current Pillow; never resize a caller's image in place.
             image = image.copy()
+        if jpeg:
+            return self._image_to_base64(
+                self._to_rgb(self._fit(image)), format="JPEG", quality=JPEG_QUALITY, subsampling=JPEG_SUBSAMPLING
+            )
         return self._image_to_base64(self._fit(image))
 
     def _encode_query_image(self, query: str | Image.Image) -> str:
         """:meth:`_encode_image` for a query image, computed once per distinct input.
 
         Every asset of a page is judged against the same query image, and encoding it is the costly
-        part of preparing a verdict (~40-55 ms of CPU for a 1920-px upload: decode, fit, PNG encode).
+        part of preparing a verdict (~40-55 ms of CPU for a 1920-px upload: decode, fit, encode).
         Concurrent callers wait for the first one's result. A failed encode is not kept: the waiters
         and the next call encode it themselves. A PIL image is encoded every time (it may change).
         """
@@ -439,10 +564,29 @@ class Validation:
         return False
 
     def _encode_reference_images(self, reference_images) -> list[str]:
-        """Load + base64-PNG-encode the asset views (the query image, if any, is added by the caller)."""
+        """Load + base64-encode the asset views (the query image, if any, is added by the caller), through the
+        reference image cache when it is on."""
         if not reference_images:
             raise ValueError("At least one reference image must be provided")
-        return [self._encode_image(ref_img) for ref_img in reference_images]
+        cache = self._image_cache
+        if cache is None:
+            return [self._encode_image(ref_img) for ref_img in reference_images]
+        return [self._encode_reference_image(cache, ref_img) for ref_img in reference_images]
+
+    def _encode_reference_image(self, cache: ReferenceImageCache, image) -> str:
+        # Only base64 asset views (stored, or sent inline to /vlm_validate, which repeat as stored ones do): a path's
+        # file can change under its name, a PIL image is the caller's object.
+        if isinstance(image, str) and self._is_base64(image):
+            return cache.prepare(image, self._encode_image)
+        cache.count("bypass")
+        return self._encode_image(image)
+
+    def prepare_reference_images(self, reference_images) -> list[str]:
+        """The asset views a check sends for ``reference_images``, through the reference image cache when it is on.
+
+        The cache warm-up fills the cache this way, so it holds exactly what a check would write.
+        """
+        return self._encode_reference_images(reference_images)
 
     def _build_images_and_prompt(self, query, reference_images, asset_caption):
         """Build the base64 image list + strict-match user prompt of the generative method.
@@ -588,7 +732,7 @@ class Validation:
         asset_facts: Optional[Mapping[str, Optional[str]]] = None,
     ) -> bool | BaseModel | None:
         """Log-prob relevance judge: one forward pass, verdict read from P(Yes)/P(No)."""
-        # Decode/resize/PNG-encode is CPU-bound (~20 ms per 1024-px image): keep it off the event loop.
+        # Decode/resize/encode is CPU-bound (~20 ms per 1024-px image): keep it off the event loop.
         base64_images, user_prompt = await asyncio.to_thread(
             self._prepare_logprob, query, reference_images, asset_caption, asset_facts
         )

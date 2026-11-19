@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import math
+import urllib.parse
 from typing import Sequence, TypeVar
 
 from PIL import Image
@@ -26,6 +27,7 @@ from search_utils.misc_utils import image_to_base64
 from .config import VisionMetadataPluginConfig
 
 T = TypeVar("T")
+logger = logging.getLogger(__name__)
 
 # This identifier is part of the asset-state fingerprint of deployments that
 # opted in with a metadata revision. Change it whenever encoding/sampling policy
@@ -45,6 +47,42 @@ VLM_REQUEST_PER_IMAGE_OVERHEAD_BYTES = 128
 # far as one pixel so a failure is raised only when the byte limit is truly
 # impossible to satisfy. Tiny input images are never upscaled.
 VLM_MIN_IMAGE_MAX_PX = 64
+
+
+# Optional batch-item keys a caller may set beside the images: one label per
+# image ("front", "spin 2", "open"), in order, and a name hint for the asset.
+# Nothing in this repo sets `view_labels`: the thumbnail path only passes them
+# through, so its views go unlabelled unless the producer of the batch items
+# (a custom loader, a later view-classification pass) fills them.
+VIEW_LABELS_FIELD = "view_labels"
+ASSET_HINT_FIELD = "asset_hint"
+
+
+def carry_view_inputs(data: Sequence[dict], batch_data: list, indices: list[int], images_field: str) -> None:
+    """Copy each kept item's view labels and name hint from the raw ``data`` onto
+    its prepared ``batch_data`` entry. Labels follow the images preprocessing
+    kept (a 1x1 placeholder image is dropped, so is its label)."""
+
+    for entry, index in zip(batch_data, indices):
+        item = data[index]
+        hint = item.get(ASSET_HINT_FIELD)
+        if hint:
+            entry[ASSET_HINT_FIELD] = str(hint)
+        labels = item.get(VIEW_LABELS_FIELD)
+        images = item.get(images_field) or []
+        if labels is None:
+            continue
+        if len(labels) != len(images):
+            logger.warning(
+                "%s: %d view labels for %d images; sending the views unlabelled",
+                item.get("omni_path"),
+                len(labels),
+                len(images),
+            )
+            continue
+        kept = [str(label) for label, image in zip(labels, images) if image.size != (1, 1)]
+        if len(kept) == len(entry[images_field]):
+            entry[VIEW_LABELS_FIELD] = kept
 
 
 class VLMPayloadBudgetError(ValueError):
@@ -73,6 +111,10 @@ def vision_metadata_asset_state_hash(hash_value: str, config: VisionMetadataPlug
         "max_request_bytes": config.vlm_max_request_bytes,
         "revision": config.vlm_metadata_revision,
     }
+    if config.vlm_asset_hint:
+        # Only present when on, so opted-in deployments that never use it keep
+        # their fingerprint (and are not reprocessed) on upgrade.
+        fingerprint_input["asset_hint"] = True
     serialized = json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
     fingerprint = hashlib.sha256(serialized).hexdigest()
     return f"{hash_value}_vision_metadata_{fingerprint}"
@@ -135,9 +177,33 @@ def encode_vlm_images(
     is performed on copies, so callers' images and sequences are unchanged.
     """
 
-    selected = uniformly_sample(images, config.vlm_max_images)
-    if not selected:
-        return []
+    return encode_vlm_images_with_indices(images, config=config, logger=logger)[0]
+
+
+def asset_hint_from_path(omni_path: str, folders: int = 2) -> str:
+    """The asset's file name and its nearest folders, e.g.
+    ``refrigerator_f01/simready_usd/sm_refrigerator_f01_01.usd`` — no scheme,
+    host, bucket or revision (those name the store, not the object)."""
+
+    path = urllib.parse.unquote(
+        urllib.parse.urlsplit(str(omni_path)).path if "://" in str(omni_path) else str(omni_path)
+    )
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    return "/".join(parts[-(folders + 1) :])
+
+
+def encode_vlm_images_with_indices(
+    images: Sequence[Image.Image],
+    config: VisionMetadataPluginConfig,
+    logger: logging.Logger | None = None,
+) -> tuple[list[str], list[int]]:
+    """``encode_vlm_images`` plus the input index of every image kept, in order,
+    so a caller's per-image labels follow the sampling."""
+
+    selected_indices = uniformly_sample(range(len(images)), config.vlm_max_images)
+    if not selected_indices:
+        return [], []
+    selected = [images[index] for index in selected_indices]
 
     initial_prepared = _resize_copies(selected, config.vlm_image_max_px)
     initial_count = len(initial_prepared)
@@ -148,7 +214,8 @@ def encode_vlm_images(
         # Always choose each candidate set from the original selection. Sampling
         # an already sampled list repeatedly would compound rounding errors and
         # progressively skew the retained views.
-        prepared = uniformly_sample(initial_prepared, candidate_count)
+        positions = uniformly_sample(range(initial_count), candidate_count)
+        prepared = [initial_prepared[position] for position in positions]
         current_max_px = max(max(image.size) for image in prepared)
         minimum_max_px = 1 if len(prepared) == 1 else min(VLM_MIN_IMAGE_MAX_PX, current_max_px)
         working = list(prepared)
@@ -165,7 +232,7 @@ def encode_vlm_images(
                         request_bytes,
                         config.vlm_max_request_bytes,
                     )
-                return encoded
+                return encoded, [selected_indices[position] for position in positions]
 
             if current_max_px <= minimum_max_px:
                 break

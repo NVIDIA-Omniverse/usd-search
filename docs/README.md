@@ -75,6 +75,8 @@ source of truth shared by **Claude** and **Codex Desktop** (`.claude/skills` and
 - [Monitoring](../helm/usdsearch/README.md#monitoring) — enable the built-in
   Grafana dashboards for indexing progress and system state.
 - [`openapi.html`](openapi.html) — rendered REST API reference.
+- [Calling the REST API from code](api-clients.md) — generate a client from the
+  OpenAPI spec (Python and other languages); `usd-search-client` is deprecated.
 
 ## Beta features
 
@@ -90,5 +92,3 @@ source of truth shared by **Claude** and **Codex Desktop** (`.claude/skills` and
   Helm, the quickstart compose stack, CI, and known pitfalls. It also covers
   **maintaining the agent skills and these docs** (update checklist, public-safety
   rules, skill-discovery paths).
-- [Search-quality benchmark](../benchmark/README.md) — the agent-driven benchmark
-  for evaluating retrieval quality.

@@ -70,6 +70,12 @@ from .pagination import (
     build_cursor,
     fingerprint_request,
 )
+from .property_versions import (
+    PropertyValues,
+    PropertyValuesCache,
+    matching_values,
+    parse_version_filters,
+)
 from .utils import OrjsonSerializer
 
 logger = logging.getLogger(__name__)
@@ -261,6 +267,20 @@ class SearchSettings(BaseSettings):
     # a cursor never outlives the ranking it points at. 0 disables expiry.
     pagination_cursor_ttl_seconds: int = 900
 
+    # --- filter_by_properties_version (see property_versions.py) --------------
+    # How long a property's distinct values are cached per process; also how long
+    # a newly indexed version can take to start matching. 0 disables the cache.
+    property_values_cache_ttl_seconds: int = 60
+    # Properties with more distinct values than this are rejected with a 422
+    # rather than compared against a partial list.
+    property_values_max_count: int = 1000
+    # Each distinct property in one request costs its own aggregation on a cache
+    # miss, so requests naming more properties than this are rejected with a 422.
+    version_filter_max_properties: int = 10
+    # Longest filter_by_properties_version string accepted; longer is rejected with
+    # a 422 before it is parsed. Read by the request model's validator.
+    version_filter_max_length: int = 4096
+
 
 class SearchFilterConfig(BaseSettings):
     fields_config: Dict[str, FieldConfig] = Field(default_factory=dict)
@@ -346,6 +366,10 @@ class SearchBackendClientV2:
         self._vision_metadata_fields_cache = None
         self._vision_metadata_fields_cache_timestamp = 0
         self._vision_metadata_fields_cache_ttl = 300  # 5 minutes TTL
+
+        self._property_values_cache = PropertyValuesCache(ttl_seconds=settings.property_values_cache_ttl_seconds)
+        self._property_values_max_count = settings.property_values_max_count
+        self._version_filter_max_properties = settings.version_filter_max_properties
 
         if search_filter_config is None:
             self.search_filter_config = SearchFilterConfig()
@@ -944,6 +968,12 @@ class SearchBackendClientV2:
             ttl = min(ttl, self.ranking_cache.ttl_seconds) if ttl else self.ranking_cache.ttl_seconds
         return ttl
 
+    def default_window_size(self, search_request: DeepSearchSearchRequestV2, retrieval_depth: int) -> int:
+        """Fusion window for a query no cursor has pinned one for."""
+        return search_request.scoring_config.rrf_config.window_size or max(
+            self._rrf_min_window_size, self._pagination_default_window, retrieval_depth * 2
+        )
+
     def _select_pagination_mode(
         self,
         search_request: DeepSearchSearchRequestV2,
@@ -1107,10 +1137,7 @@ class SearchBackendClientV2:
         # so a small pool would cap a hybrid query at a couple of pages), and grow
         # with the requested depth for callers asking for a big single page.
         window_size = min(
-            page.window
-            or window_size
-            or rrf_config.window_size
-            or max(self._rrf_min_window_size, self._pagination_default_window, retrieval_depth * 2),
+            page.window or window_size or self.default_window_size(search_request, retrieval_depth),
             OPENSEARCH_MAX_RESULT_WINDOW,
         )
 
@@ -2121,7 +2148,7 @@ class SearchBackendClientV2:
         lexer.whitespace = ","
         lexer.whitespace_split = True
         parsed: List[Dict[str, Any]] = []
-        for prop in lexer:
+        for prop in (term.strip() for term in lexer):
             if "=~" in prop:
                 name, value = prop.split("=~", 1)
                 use_wildcard = True
@@ -2398,6 +2425,10 @@ class SearchBackendClientV2:
             if numeric_filters:
                 filters.extend(numeric_filters)
 
+        # USD version-range filter, resolved to the matching stored values
+        if search_request.filter_by_properties_version:
+            filters.extend(await self._version_property_filters(search_request.filter_by_properties_version))
+
         # USD properties filter
         if search_request.filter_by_tags:
             tags_filters = []
@@ -2594,6 +2625,88 @@ class SearchBackendClientV2:
             filters.append(query)
 
         return filters
+
+    async def _version_property_filters(self, filter_str: str) -> List[Dict[str, Any]]:
+        """Resolve version conditions to exact-value filters over each property's stored values."""
+        by_property = parse_version_filters(filter_str)
+        if len(by_property) > self._version_filter_max_properties:
+            raise HTTPException(
+                status_code=422,
+                detail=f"filter_by_properties_version: {len(by_property)} properties named, at most "
+                f"{self._version_filter_max_properties} are allowed per request",
+            )
+        lookups = await asyncio.gather(
+            *(
+                self._property_values_cache.get(name, lambda name=name: self._fetch_property_values(name))
+                for name in by_property
+            )
+        )
+        filters: List[Dict[str, Any]] = []
+        for (name, conditions), stored in zip(by_property.items(), lookups):
+            if stored.truncated:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"filter_by_properties_version: property '{name}' has more than "
+                    f"{self._property_values_max_count} distinct values, too many to compare as versions",
+                )
+            matched = matching_values(stored.values, conditions)
+            if not matched:
+                # No stored version is in range: the filter must select nothing, not be dropped.
+                filters.append({"match_none": {}})
+                continue
+            filters.append(
+                {
+                    "nested": {
+                        "path": "usd_properties",
+                        "query": {
+                            "bool": {
+                                "must": [
+                                    {"term": {"usd_properties.name": name}},
+                                    {"terms": {"usd_properties.value": matched}},
+                                ]
+                            }
+                        },
+                    }
+                }
+            )
+        return filters
+
+    async def _fetch_property_values(self, name: str) -> PropertyValues:
+        """Distinct stored values of one USD property across the whole index (one terms aggregation)."""
+        name_clause = {"term": {"usd_properties.name": name}}
+        limit = self._property_values_max_count
+        body = {
+            "size": 0,
+            "track_total_hits": False,
+            "query": {"nested": {"path": "usd_properties", "query": name_clause}},
+            "aggs": {
+                "props": {
+                    "nested": {"path": "usd_properties"},
+                    "aggs": {
+                        "named": {
+                            "filter": name_clause,
+                            "aggs": {
+                                "values": {
+                                    # One extra bucket tells "exactly at the limit" from "over it".
+                                    # "map" groups only the filtered entries instead of loading
+                                    # global ordinals for every value of the field.
+                                    "terms": {
+                                        "field": "usd_properties.value",
+                                        "size": limit + 1,
+                                        "execution_hint": "map",
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            },
+        }
+        with tracer.start_as_current_span("search_backend.fetch_property_values"):
+            response = await self.client.search(index=self.index_name, body=body)
+        buckets = response["aggregations"]["props"]["named"]["values"]["buckets"]
+        values = tuple(bucket["key"] for bucket in buckets)
+        return PropertyValues(values=values[:limit], truncated=len(values) > limit)
 
     def _build_text_query(self, field: str, value: str, config: FieldScoreConfig) -> Dict[str, Any]:
         """Build text query for a field based on its configuration."""

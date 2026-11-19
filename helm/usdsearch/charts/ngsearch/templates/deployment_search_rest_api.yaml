@@ -21,6 +21,16 @@
 {{- $globalImagePullSecrets := include "deepsearch-global.imagePullSecrets" . -}}
 {{- $values := .Values -}}
 {{- $releaseName := .Release.Name -}}
+{{- /* The validation reference image cache's directory (default /var/tmp/usdsearch-validation-images; "" = off):
+       a volume is mounted there only when validation is on, so it works under readOnlyRootFilesystem.
+       Its default emptyDir holds max_mb + 25 % + 512 MiB: each API process may pass the cap by up to 64 MiB. */}}
+{{- $imageCacheDir := "" -}}
+{{- $imageCacheMi := 0 -}}
+{{- if .Values.microservices.search_rest_api.validation.enabled -}}
+{{- $imageCacheDir = dig "image_cache" "dir" "" .Values.microservices.search_rest_api.validation -}}
+{{- $imageCacheMaxMb := dig "image_cache" "max_mb" 2048 .Values.microservices.search_rest_api.validation | int -}}
+{{- $imageCacheMi = add $imageCacheMaxMb (div $imageCacheMaxMb 4) 512 -}}
+{{- end -}}
 
 
 {{- if or ( .Values.microservices.search_rest_api.enabled ) (eq ( .Values.microservices.search_rest_api.enabled | toString) "<nil>") }}
@@ -92,6 +102,15 @@ spec:
         {{- toYaml .Values.microservices.search_rest_api.tmpDir | nindent 8 }}
       - name: download-tmp
         {{- toYaml .Values.microservices.search_rest_api.downloadTmpDir | nindent 8 }}
+      {{- if $imageCacheDir }}
+      - name: validation-image-cache
+        {{- with .Values.microservices.search_rest_api.validationImageCacheDir }}
+        {{- toYaml . | nindent 8 }}
+        {{- else }}
+        emptyDir:
+          sizeLimit: {{ $imageCacheMi }}Mi
+        {{- end }}
+      {{- end }}
       serviceAccountName: {{ include "ngsearch.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -174,6 +193,10 @@ spec:
           # Disk-backed; deliberately not under /tmp, which is RAM-backed.
           - mountPath: {{ .Values.microservices.search_rest_api.download.temp_dir | default "/var/tmp/usdsearch-downloads" | quote }}
             name: download-tmp
+          {{- if $imageCacheDir }}
+          - mountPath: {{ $imageCacheDir | quote }}
+            name: validation-image-cache
+          {{- end }}
           resources:
             {{- toYaml .Values.microservices.search_rest_api.resources | nindent 12 }}
           envFrom:
@@ -204,6 +227,29 @@ spec:
             {{- with .Values.microservices.search_rest_api.validation.image_max_px }}
             - name: USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX
               value: {{ . | quote }}
+            {{- end }}
+            - name: USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT
+              value: {{ .Values.microservices.search_rest_api.validation.image_format | default "png" | quote }}
+            {{- /* Prepared asset views kept across checks: the directory is always sent, so dir "" turns the
+                   code's default directory off; the sizes only with a directory, an unset one keeps the code
+                   default. */}}
+            - name: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_DIR
+              value: {{ $imageCacheDir | quote }}
+            {{- with .Values.microservices.search_rest_api.validation.image_cache }}
+            {{- if .dir }}
+            {{- with .max_mb }}
+            - name: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MAX_MB
+              value: {{ . | int64 | quote }}
+            {{- end }}
+            {{- if hasKey . "min_free_mb" }}
+            - name: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MIN_FREE_MB
+              value: {{ .min_free_mb | int64 | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .memory_mb }}
+            - name: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MEMORY_MB
+              value: {{ . | int64 | quote }}
+            {{- end }}
             {{- end }}
             - name: USDSEARCH_VISION_VALIDATION_MODEL
               value: {{ .Values.microservices.search_rest_api.validation.model | quote }}
@@ -315,6 +361,17 @@ spec:
             - name: USDSEARCH_SEARCH_RANKING_CACHE_MAX_ENTRIES
               value: {{ .max_entries | int64 | quote }}
             {{- end }}
+            {{- end }}
+            {{- with .Values.microservices.search_rest_api.version_filter }}
+            {{- /* filter_by_properties_version. Bare SearchSettings field names. */}}
+            - name: PROPERTY_VALUES_CACHE_TTL_SECONDS
+              value: {{ .cache_ttl_seconds | int64 | quote }}
+            - name: PROPERTY_VALUES_MAX_COUNT
+              value: {{ .max_distinct_values | int64 | quote }}
+            - name: VERSION_FILTER_MAX_PROPERTIES
+              value: {{ .max_properties | int64 | quote }}
+            - name: VERSION_FILTER_MAX_LENGTH
+              value: {{ .max_length | int64 | quote }}
             {{- end }}
             - name: USDSEARCH_LLM_PARSING_ENABLED
               value: {{ .Values.microservices.search_rest_api.llm_parsing.enabled | quote }}
@@ -493,15 +550,27 @@ spec:
             - name: DOWNLOAD_QUEUE_TIMEOUT
               value: {{ .queue_timeout | quote }}
             {{- end }}
+            {{- if .udim_token }}
+            - name: DOWNLOAD_UDIM_TOKEN
+              value: {{ .udim_token | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .udim_probe_first_tile) }}
+            - name: DOWNLOAD_UDIM_PROBE_FIRST_TILE
+              value: {{ .udim_probe_first_tile | int64 | quote }}
+            {{- end }}
+            {{- if not (kindIs "invalid" .udim_probe_last_tile) }}
+            - name: DOWNLOAD_UDIM_PROBE_LAST_TILE
+              value: {{ .udim_probe_last_tile | int64 | quote }}
+            {{- end }}
             {{- end }}
             - name: DOWNLOAD_TEMP_DIR
               value: {{ .Values.microservices.search_rest_api.download.temp_dir | default "/var/tmp/usdsearch-downloads" | quote }}
             - name: ENABLE_ACCESS_VERIFICATION
-              value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
+              value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.microservices.search_rest_api.enable_access_verification "default" true) | quote }}
             - name: STORAGE_REQUIRE_AUTH
-              value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
+              value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.microservices.search_rest_api.enable_access_verification "default" true) | quote }}
             - name: VERIFY_ASSET_EXISTENCE
-              value: {{ .Values.microservices.search_rest_api.enable_access_verification | quote | default "true" }}
+              value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.microservices.search_rest_api.enable_access_verification "default" true) | quote }}
             - name: OV_SERVICE
               value: "ngsearch-rest-api"
             - name: USER_AGENT

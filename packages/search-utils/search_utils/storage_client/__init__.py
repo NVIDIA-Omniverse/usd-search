@@ -315,6 +315,22 @@ class StorageClient(ABC):
         ):
             yield result.uri
 
+    async def list_uris_with_prefix(
+        self,
+        *,
+        literal_prefix_uri: RemoteFileUri,
+        folder_uri: RemoteFileUri,
+    ) -> AsyncIterator[RemoteFileUri]:
+        """Yield the URIs in `folder_uri` that may start with `literal_prefix_uri`.
+
+        The caller filters the result. Folder-based backends (Nucleus,
+        storage-api) list `folder_uri` itself, without descending into
+        subfolders. Backends with server-side key-prefix listing (S3) override
+        this to list only the keys under `literal_prefix_uri`.
+        """
+        async for result in self.list_items(uri_list=[folder_uri], recursive=False, ignore_patterns=None):
+            yield result.uri
+
     @abstractmethod
     def get_path_from_uri(self, uri: RemoteFileUri) -> RemoteFilePath:
         pass
@@ -322,6 +338,19 @@ class StorageClient(ABC):
     @abstractmethod
     def get_uri_from_path(self, path: RemoteFilePath) -> RemoteFileUri:
         pass
+
+    @property
+    def supported_uris_refreshable(self) -> bool:
+        """Whether :meth:`refresh_supported_uris` can do anything (it needs an open connection context)."""
+        return False
+
+    async def refresh_supported_uris(self) -> None:
+        """Refresh whatever :meth:`is_supported_uri` matches against, if the backend can change it at runtime.
+
+        ``is_supported_uri`` is synchronous, so callers that check many URIs over a long-lived process await
+        this first. No-op by default; it must stay cheap when there is nothing to refresh.
+        """
+        return None
 
     @abstractmethod
     def is_supported_uri(self, uri: str) -> bool:

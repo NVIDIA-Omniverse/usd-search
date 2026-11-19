@@ -54,6 +54,7 @@ COMMA_JOIN_PARAMS = {
     "filter_by_properties_include_any",
     "exclude_filter_by_properties",
     "filter_by_properties_numeric",
+    "filter_by_properties_version",
     "filter_by_tags",
 }
 

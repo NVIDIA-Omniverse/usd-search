@@ -341,6 +341,14 @@ class NGSearchStorage(AssetdbMSWithCron):
             idl_logger.exception(e)
             return SizeResponse(size=0, status=Status.error)
 
+    async def _refresh_supported_uris(self) -> None:
+        # self.client is not held connected between requests; the refresh calls the backend, so it needs a
+        # connection context (skipped when there is nothing to refresh, where opening one costs a connect)
+        if not self.client.supported_uris_refreshable:
+            return
+        async with self.client.connection_context() as storage_client:
+            await storage_client.refresh_supported_uris()
+
     def check_item_key(self, key: str):
         return self.client.is_valid_uri(key)
 
@@ -351,6 +359,8 @@ class NGSearchStorage(AssetdbMSWithCron):
         backend_name: Optional[str] = None,
     ) -> Result:
         await self.backend_ready.wait()
+        # judge keys against roots the backend started serving since the last read (no-op unless a TTL is set)
+        await self._refresh_supported_uris()
         content = ProcessedInput.model_construct(**input)
 
         if content.key is not None and content.key_hash is not None:
@@ -405,6 +415,7 @@ class NGSearchStorage(AssetdbMSWithCron):
 
     async def es_gen_action(self, input: dict, action: AsyncIterator, **kwargs):
         await self.backend_ready.wait()
+        await self._refresh_supported_uris()
         content = ProcessedInput.model_construct(**input)
         idl_logger.info(content)
 
@@ -531,6 +542,9 @@ class NGSearchStorage(AssetdbMSWithCron):
         Returns:
             List[Tuple[Tuple[str, str], Tuple[bool, PathType]]]: List of tuples with 1 element being a tuple: URL, backend; and 2 element being the existence check response
         """
+
+        # pick up roots the backend started (or stopped) serving before judging URLs against them
+        await storage_client.refresh_supported_uris()
 
         async def check_existence(url: str) -> Tuple[bool, Optional[PathType]]:
             if not storage_client.is_valid_uri(url):

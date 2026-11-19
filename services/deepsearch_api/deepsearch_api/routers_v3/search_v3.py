@@ -411,6 +411,38 @@ BATCH_CONCURRENCY = 16
 BATCH_HEARTBEAT_S = 10.0
 
 
+# OpenAPI schema of one streamed NDJSON line (blank heartbeat lines aside). BatchValidateResult is registered
+# in components through BatchValidateResponse, the stream=false model.
+BATCH_STREAM_LINE_SCHEMA = {
+    "oneOf": [
+        {"$ref": "#/components/schemas/BatchValidateResult"},
+        {
+            "type": "object",
+            "title": "BatchValidateFatal",
+            "required": ["fatal", "error_type", "retryable"],
+            "properties": {
+                "fatal": {"type": "string"},
+                "error_type": {"type": "string"},
+                "retryable": {"type": "boolean"},
+                "model": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+            },
+        },
+        {
+            "type": "object",
+            "title": "BatchValidateDone",
+            "required": ["done"],
+            "properties": {
+                "done": {
+                    "type": "object",
+                    "required": ["completed", "errored"],
+                    "properties": {"completed": {"type": "integer"}, "errored": {"type": "integer"}},
+                }
+            },
+        },
+    ]
+}
+
+
 def _ndjson(obj: dict) -> str:
     return json.dumps(obj, separators=(",", ":")) + "\n"
 
@@ -418,7 +450,13 @@ def _ndjson(obj: dict) -> str:
 @vlm_router.post(
     "/vlm_validate/search_result_batch",
     response_model=None,
-    responses={200: {"model": BatchValidateResponse, "description": "stream=false; stream=true answers NDJSON"}},
+    responses={
+        200: {
+            "model": BatchValidateResponse,
+            "description": "stream=false: one JSON body; stream=true (default): NDJSON, one object per line",
+            "content": {"application/x-ndjson": {"schema": BATCH_STREAM_LINE_SCHEMA}},
+        }
+    },
     summary="Validate a page of search results with VLM",
     description="Judges up to 100 results against one query in ONE request; each item takes the single-result "
     "route's asset fields and gets its verdict and cache. `stream` (default true) answers NDJSON as each result "

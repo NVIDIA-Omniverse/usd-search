@@ -239,13 +239,17 @@ if [ -n "$GRAPHED_URL" ]; then
     PRIMS_JSON=$(curl "${CURL_AUTH[@]}" -sfG --data-urlencode "scene_url=$GRAPHED_URL" --data-urlencode "limit=5" \
         "$BASE/asset_graph/usd/prims")
     PRIM_COUNT=$(echo "$PRIMS_JSON" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null)
-    check OK "GET /asset_graph/usd/prims ($PRIM_COUNT prims via return_root_prims pre-filter)"
-    echo "    scene: $GRAPHED_URL"
-    echo "$PRIMS_JSON" | python3 -c "
+    if [ "${PRIM_COUNT:-0}" -ge 1 ]; then
+        check OK "GET /asset_graph/usd/prims ($PRIM_COUNT prims via return_root_prims pre-filter)"
+        echo "    scene: $GRAPHED_URL"
+        echo "$PRIMS_JSON" | python3 -c "
 import json, sys
 for p in json.load(sys.stdin):
     print(f\"    {p.get('prim_type','?'):20} {p.get('usd_path','?')}\")
 "
+    else
+        check FAIL "/asset_graph/usd/prims" "no prims returned for $GRAPHED_URL: ${PRIMS_JSON:-no response}"
+    fi
 
     # Cross-check: scene_summary should report the same scene with sane aggregates.
     SUMMARY=$(curl "${CURL_AUTH[@]}" -sfG --data-urlencode "scene_url=$GRAPHED_URL" "$BASE/asset_graph/usd/scene_summary/")

@@ -168,6 +168,8 @@ LLM connection via `USDSEARCH_LLM_API_KEY` / `USDSEARCH_LLM_BASE_URL`
 | Mode | `..._MODE` | `filter` | `mode` |
 | Views per verdict | `..._MAX_IMAGES_PER_VALIDATION` | 1 | More than one view measured worse; >8 logs a warning. `max_images_per_validation` |
 | Max image edge | `..._IMAGE_MAX_PX` | 0 (off) | Longest edge of the query image and every asset view sent to the VLM; shrink-only LANCZOS, aspect kept. 0 sends the stored size (the 1024-px thumbnail); 448 is the evaluated view. Part of the cache identity when > 0. `image_max_px` |
+| Image encoding | `..._IMAGE_FORMAT` | `png` | How those images are sent: `png` (lossless) or `jpeg` (quality 90, 4:2:0 chroma, RGB, transparency composited onto white, as vLLM does for a transparent PNG; with `image_max_px` a JPEG thumbnail decodes at a reduced DCT scale). On 1024-px thumbnails at 448 px, `jpeg` takes 55-85 % less image-encoding CPU per verdict and sends ~27 instead of ~120-220 KB. Part of the cache identity when `jpeg`. `image_format` |
+| Prepared-view cache | `..._IMAGE_CACHE_DIR`, `..._IMAGE_CACHE_MAX_MB`, `..._IMAGE_CACHE_MIN_FREE_MB`, `..._IMAGE_CACHE_MEMORY_MB` | `/var/tmp/usdsearch-validation-images` (empty = off); 2048; 1024; 0 | Keeps each asset view prepared once (decoded, fitted, re-encoded) instead of per check, in `<dir>/<settings digest>/<sha256 of the stored image>.b64` shared by the host's API processes, and/or a per-process LRU. Byte-identical views; not part of the cache identity; any cache error prepares the view as before. Inline asset views sent to `/vlm_validate` are kept too. Give it a directory of its own: other settings' directories in it are removed once unused for a day. Nothing is evicted: past `max_mb` new views are prepared per check. `nice -n 10 python -m deepsearch_api.validation.warm_image_cache [--threads N] [--wait S]` fills it from the image cache index (in each replica after it starts), stops when it is full and, after a run that saw every image, removes views of images no longer stored: warm it when the index's views fit `max_mb`. On by default: the directory sits in the container's own filesystem, so Compose needs no volume; without the warm-up it fills as checks run. Metrics `vlm_validation_image_cache_events_total{outcome}`, `vlm_validation_image_cache_full` (1 while past `max_mb` or `min_free_mb`), `vlm_validation_image_cache_bytes` and `vlm_validation_image_cache_free_bytes`. `image_cache.*` (`dir: ""` = off; the chart mounts `validationImageCacheDir` at `dir`, by default an emptyDir sized from `max_mb`, counted in the API's ephemeral-storage, so a read-only root filesystem is fine) |
 | Model | `..._MODEL` | `gcp/google/gemini-3.1-flash-lite` | `model` |
 | Concurrency | `..._MAX_CONCURRENT` | 50 | One semaphore per API process. `max_concurrent_requests` |
 | Per-verdict deadline | `..._TIMEOUT_SECONDS` | 30 | Counted from queueing, so it includes waiting for a slot; a late hit gets no verdict. |
@@ -181,7 +183,9 @@ prompts, schema, endpoint) + query + asset image identity. Any config change
 invalidates old verdicts; `mode`, concurrency and view budget are not part of
 it. `image_max_px` joins the fingerprint only when set (> 0): turning it on or
 changing it re-warms the cache, while leaving it at 0 keeps verdicts cached
-before the setting existed.
+before the setting existed. `image_format` likewise joins it only as `jpeg`:
+switching re-judges every verdict once, and switching back to `png` finds the
+`png` verdicts the caches still hold.
 
 Rows carry a format marker (`v: 2`). Unmarked rows (integer `similarity_score`)
 still load; under `logprob` they are re-judged once so a rounded value never
@@ -207,12 +211,12 @@ Metric: `vlm_validation_cache_events_total{outcome=l1_hit|l2_hit|miss}`.
 
 ## Explorer behavior
 
-- Results render first; per-hit `POST /vlm_validate/search_result` follows
-  ([`useAsyncValidation.js`](../services/explorer/src/hooks/useAsyncValidation.js)).
+- Results render first; per-hit `POST /vlm_validate/search_result` follows.
   The badge shows `similarity_score` rounded.
 - Client cache: 24 h, keyed by (query, hit, model).
-- "Only VLM-validated" toggle (Display Options) hides rejected cards; off by default.
-- Build-time knobs ([`config.jsx`](../services/explorer/src/config.jsx)):
+- "Only VLM-validated" toggle (Show filters -> Search settings) hides the
+  "Lower relevance" cards; off by default.
+- Build-time knobs:
   `REACT_APP_VALIDATION_MAX_CONCURRENT` (8), `..._MAX_RETRIES` (3),
   `..._RETRY_DELAY_MS` (5000), `..._TIMEOUT_MS` (30000).
 
@@ -269,9 +273,6 @@ slots. The query set and labels are unpublished, so no figures here. Findings:
 - Multiple views (2, 4, 8 or 2x2 sheets) hurt.
 - Rounding `P(Yes) x 100` was the only resolution loss, hence the float.
 - The short question matches the long prompt at 2.4x less GPU time.
-
-Numbers, setup and rejected alternatives: internal decision record
-`docs/internal/vlm-validation-findings-2026-09.md` (not in the public mirror).
 
 ### Recommended production configuration: Qwen log-prob rerank
 

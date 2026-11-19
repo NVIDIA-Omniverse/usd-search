@@ -19,6 +19,7 @@ import os
 import fire
 from deepsearch_rendering_job.models import RenderingRequest
 from deepsearch_rendering_job.render import batch_rendering
+from deepsearch_rendering_job.render_worker import start_usd_cache_gc
 
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 
@@ -36,9 +37,18 @@ def main(*args: str) -> None:
     else:
         request = RenderingRequest()
 
-    loop = asyncio.get_event_loop()
-    # get asset data
-    loop.run_until_complete(batch_rendering(request=request))
+    asyncio.run(_render(request))
+
+
+async def _render(request: RenderingRequest) -> None:
+    # A k8s renderer job may run against a persistent cache volume, so it bounds the
+    # shared USD cache for as long as it renders, like the API server does.
+    usd_cache_gc = start_usd_cache_gc()
+    try:
+        await batch_rendering(request=request)
+    finally:
+        if usd_cache_gc is not None:
+            usd_cache_gc.cancel()
 
 
 if __name__ == "__main__":

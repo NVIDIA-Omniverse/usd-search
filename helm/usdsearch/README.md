@@ -1,6 +1,6 @@
 # USD Search API
 
-![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.5.0](https://img.shields.io/badge/AppVersion-1.5.0-informational?style=flat-square)
+![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square) ![AppVersion: 1.5.1](https://img.shields.io/badge/AppVersion-1.5.1-informational?style=flat-square)
 
 **Homepage:** <https://github.com/NVIDIA-omniverse/usd-search>
 
@@ -145,12 +145,23 @@ version.BuildInfo{Version:"v3.2.0", GitCommit:"e11b7ce3b12db2941e90399e874513fbd
 
 # Packages and Access
 
-Generate your NGC helm and container registry API Key prior to fetch helm chart. See onboarding guide [here](https://docs.nvidia.com/ai-enterprise/deployment/spark-rapids-accelerator/latest/appendix-ngc.html).
+This chart is listed in the [NGC catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/usdsearch/helm-charts/usdsearch) and served from `helm.ngc.nvidia.com`; the container images it deploys come from `nvcr.io`. Fetching the chart needs an NGC API key. The images under `nvcr.io/nvidia/usdsearch` are public, so `global.imagePullSecrets` is only needed for an image served from a private registry.
 
-Fetch the latest helm chart from the registry
+Generate your NGC API key prior to fetch helm chart. See the [NGC user guide](https://docs.nvidia.com/ngc/gpu-cloud/ngc-user-guide/index.html) for how to create one.
+
+Add the repository to list the available versions
 
 ```bash
-helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.5.0.tgz \
+helm repo add usdsearch https://helm.ngc.nvidia.com/nvidia/usdsearch \
+	--username='$oauthtoken' \
+	--password=<YOUR API KEY>
+helm search repo usdsearch/usdsearch --versions
+```
+
+Or fetch a specific chart version from the registry
+
+```bash
+helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.5.1.tgz \
 	--username='$oauthtoken' \
 	--password=<YOUR API KEY>
 ```
@@ -172,7 +183,7 @@ To deploy the USD Search Helm chart and connect it to an AWS S3 bucket for
 indexing, run the following command:
 
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=s3 \
   --set global.s3.bucket_name=<S3 bucket name> \
@@ -216,7 +227,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=s3 \
   --set global.s3.bucket_name=<S3 bucket name> \
@@ -250,7 +261,7 @@ For more details on configuring different storage backends, refer to the officia
 Using S3proxy functionality is it possible to seamlessly connect to any S3 compatible storage backends (e.g. Dell ObjectScale, DreamObjects, etc.)
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
+helm upgrade <deployment name> usdsearch-1.5.1.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -271,7 +282,7 @@ helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
 Using S3proxy functionality is it possible to seamlessly connect to Azure Blob Storage.
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
+helm upgrade <deployment name> usdsearch-1.5.1.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -292,7 +303,7 @@ helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
 Using S3proxy functionality is it possible to seamlessly connect to Google Cloud Storage.
 
 ```bash
-helm upgrade <deployment name> usdsearch-1.5.0.tgz --install \
+helm upgrade <deployment name> usdsearch-1.5.1.tgz --install \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set global.accept_eula=true \
@@ -336,7 +347,7 @@ kubectl create secret docker-registry nvcr.io \
 With the above secrets created, the helm chart installation command can be
 simplified to:
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
   --namespace <namespace> \
   --set global.s3proxy.enabled=true \
   --set s3proxy.image.url=docker.io/andrewgaul/s3proxy:latest \
@@ -380,7 +391,7 @@ is possible to deploy the USD Search Helm chart and connect it to an
 Omniverse Nucleus server for indexing, as follows:
 
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
  --set global.accept_eula=true \
  --set global.storage_backend_type=nucleus \
  --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -431,7 +442,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=nucleus \
   --set global.nucleus.server=<Omniverse Nucleus server hostname or IP> \
@@ -499,7 +510,7 @@ To deploy the USD Search Helm chart and connect it to an Omniverse Storage API f
 indexing, run the following command:
 
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=storage_api \
   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -595,7 +606,7 @@ With the above secrets created, the helm chart installation command can be
 simplified to:
 
 ```bash
-helm install <deployment name> usdsearch-1.5.0.tgz \
+helm install <deployment name> usdsearch-1.5.1.tgz \
   --set global.accept_eula=true \
   --set global.storage_backend_type=storage_api \
   --set global.storage_api.grpc_endpoint=<Storage API gRPC endpoint> \
@@ -664,6 +675,17 @@ Below you can find several sample configurations for the API gateway endpoint, d
         --set api-gateway.ingress.ingressClassName=<ingress class name, e.g. 'nginx'>
 	```
 	the service will then be accessible at ``http://<service hostname>``
+
+* **HTTPProxy** - If your cluster runs [Contour](https://projectcontour.io/) rather than an Ingress controller, the same endpoint can be exposed through a Contour ``HTTPProxy`` object. The hostname is composed as ``<host>.<domain>``:
+
+	```bash
+		--set httpProxy.enabled=true \
+		--set httpProxy.fqdn.host=<host label, e.g. 'usdsearch'> \
+		--set httpProxy.fqdn.domain=<domain name, e.g. 'example.com'>
+	```
+	the service will then be accessible at ``http://<host>.<domain>``
+
+	TLS, CORS, edge authorization and route timeouts are configured from the same ``httpProxy`` section. Setting ``httpProxy.tls.certManager.enabled=true`` additionally creates a cert-manager ``Certificate`` for that hostname.
 
 ## Monitoring
 
@@ -1332,7 +1354,10 @@ plugins:
         enabled: true
         mount_path: /cache
         medium: ""               # "" = node disk, "Memory" = tmpfs
-        size_limit: 20Gi
+        size_limit: 20Gi         # emptyDir hard limit: exceeding it evicts the pod
+        max_size: ""             # cache budget; "" = 75% of size_limit, 0 = off
+        cleanup_threshold: 0.8   # evict down to this fraction of max_size
+        gc_interval_seconds: 60
       shm_size: 1Gi
       env: []
 ```
@@ -1368,6 +1393,17 @@ __Build timeout__: ``timeout_seconds`` bounds a single graph build (default
 surfaces as the builder's own timeout — carrying a
 ``graph_construction_timeout`` status — rather than an opaque client-side
 one.
+
+__Asset cache__: builds download USD layers into ``cache.mount_path`` and
+reuse them across builds, which roughly halves the time of a warm build.
+The client library never evicts from that directory, so the graph builder
+does: every ``gc_interval_seconds`` it checks usage and, once it exceeds
+``max_size``, removes least-recently-used files down to
+``cleanup_threshold`` of it. ``size_limit`` is the kubelet's hard limit on
+the volume and evicts the *whole plugin-worker pod*, so ``max_size`` must
+stay below it (the chart refuses to render otherwise), leaving headroom for
+what builds download between two checks. When raising ``size_limit``, leave
+``max_size`` empty and the budget follows.
 
 ### Sidecar / package metadata (opt-in)
 
@@ -1719,6 +1755,59 @@ default 0 sends the stored 1024-px thumbnail as is; `image_max_px: 448`
 sends the evaluated 448-px view at about a quarter of the prompt tokens
 per verdict, and changes the verdict cache identity.
 
+`image_format: jpeg` sends those images as JPEG (quality 90) instead of
+PNG: 55-85 % less image-encoding CPU per verdict at 448 px and a fraction of the upload.
+It also changes the verdict cache identity.
+
+`image_cache.dir` keeps each asset view prepared once (decoded, fitted to
+`image_max_px`, re-encoded) on a disk volume the chart mounts there,
+instead of once per check: byte-identical, on by default and bounded
+by `image_cache.max_mb` and `image_cache.min_free_mb`.
+
+### Prepared-view cache
+
+Prepared asset views kept across checks
+(-> USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_*). Before each check the
+API decodes the asset's stored thumbnail, fits it to image_max_px and
+re-encodes it, most of a check's API CPU; with the cache that is done
+once per stored image. Kept views are byte-identical to preparing them
+per check and are not part of the verdict cache identity. On by
+default: the chart mounts the `validationImageCacheDir` volume at
+`dir` (by default an emptyDir of `max_mb` + 25 % + 512 MiB, counted
+in the API's `resources` ephemeral-storage), so it works with a
+read-only root filesystem. Set `dir: ""` to turn it off. Give it a
+directory of its own (other settings' directories in it are
+removed). The views stay under `max_mb`, the cache never writes below
+`min_free_mb` free on the disk, and nothing is evicted: past either,
+views are prepared per check. `memory_mb` adds a per-process
+in-memory LRU, in front of `dir` or alone (0 = off). The cache fills
+as checks run; to fill it up front, run
+`nice -n 10 python -m deepsearch_api.validation.warm_image_cache` in
+each replica after it starts; it stops when the cache is full.
+
+Default `ngsearch.microservices.search_rest_api.validation.image_cache`:
+
+```yaml
+dir: /var/tmp/usdsearch-validation-images
+max_mb: 2048
+min_free_mb: 1024
+memory_mb: 0
+```
+
+Volume backing `validation.image_cache.dir`, mounted there unless that
+is `""`. Empty (the default) is a disk-backed emptyDir sized from
+`validation.image_cache.max_mb` (`max_mb` + 25 % + 512 MiB: 3 GiB at the
+default 2048), which lasts as long as the pod. Set it to any pod volume
+source to use another volume, for example a persistentVolumeClaim that
+keeps the views across restarts; make it larger than that size:
+```yaml
+validationImageCacheDir:
+  persistentVolumeClaim:
+    claimName: usdsearch-validation-images
+```
+
+Default `ngsearch.microservices.search_rest_api.validationImageCacheDir`: `{}`.
+
 ### LLM/VLM provider
 
 Per-result VLM validation runs on the same shared OpenAI-compatible
@@ -1766,13 +1855,23 @@ If you wish to rely on your own instance of OpenSearch (external to the USD Sear
   --set opensearch_deployment.enabled=false
 ```
 
-* set the following parameters:
-  * ``host`` - hostname of the OpenSearch instance (default: ``deepsearch-opensearch-cluster-master``)
-  * ``port`` - port of the OpenSearch instance (default: ``9200``)
-  * ``schema`` - schema of the OpenSearch instance (default: ``http``)
-  * ``use_ssl`` - whether to use SSL for the OpenSearch instance (default: ``false``)
+* set the following parameters, all of them under ``global.search_backend_config``:
+  * ``host`` - hostname of the OpenSearch instance, without a scheme or port (default: ``deepsearch-opensearch-cluster-master``)
+  * ``port`` - port of the OpenSearch instance (default: ``9200``; managed services usually listen on ``443``)
+  * ``schema`` - scheme used to build the OpenSearch URL (default: ``http``)
+  * ``use_ssl`` - whether to connect over TLS (default: ``false``); set it together with ``schema: https``
   * ``auth_secret_name`` - name of the secret that stores the authentication information for the OpenSearch instance. Please refer to [OpenSearch authentication](#opensearch-authentication) section for more information.
   * ``hosts`` - comma-separated list of additional OpenSearch instances to use for search (default: ``[]``)
+  * ``http_compress`` - gzip request bodies (default: ``false``); leave it off unless nothing between the services and the cluster rewrites them
+
+The cluster must provide the k-NN plugin, because the main index is created with ``index.knn`` enabled and queried with ``knn``
+clauses, and the credentials must be able to create and manage indexes matching ``<index_name>-*`` and read and write their
+documents. Only HTTP basic authentication is supported: requests are not SigV4-signed, so AWS IAM access alone does not work.
+On Amazon OpenSearch Service, use the domain endpoint as ``host`` with ``port: 443``, ``schema: https`` and ``use_ssl: true``,
+and enable fine-grained access control, then map a dedicated user holding those privileges into the secret above; the
+domain's master user grants administrative access well beyond these indexes. Where
+``index.knn.derived_source.enabled`` defaults to on, vectors are rebuilt from the k-NN index instead of ``_source``; the
+services warn when they find it on the main index.
 
 ### OpenSearch authentication
 
@@ -1892,7 +1991,7 @@ string
 			<td>
 				<div style="width: 300px;">
 <pre lang="json">
-"1.5.0"
+"1.5.1"
 </pre>
 </div>
 			</td>
@@ -2096,6 +2195,45 @@ string
 Please specify (preferably) the hostname or the IP of the Kubernetes
 cluster node, where USD Search API helm chart is running. This address will
 be used for service registration when using NodePort services.</td>
+		</tr>
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">global.omniverse_discovery</div></td>
+			<td><div style="white-space: nowrap;">
+map
+</div></td>
+			<td>
+				<div style="width: 300px;">
+<pre lang="yaml">
+enabled: false
+
+</pre>
+</div>
+			</td>
+			<td>
+
+Register the USD Search REST APIs with an Omniverse Discovery Service
+(auto-discovery-service 1.3.0 or later).
+
+When enabled, the API gateway:
+  * serves the Capabilities REST API ``GET /v1beta/services``, listing every
+    public USD Search API as ``usdsearch.<api>`` version ``v1`` at the gateway
+    route prefix it is served under (for example ``usdsearch.search_hybrid`` →
+    ``/search_hybrid``, ``usdsearch.asset_graph.prims`` →
+    ``/asset_graph/usd/prims``);
+  * annotates its Service with ``discovery.omniverse.nvidia.com/enabled: "true"``
+    so a Discovery Service watching this namespace picks it up;
+  * adds ``discovery.omniverse.nvidia.com/base-path`` to the HTTPProxy when
+    ``httpProxy.path`` is not ``/``, so the external catalog URL carries the prefix.
+
+The Discovery Service must watch this release's namespace (its
+``config.kubeNamespace``). Clients find the APIs by endpoint name: the catalog
+entry itself is named after the gateway Service (``<release>-api-gateway``).
+
+Toggling this value restarts the gateway. Other changes to its routes on an
+existing release, such as ``asset_graph_service_deployment.enabled``, do not:
+run ``kubectl rollout restart deployment/<release>-api-gateway`` so it
+serves, and advertises, the new routes.
+</td>
 		</tr>
 		<tr>
 			<td><div style="width: 150px; overflow-wrap: break-word;">global.registry</div></td>
@@ -2378,6 +2516,27 @@ map
 Number of parallel workers that would be writing data to Neo4j.
 Increasing this number results in faster processing, but will in turn
 require scaling the Neo4j instance.</td>
+		</tr>
+		<tr>
+			<td><div style="width: 150px; overflow-wrap: break-word;">asset-graph-service.graphdb.textIndexProperties</div></td>
+			<td><div style="white-space: nowrap;">
+list
+</div></td>
+			<td>
+				<div style="width: 300px;">
+<pre lang="json">
+[]
+</pre>
+</div>
+			</td>
+			<td>
+
+Prim property names (e.g. ``semantic:labels:class``) that also get a
+Neo4j TEXT index, which speeds up substring (``CONTAINS``) queries. AGS's
+own filters never use TEXT indexes, and keeping them up to date slows
+every asset write (badly so on NFS-backed Neo4j storage), so the default
+is none. At startup AGS creates the listed indexes and drops every other
+per-property TEXT index.</td>
 		</tr>
 		<tr>
 			<td><div style="width: 150px; overflow-wrap: break-word;">asset-graph-service.sentry_dsn</div></td>
@@ -3712,7 +3871,7 @@ If images have different dimensions - they will be rescaled such that the minimu
 
 If the embedding service container starts on CPU even though the NVIDIA GPU Operator is installed on the cluster, the two most common causes are:
 
-1. **NVIDIA GPU driver version mismatch.** The driver must be version ``595.58.03`` or higher. Verify the installed driver and upgrade it if it is older.
+1. **NVIDIA GPU driver version mismatch.** The driver must be version ``595.58.03`` or higher. Verify the installed driver and upgrade it if it is older. The embedding image is built on Triton 26.10 (CUDA 13.4): R615 drivers run it natively, older supported drivers through CUDA forward compatibility (logged as ``CUDA Forward Compatibility mode ENABLED`` at startup).
 
 2. **Multiple RuntimeClasses defined on the cluster.** When the driver is correct, the GPU may not be exposed because more than one RuntimeClass is defined and the wrong one is selected by default. List the available RuntimeClasses with:
 

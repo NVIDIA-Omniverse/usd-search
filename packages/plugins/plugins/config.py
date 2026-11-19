@@ -44,6 +44,12 @@ class VisionMetadataPluginConfig(BasePluginConfig):
     # any of them (e.g. bumping the revision after a model, prompt or schema
     # change) makes unchanged assets eligible for reprocessing.
     vlm_metadata_revision: str = ""
+    # Name hint (env VLM_ASSET_HINT), off by default: send the asset's file name
+    # and folder with its images. The prompt tells the model the hint may only
+    # choose between readings the views allow, never override them. A batch item
+    # may also carry its own `asset_hint` (and `view_labels`, one per image) —
+    # e.g. a caller that feeds several labelled views of one asset.
+    vlm_asset_hint: bool = False
 
     @field_validator("vlm_metadata_revision")
     @classmethod

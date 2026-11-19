@@ -32,8 +32,8 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 #: Schemes that do not name a storage object: resolved by the consuming runtime
 #: from a search path, so never ACL-checked, downloaded, or reported as missing.
 #: ``mdl:`` is written by the graph builder for a bare module name (``OmniPBR.mdl``).
-#: Keep in sync with ``graph_builder/usd_deps_kit.py`` (``MDL_SCHEME``) — that
-#: script runs in Kit's interpreter and cannot import this package.
+#: Keep in sync with ``graph_builder/usd_deps.py`` (``MDL_SCHEME``) — that script
+#: runs in its own subprocess interpreter and cannot import this package.
 SEARCH_PATH_SCHEMES: frozenset = frozenset({"mdl"})
 
 #: Left unescaped in an encoded path: ``/`` separates segments, and the sub-delims

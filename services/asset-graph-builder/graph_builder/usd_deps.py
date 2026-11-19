@@ -36,6 +36,9 @@ from itertools import permutations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import Field, ValidationError, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 # Standalone Omniverse storage client (packman ``client_library`` — the module
 # is ``omni.client``). Present in the container image; absent in unit tests,
 # which exercise only the URL-string helpers against a stubbed pxr.
@@ -201,15 +204,43 @@ def _read_asset_bytes(url: str) -> Optional[bytes]:
     return None
 
 
+#: A resource path authored as a whole quoted string, such as ``"./textures/albedo.png"``.
+_MDL_QUOTED_RESOURCE = re.compile(r'"((?:[\w.:/-]+/)?[\w.-]+\.(?:jpg|png|tiff|hdr|mdl|hlsl|exe))"')
+
+#: An MDL ``import``/``using`` declaration and the qualified name it names.
+_MDL_IMPORT = re.compile(r"^[ \t]*(import|using)[ \t]+([.:\w*]+)", re.MULTILINE)
+
+
+def _search_path_spelling(absolute_module: str) -> str:
+    """Bare asset path of a module MDL resolves from its search path."""
+    return absolute_module.lstrip(":").replace("::", "/") + ".mdl"
+
+
+def _sibling_module_path(relative_module: str) -> str:
+    """Anchored asset path of a module MDL resolves next to the one importing it."""
+    path = relative_module.replace("::", "/") + ".mdl"
+    return path if _ANCHORED_ASSET_PATH.match(path) else "./" + path
+
+
+def _import_asset_path(keyword: str, qualified_name: str) -> str:
+    """Asset path of the module an ``import``/``using`` declaration depends on."""
+    names_whole_module = keyword == "using" or qualified_name.endswith("*")
+    module = qualified_name.rstrip("*:")
+    if not names_whole_module:
+        module = module.rpartition("::")[0] or module
+    return _search_path_spelling(module) if module.startswith("::") else _sibling_module_path(module)
+
+
 def get_mdl_refs(path):
-    # TODO: Add proper MDL procesing
+    """Assets a module references: quoted resource paths and imported modules."""
     content = _read_asset_bytes(path)
     if content is None:
         logger.warning("%s not found", path)
         return []
     text = content.decode("utf8", errors="replace")
-    strings = re.findall(r'(?:")((?:[\w:/]+/)?[\w.-]+\.(?:jpg|png|tiff|hdr|mdl|hlsl|exe))(?:")', text)
-    return strings
+    refs = _MDL_QUOTED_RESOURCE.findall(text)
+    refs += [_import_asset_path(keyword, name) for keyword, name in _MDL_IMPORT.findall(text)]
+    return list(dict.fromkeys(refs))
 
 
 indexed_property_prefixes = os.getenv("INDEXED_PROPERTY_PREFIXES", "semantic:").split(",")
@@ -528,6 +559,22 @@ def traverse_recursive(fname, path_to_prim):
         """
         return identifier if identifier == root_identifier else graph_url(identifier)
 
+    listings: Dict[str, Optional[List[str]]] = {}
+
+    def _list_once(directory):
+        # Every <UDIM> texture of a material usually shares one directory.
+        if directory not in listings:
+            listings[directory] = _list_dir_names(directory)
+        return listings[directory]
+
+    def _udim_tiles(identifier):
+        """The tiles a ``<UDIM>`` path stands for; the pattern itself when none exists.
+
+        Keeping an unmatched pattern leaves the missing texture visible downstream
+        (a bundle manifest reports it) instead of silently dropping it.
+        """
+        return expand_udim(identifier, list_fn=_list_once) or [identifier]
+
     @lru_cache(maxsize=None)
     def _traverse_recursive(fname):
         if fname in files_visited:
@@ -536,6 +583,15 @@ def traverse_recursive(fname, path_to_prim):
             return {}
         files_visited.add(fname)
         deps = {}
+
+        source_key = key_for(fname)
+
+        def _record(node_url, relationship_type):
+            files.add(node_url)
+            relationships.append((source_key, node_url, relationship_type))
+
+        if fname.lower().endswith(".mdl"):
+            return _traverse_mdl(fname, _record)
 
         # check if the layer exists and if not - return directly
         try:
@@ -546,44 +602,22 @@ def traverse_recursive(fname, path_to_prim):
             logger.warning("Error opening layer: %s", e)
             return deps
 
-        source_key = key_for(fname)
-
-        def _record(node_url, relationship_type):
-            files.add(node_url)
-            relationships.append((source_key, node_url, relationship_type))
-
+        labels = asset_info_only_paths(layer)
         for dep_list in UsdUtils.ExtractExternalReferences(fname):
             for dep in dep_list:
-                if dep == fname:
+                if dep == fname or dep in labels:
                     continue
                 if is_search_path_module(dep):
                     # Resolved from the MDL search path, not a file next to the
                     # layer: recorded, but never anchored or descended into.
                     _record(search_path_uri(dep), RelationshipType.MDL_REFERENCE)
                     continue
-                if dep.startswith("omniverse://") or dep.startswith("https://") or dep.startswith("http://"):
-                    dep_path = dep
-                else:
-                    dep_path = get_base_path(fname) + "/" + dep
-                    dep_path = normalize_url(dep_path)
-                dep_key = graph_url(dep_path)
-                _record(dep_key, RelationshipType.USD_EXTERNAL_REFERENCE)
+                for dep_path in _udim_tiles(_dependency_identifier(fname, dep)):
+                    dep_key = graph_url(dep_path)
+                    _record(dep_key, RelationshipType.USD_EXTERNAL_REFERENCE)
 
-                # Recurse on the identifier, key the result by the graph spelling.
-                deps[dep_key] = _traverse_recursive(dep_path)
-
-        if fname.endswith(".mdl"):
-            for ref in get_mdl_refs(fname):
-                if is_search_path_module(ref):
-                    ref_key = search_path_uri(ref)
-                    if ref_key not in deps:
-                        deps[ref_key] = {}
-                        _record(ref_key, RelationshipType.MDL_REFERENCE)
-                    continue
-                dep_key = graph_url(normalize_url(get_base_path(fname) + "/" + ref))
-                if dep_key not in deps:
-                    deps[dep_key] = {}
-                    _record(dep_key, RelationshipType.MDL_REFERENCE)
+                    # Recurse on the identifier, key the result by the graph spelling.
+                    deps[dep_key] = _traverse_recursive(dep_path)
 
         if fname in path_to_prim:
             material_refs = set()
@@ -591,11 +625,34 @@ def traverse_recursive(fname, path_to_prim):
                 # material_refs.update(get_material_references_recursive(prim))
                 material_refs.update(get_material_references(prim))
             for ref in material_refs:
-                ref_key = search_path_uri(ref) if is_search_path_module(ref) else graph_url(normalize_url(ref))
-                _record(ref_key, RelationshipType.MATERIAL_REFERENCE)
+                if is_search_path_module(ref):
+                    ref_keys = [search_path_uri(ref)]
+                else:
+                    # Anchor to the layer, as for external references: a relative
+                    # path resolved against the process cwd names the wrong file.
+                    ref_keys = [graph_url(tile) for tile in _udim_tiles(_dependency_identifier(fname, ref))]
+                for ref_key in ref_keys:
+                    _record(ref_key, RelationshipType.MATERIAL_REFERENCE)
+                    if ref_key not in deps:
+                        deps[ref_key] = {}
+
+        return deps
+
+    def _traverse_mdl(fname, record):
+        """Dependencies of an MDL module: Sdf cannot open one, so this replaces the layer traversal."""
+        deps = {}
+        for ref in get_mdl_refs(fname):
+            if is_search_path_module(ref):
+                ref_key = search_path_uri(ref)
                 if ref_key not in deps:
                     deps[ref_key] = {}
-
+                    record(ref_key, RelationshipType.MDL_REFERENCE)
+                continue
+            ref_path = _dependency_identifier(fname, ref)
+            ref_key = graph_url(ref_path)
+            if ref_key not in deps:
+                record(ref_key, RelationshipType.MDL_REFERENCE)
+                deps[ref_key] = _traverse_recursive(ref_path)
         return deps
 
     return {fname: _traverse_recursive(fname)}, files, relationships
@@ -616,6 +673,162 @@ def get_unique_refs(refs):
 
 def get_base_path(path):
     return path[: path.rfind("/")]
+
+
+#: An absolute URL (``s3://``, ``omniverse://``, ``https://``). The ``//`` is required:
+#: without it an MDL module path such as ``nvidia::core_definitions`` reads as a scheme.
+_URL_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
+
+
+def _dependency_identifier(fname: str, authored_path: str) -> str:
+    """Resolver identifier for a path authored inside ``fname``."""
+    if _URL_SCHEME.match(authored_path):
+        return authored_path
+    return normalize_url(get_base_path(fname) + "/" + authored_path)
+
+
+#: The UDIM tile numbers: four digits, starting at 1001 (u=0, v=0).
+UDIM_MIN_TILE, UDIM_MAX_TILE = 1001, 9999
+
+
+class UdimSettings(BaseSettings):
+    """How ``<UDIM>`` texture paths are expanded into tiles (``UDIM_*`` env vars).
+
+    - ``UDIM_TOKEN`` (default ``<UDIM>``): the placeholder texture paths use for
+      a tile number (``T_Albedo.<UDIM>.png``).
+    - ``UDIM_PROBE_FIRST_TILE`` / ``UDIM_PROBE_LAST_TILE`` (default 1001 / 1099,
+      inclusive, as ``UsdShadeUdimUtils`` probes): the tiles checked one by one
+      when a texture directory cannot be listed. Each is one resolver lookup per
+      pattern, so a wider range costs more on a remote backend. Both must be
+      four-digit UDIM tiles (1001-9999).
+    """
+
+    # No field aliases: an alias would make pydantic-settings ignore env_prefix.
+    model_config = SettingsConfigDict(env_prefix="UDIM_")
+
+    token: str = Field("<UDIM>", min_length=1)
+    probe_first_tile: int = Field(1001, ge=UDIM_MIN_TILE, le=UDIM_MAX_TILE)
+    probe_last_tile: int = Field(1099, ge=UDIM_MIN_TILE, le=UDIM_MAX_TILE)
+
+    @model_validator(mode="after")
+    def _ordered_range(self) -> "UdimSettings":
+        if self.probe_first_tile > self.probe_last_tile:
+            raise ValueError(
+                f"UDIM_PROBE_FIRST_TILE ({self.probe_first_tile}) > UDIM_PROBE_LAST_TILE ({self.probe_last_tile})"
+            )
+        return self
+
+    @property
+    def probe_tiles(self) -> range:
+        return range(self.probe_first_tile, self.probe_last_tile + 1)
+
+
+def load_udim_settings() -> UdimSettings:
+    """``UdimSettings`` from the environment; the defaults, with a warning, if invalid.
+
+    A typo in an optional tuning knob should not fail every graph build.
+    """
+    try:
+        return UdimSettings()
+    except ValidationError as exc:
+        logger.warning("Invalid UDIM_* settings, using the defaults: %s", exc)
+        return UdimSettings.model_construct()
+
+
+_udim_settings = load_udim_settings()
+UDIM_TOKEN = _udim_settings.token
+_UDIM_PROBE_TILES = _udim_settings.probe_tiles
+
+
+def expand_udim(identifier: str, list_fn=None, exists_fn=None) -> List[str]:
+    """The tile files a ``UDIM_TOKEN`` texture path stands for, sorted; ``[]`` if none is found.
+
+    Nothing is ever stored under the literal ``<UDIM>`` name, so recording the
+    pattern itself as a dependency names a file that cannot be fetched. One
+    listing of the texture directory finds every tile; a backend that cannot
+    list falls back to probing the configured tiles (1001-1099 by default, as
+    USD does) through the resolver. Paths without the token are returned unchanged.
+    """
+    if UDIM_TOKEN not in identifier:
+        return [identifier]
+    list_fn = list_fn or _list_dir_names
+    exists_fn = exists_fn or _resolves
+    directory, _, name = identifier.rpartition("/")
+    prefix, _, suffix = name.partition(UDIM_TOKEN)
+    names = list_fn(directory) if directory else None
+    if names:
+        tile = re.compile(re.escape(prefix) + r"(1\d{3}|[2-9]\d{3})" + re.escape(suffix))
+        tiles = sorted(f"{directory}/{n}" for n in {n.rstrip("/") for n in names} if tile.fullmatch(n))
+        if tiles:
+            return tiles
+    # Unlistable, or the listing holds no tile (some HTTP backends list nothing):
+    # probe before concluding the textures are really missing.
+    candidates = (identifier.replace(UDIM_TOKEN, str(t), 1) for t in _UDIM_PROBE_TILES)
+    return [c for c in candidates if exists_fn(c)]
+
+
+def _resolves(identifier: str) -> bool:
+    """Whether the active resolver finds ``identifier`` (the probe for an unlistable directory)."""
+    try:
+        return bool(Ar.GetResolver().Resolve(identifier))
+    except Exception:  # noqa: BLE001 — an unresolvable tile is simply absent
+        return False
+
+
+def asset_info_only_paths(layer: Sdf.Layer) -> set:
+    """Asset paths a layer authors only inside ``assetInfo`` metadata.
+
+    ``assetInfo`` (``identifier`` and friends) labels a prim with where it came
+    from; USD never opens those paths, and they are often stale — a label copied
+    along with the prim into a payload names a file one directory off. Yet
+    ``UsdUtils.ExtractExternalReferences`` reports every asset-valued field, so
+    without this filter each label becomes a dependency that does not exist.
+    A path the layer also uses for real — as a sublayer, reference, payload or
+    attribute value — is kept.
+    """
+    labels = set()
+
+    def _collect(value, into):
+        if isinstance(value, Sdf.AssetPath):
+            into.add(value.path)
+        elif hasattr(value, "items"):  # dict, or the MapEditProxy `spec.assetInfo` returns
+            for _, v in value.items():
+                _collect(v, into)
+        elif isinstance(value, (list, tuple, Sdf.AssetPathArray)):
+            for v in value:
+                _collect(v, into)
+
+    def _visit_labels(path):
+        if path.IsPrimPath():
+            spec = layer.GetPrimAtPath(path)
+            if spec is not None and spec.HasInfo("assetInfo"):
+                _collect(spec.assetInfo, labels)
+
+    layer.Traverse(Sdf.Path.absoluteRootPath, _visit_labels)
+    labels.discard("")
+    labels -= set(layer.GetCompositionAssetDependencies())
+    if not labels:
+        # The common case: nothing to filter, so skip reading attribute values.
+        return labels
+
+    used = set()
+    asset_types = {Sdf.ValueTypeNames.Asset, Sdf.ValueTypeNames.AssetArray}
+
+    def _visit_used(path):
+        # Only asset-valued attributes: reading every value (points, normals,
+        # their time samples) would cost far more than the label check is worth.
+        if not path.IsPropertyPath():
+            return
+        spec = layer.GetAttributeAtPath(path)
+        if spec is None or spec.typeName not in asset_types:
+            return
+        if spec.HasDefaultValue():
+            _collect(spec.default, used)
+        for sample_time in layer.ListTimeSamplesForPath(path):
+            _collect(layer.QueryTimeSample(path, sample_time), used)
+
+    layer.Traverse(Sdf.Path.absoluteRootPath, _visit_used)
+    return labels - used
 
 
 def normalize_url(url: str) -> str:
@@ -733,6 +946,11 @@ def _sidecar_list_names(url: str) -> Optional[List[str]]:
     SimReady conformance file's per-profile glob) — every other source reads
     a single, fully-resolved path via ``_sidecar_read_bytes`` alone.
     """
+    return _list_dir_names(url)
+
+
+def _list_dir_names(url: str) -> Optional[List[str]]:
+    """Names in a directory (local path or URL), or ``None`` when it cannot be listed."""
     try:
         if "://" in url:
             if _omni_client is None:
@@ -745,7 +963,7 @@ def _sidecar_list_names(url: str) -> Optional[List[str]]:
     except (FileNotFoundError, OSError):
         return None
     except Exception:  # noqa: BLE001
-        logger.debug("Could not list sidecar directory %s", redact_url(url), exc_info=True)
+        logger.debug("Could not list directory %s", redact_url(url), exc_info=True)
         return None
 
 

@@ -35,7 +35,8 @@ DIR="$( cd "$(dirname "$0")" ; pwd -P )"
 
 WHEELS_DIR="${WHEELS_DIR:-$DIR/../wheels}"
 REPO="${PYTINYEXR_REPO:-https://github.com/syoyo/pytinyexr}"
-PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.11 3.12 3.13 3.14}"
+# Every version requires-python (>=3.11,<3.14) allows; uv.lock pins one wheel each.
+PYTHON_VERSIONS="${PYTHON_VERSIONS:-3.11 3.12 3.13}"
 PYTINYEXR_JOBS="${PYTINYEXR_JOBS:-5}"
 
 mkdir -p "$WHEELS_DIR"
@@ -48,6 +49,23 @@ wheel_exists() {
     local py_tag="$1"
     ls "$WHEELS_DIR"/pytinyexr-*-${py_tag}-*.whl 2>/dev/null | head -1 | grep -q .
     return
+}
+
+# Clone pytinyexr into $1 with just the submodules the build needs: --recursive
+# also pulls pybind11's tools/clang from a third GitHub repo, and a transient
+# failure there failed the whole job. Retried, since GitHub hiccups from CI.
+clone_src() {
+    local dst="$1" attempt
+    for attempt in 1 2 3; do
+        rm -rf "$dst"
+        if git clone --branch 0.9.1 --depth 1 "$REPO" "$dst" \
+            && git -C "$dst" submodule update --init pybind11 tinyexr; then
+            return 0
+        fi
+        echo "pytinyexr clone attempt $attempt failed" >&2
+        [ "$attempt" -lt 3 ] && sleep $((attempt * 10))
+    done
+    return 1
 }
 
 py_version_to_tag() {
@@ -69,7 +87,7 @@ build_direct() {
     tmp_dir=$(mktemp -d /tmp/pytinyexr-XXXXXX)
     trap "rm -rf '$tmp_dir'" EXIT
 
-    git clone --recursive --branch 0.9.1 --depth 1 "$REPO" "$tmp_dir/src"
+    clone_src "$tmp_dir/src"
     pip install --quiet pybind11 wheel setuptools
     cd "$tmp_dir/src"
     python setup.py bdist_wheel
@@ -92,10 +110,12 @@ build_via_docker() {
     section_start "tinyexr_${py_tag}" "Building tinyexr for Python ${py_version} (docker)"
     docker run --rm \
         -v "$WHEELS_DIR":/dist \
+        -e REPO="$REPO" \
         "python:${py_version}-bookworm" \
         bash -c "
             set -eux
-            git clone --recursive --branch 0.9.1 --depth 1 '${REPO}' /package
+            $(declare -f clone_src)
+            clone_src /package
             pip install --quiet pybind11 wheel setuptools
             cd /package
             python setup.py bdist_wheel

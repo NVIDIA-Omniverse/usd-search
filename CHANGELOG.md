@@ -1,3 +1,56 @@
+## 1.5.1
+
+### Added
+
+- Contour `HTTPProxy` exposes the API gateway as an alternative to `kind: Ingress`: set `httpProxy.enabled=true` with an `httpProxy.fqdn`, and configure TLS (optionally cert-manager issued), CORS, edge authorization and route timeouts from the same section.
+- `STORAGE_API_TOP_LEVEL_ADDRESSES_TTL` (Helm `global.storage_api.top_level_addresses_ttl`; default `0` = off) re-reads the Storage API's top-level addresses periodically, so new buckets / datasets are indexed without a restart.
+- Helm `global.omniverse_discovery.enabled` registers the API gateway's REST APIs with an Omniverse Discovery Service ([docs](helm/usdsearch/README.md)).
+- Helm `global.storage_api.full_listing_enabled: false` (`STORAGE_API_FULL_LISTING_ENABLED`) stops the Storage API backend from listing its whole contents, so indexing follows notifications only.
+- `USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT=jpeg` (Helm `validation.image_format`; default `png`) sends validation images as JPEG quality 90: 55-85 % less image-encoding CPU per verdict on 1024-px thumbnails at 448 px. Re-judges cached verdicts once ([docs](docs/vlm-validation.md#server-configuration)).
+- `filter_by_properties_version` filters on version-valued USD properties by version range (e.g. `simready_metadata_validation__profile_version>=2.0.0`), with no reindex needed; Explorer shows each condition as a filter chip ([docs](docs/search-filters.md#version-ranges)).
+- VLM metadata can use caller-supplied labelled views (`view_labels`; the built-in thumbnail path doesn't set them) and a file-name hint (`asset_hint`; `VLM_ASSET_HINT=true` derives it from the path; off by default). Claude models run with `json_mode`.
+- `USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_DIR` (Helm `validation.image_cache.*`; on by default in `/var/tmp/usdsearch-validation-images`, empty = off) keeps each asset view prepared once instead of per check, byte-identical and shared by the API processes, with a size cap, a free-disk floor, an optional memory LRU, a warm-up (`python -m deepsearch_api.validation.warm_image_cache`) and gauges of how full it is ([docs](docs/vlm-validation.md#server-configuration)).
+
+### Deprecated
+
+- The `usd-search-client` Python package is deprecated and unsupported; it fails on 1.5 responses. Generate a client from the OpenAPI spec instead ([docs](docs/api-clients.md)).
+
+### Fixed
+
+- Helm `httpProxy.path` other than `/` now works: the HTTPProxy strips the prefix before forwarding to the API gateway, which returned 404 for every prefixed route.
+- `GET /download/asset` now gives a reason for every file it could not fetch ([docs](docs/asset-download.md#manifestjson)).
+- `GET /download/asset` bundles every `<UDIM>` texture tile, also for asset graphs built earlier, and no longer reports `assetInfo` labels as missing once the graph is rebuilt ([docs](docs/asset-download.md#udim-textures-and-assetinfo-labels)).
+- Storage API downloads served through a presigned URL no longer fail with `LineTooLong` on large binary files (e.g. USDC meshes), and an error response is no longer saved as the file.
+- Dump restores no longer turn on k-NN derived source, which could mix up vectors between assets; the services now warn about indexes that have it on.
+- The dump loader now fails when an index cannot be recreated or ends up with fewer documents than its dump; it reported success when bulk writes failed or documents were rejected.
+- The asset-graph builder and renderers now evict least-recently-used cache files, so pods are no longer evicted at the cache `sizeLimit` (Helm `kit_worker.cache.max_size`, `usd_cache.max_size_bytes`).
+- Render workers no longer leave zombie processes behind.
+- The asset graph service no longer creates a Neo4j index per date-keyed prim property name (e.g. SimReady validation history), which made graph stores slow and grew to ~15k indexes. These properties stay filterable; `PROPERTY_INDEX_EXCLUDE_REGEX` (Helm `asset-graph-service.env`) sets which names are skipped.
+- The asset graph service no longer creates a Neo4j TEXT index for every prim property; none of its filters used them, and keeping them current made each graph store take ~25 s on NFS-backed Neo4j. On startup it drops them, keeping only the names listed in `PROPERTY_TEXT_INDEX_FIELDS` (Helm `asset-graph-service.graphdb.textIndexProperties`, default empty).
+- The asset graph links every prim to its source asset and every root prim to its scene; only the first prim per source asset or scene was linked. Scenes stored before this get the links when re-stored.
+- `GET /download/asset` bundles the MDL modules a packed module imports, and textures a `.mdl` references by an explicitly relative path; both were dropped, so prims bound to those materials rendered untextured. Assets indexed before this need their asset graph rebuilt ([docs](docs/asset-download.md#rebuilding-the-asset-graph)).
+- Helm no longer discards boolean values: the S3 and Azure `allow_system_writes` and `allow_non_system_writes` flags take effect when set to `false`, and a cleared `enable_access_verification` renders a valid env value.
+- `filter_by_properties` and `properties_filter` match the same whether or not a comma is followed by a space ([docs](docs/search-filters.md)).
+- The quickstart smoke test no longer passes when the scene-graph prim query returns nothing.
+- A graph write the database rejects now fails the asset with the database's error code, instead of being recorded as stored successfully.
+- An asset URL as an image query (Explorer *Find similar*) works for indexed 2D images (PNG, JPEG, …) and any asset without a `.thumbs` thumbnail, using its indexed image; one with no image now returns 404 instead of 500 ([docs](docs/search-filters.md#more-like-this--image-similarity)).
+- A blank `scoring_config.hybrid_text.fields[].field` is now rejected as invalid input instead of failing the search with a 500.
+- Deep pagination of a deduplicated query no longer fails with `Result window is too large` near the end of the walk: the access-filter over-fetch now sizes itself to the room left in `index.max_result_window`, so every cursor the previous page advertises can be followed.
+- Helm `global.search_backend_config.max_chunk_size` (`MAX_CHUNK_BYTES`) now caps every bulk write to the search backend; most write paths ignored it and used the client default of 100 MiB.
+- `scripts/build-openapi-docs.sh` and `infra/compose/dev-stack.yml` work in a clean checkout of the public repository: the merger's build context (`tools/openapi-merge/`) and the `deepsearch-api` Compose definition they reference were both missing.
+- `GET /download/asset` bundles dependencies the asset graph stored percent-encoded on deployments that run with `ENABLE_ACCESS_VERIFICATION` off; only the access-verified path looked for the other spelling, so the size preview reported them as errors and the archive left them out.
+- Switching index in Explorer no longer scores the first search against the previous index's vector field, which matched nothing on the new one.
+- Bounding-box size filters (`min_bbox_x/y/z`, `max_bbox_x/y/z`) match in meters again: indexing scaled the default prim's bounding box by the prim's transform, which its world bounds already include, and never applied the stage's meters-per-unit. Assets indexed before this need reindexing ([docs](docs/search-filters.md)).
+- Explorer ships the documented "Only VLM-validated" toggle (Show filters -> Search settings), which hides the "Lower relevance" results; it was documented but never rendered, so the setting could not be reached.
+- Changing the fusion window in Explorer's Advanced scoring panel restarts the search, as the control says it does; it used to leave the results and the cursor from the previous window on screen.
+- The Helm chart README says where to get the chart (NGC catalog listing, `helm repo add`, and how `helm.ngc.nvidia.com` relates to `nvcr.io`, replacing an onboarding link that pointed at unrelated docs) and how to run against an external OpenSearch instance, including Amazon OpenSearch Service, with full `global.search_backend_config.*` key paths and the k-NN, index privilege and basic-auth-only requirements ([docs](helm/usdsearch/README.md#external-opensearch-instance)).
+- Changing only the page size of a hybrid search no longer changes how many results the query can reach: with access verification on, the over-fetch used to widen the fusion window, so the same query returned 222 results at `limit=37` and 200 at `limit=25`.
+- Public documentation no longer points at files the mirror does not ship (the benchmark harness, the Explorer sources and build script, the quickstart test harness and the SimReady field catalog), which read as broken links outside NVIDIA; that material moved to an internal development guide. The rendering-job README builds and tests with uv against `docker/Dockerfile.rendering-job`, replacing Poetry commands and a `build.sh` that no longer exists.
+
+### Security
+
+- Container images updated to clear scanner warnings: Ubuntu base `noble-20261024.1`, Triton `26.10-py3` (CUDA 13.4; drivers older than R615 run it through CUDA forward compatibility), patched OS packages (brotli, apt) and patched Python dependencies (Pillow 13, filelock 4, aiohttp, authlib, OpenTelemetry, uv, pip).
+
 ## 1.5.0
 
 ### Changed
@@ -61,9 +114,11 @@
 - Explorer: asset downloads show a real percentage, rate and time remaining, and no longer hold the whole bundle in browser memory.
 - `GET /download/asset` reports a specific reason per skipped file instead of one combined label ([docs/asset-download.md](docs/asset-download.md)).
 - `usdsearch.admin.tools migrate_url_spellings` repairs asset-graph nodes already stored under a percent-encoded URL and can re-index them, run from the asset-graph-service pod ([services/asset-graph/README.md](services/asset-graph/README.md#admin-tools)).
+- Asset Graph Service: `limit=0` on the four `dependency_graph` endpoints returns every entry, for callers that need a whole dependency tree rather than a page of it. The default stays 1000.
 
 ### Fixed
 
+- `GET /download/asset` now bundles every dependency when `DOWNLOAD_MAX_DEPENDENCIES` is unlimited (the default): the request omitted the limit, so the asset graph applied its own 1000-entry default and scenes referencing more files were silently bundled incomplete. A bundle that fills a configured cap now reports `dependencies_truncated` ([docs/asset-download.md](docs/asset-download.md)).
 - Local-fs mode: `/download/asset` bundles a scene's dependencies (it returned only the root file), and the dependency-graph endpoints, `search_in_scene` and in-scene prims no longer come back empty.
 - Helm API gateway with CORS enabled and several `allowedOrigins` sent them all in one `Access-Control-Allow-Origin` header, which browsers reject; it now echoes back the request's origin when it is allowlisted.
 - Local-fs `fs-watcher` now ingests files whose names contain spaces or other URL-special characters (was rejected with HTTP 400 `Asset missing`); `/process/asset` also accepts a percent-encoded URL when only its decoded spelling exists.

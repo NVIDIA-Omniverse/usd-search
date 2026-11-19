@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import base64
+import functools
 import re
 from datetime import datetime
 from enum import Enum
@@ -21,6 +22,7 @@ from typing import Annotated, Any, List, Optional
 
 from deepsearch_api._constants import IMAGE_MAGIC_TO_MIME
 from deepsearch_api.models import Prediction, Prim
+from deepsearch_api.search_backend.property_versions import parse_version_filters
 from llm_client.validation.validation_fields import (
     ASSET_FACT_NAMES,
     SIMILARITY_SCORE_DESCRIPTION,
@@ -78,6 +80,15 @@ def _validate_base64_image_str(img: str) -> None:
         raise ValueError("Invalid image format. Must be JPEG, PNG, or GIF")
 
 
+@functools.lru_cache(maxsize=1)
+def version_filter_max_length() -> int:
+    """``SearchSettings.version_filter_max_length`` (env ``VERSION_FILTER_MAX_LENGTH``), read once per process."""
+    # Imported here: search_backend.main imports this module.
+    from deepsearch_api.search_backend.main import SearchSettings
+
+    return SearchSettings().version_filter_max_length
+
+
 class SearchMethod(str, Enum):
     EXACT = "exact"
     APPROXIMATE = "approximate"
@@ -118,7 +129,8 @@ class SearchFilterFields(BaseModel):
     - File filters: file_name, file_extension_include/exclude, search_path, file_size_*
     - Date filters: created_after/before, modified_after/before (ISO format: YYYY-MM-DD)
     - User filters: created_by, modified_by (+ exclude_* counterparts)
-    - USD filters: filter_by_properties, filter_by_properties_numeric, min/max_bbox_*, filter_by_tags
+    - USD filters: filter_by_properties, filter_by_properties_numeric, filter_by_properties_version,
+      min/max_bbox_*, filter_by_tags
     - Scene scope: search_in_scene (resolved to an asset list via the Asset Graph Service)
     """
 
@@ -255,6 +267,14 @@ class SearchFilterFields(BaseModel):
         description="Filter assets by numeric USD attributes with comparison operators. Format: `property>value,property<=value`. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `physics:mass>1.0,physics:density<=500`",
         examples=["physics:mass>1.0", "physics:mass>1.0,physics:density<=500"],
     )
+    filter_by_properties_version: Optional[str] = Field(
+        default=None,
+        description="Filter assets by version-valued USD attributes (e.g. `2.0.0`) using version ordering, so `2.10.0` > `2.9.0`. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Stored values that are not versions never match. Example: `simready_metadata_validation__profile_version>=2.0.0`",
+        examples=[
+            "simready_metadata_validation__profile_version>=2.0.0",
+            "simready_metadata_validation__profile_version>=2.0.0,simready_metadata_validation__profile_version<=3.0.0",
+        ],
+    )
     filter_by_tags: Optional[str] = Field(
         default=None,
         description="Filter assets by tags. Format: `tag1=,=value2,tag3=value3`",
@@ -322,6 +342,18 @@ class SearchFilterFields(BaseModel):
                         raise ValueError("Invalid date format. Expected ISO format (YYYY-MM-DD) or YYYYMMDD")
                 else:
                     raise ValueError("Invalid date format. Expected ISO format (YYYY-MM-DD) or YYYYMMDD")
+        return v
+
+    @field_validator("filter_by_properties_version")
+    @classmethod
+    def validate_version_filter(cls, v):
+        if v:
+            max_length = version_filter_max_length()
+            if len(v) > max_length:
+                raise ValueError(
+                    f"filter_by_properties_version is {len(v)} characters long; at most {max_length} are allowed"
+                )
+            parse_version_filters(v)
         return v
 
     @validator(

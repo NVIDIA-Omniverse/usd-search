@@ -26,7 +26,7 @@
 #                   source kept on disk, and `uv sync --all-extras --all-groups` so test deps
 #                   are pre-installed. Used by services/deepsearch_api/test_in_docker_compose.sh
 #                   (and any other CI script that needs to exec pytest inside the image).
-#   - runtime:      nvcr.io/nvidia/base/ubuntu:noble-20260217 — minimal Ubuntu base. Python
+#   - runtime:      nvcr.io/nvidia/base/ubuntu:noble-20261024.1 — minimal Ubuntu base. Python
 #                   is apt-installed here (Ubuntu noble ships CPython 3.12 natively); only the
 #                   interpreter + stdlib (python3.12) and ca-certificates are added — no
 #                   compilers, headers, pip, or venv tooling. The .venv from `builder` is copied
@@ -80,6 +80,9 @@ RUN ./build/build_search_utils.sh
 # .7z archives are on the public packman CDN; OMNI_USD_STOCK_URL gates the whole
 # (ABI-coupled) stack so only the graph-builder build pulls it — left empty (the
 # base usdsearch image) the image resolves local paths only via the usd-core wheel.
+# Each archive's PACKAGE-INFO.yaml (packman build metadata with an internal repo URL and
+# maintainer address) is dropped: the image content scan flags it, and the license texts
+# stay in PACKAGE-LICENSES.
 FROM builder-base AS usd-stack
 ARG OMNI_USD_RESOLVER_URL="https://d4i3qtqj3r0z5.cloudfront.net/omni_usd_resolver_usd_25.11_py_3.12.linux-x86_64.release@2.3.0.7z"
 ARG OMNI_CLIENT_LIBRARY_URL="https://d4i3qtqj3r0z5.cloudfront.net/omni_client_library.linux-x86_64@2.68.0.7z"
@@ -104,6 +107,7 @@ RUN mkdir -p /opt/omni-usd-stack \
             7z x -o"/opt/omni-usd-stack/${name}" /tmp/pkg.7z >/dev/null && \
             rm /tmp/pkg.7z; \
         done; \
+        find /opt/omni-usd-stack -name PACKAGE-INFO.yaml -delete; \
     fi
 
 
@@ -160,7 +164,7 @@ ENV PYTHONUNBUFFERED=1
 
 # ── runtime ──────────────────────────────────────────────────────────────
 # Minimal Ubuntu base — the default target (LAST stage).
-FROM nvcr.io/nvidia/base/ubuntu:noble-20260217 AS runtime
+FROM nvcr.io/nvidia/base/ubuntu:noble-20261024.1 AS runtime
 
 # Runtime-only OS dependencies:
 #   python3.12       — interpreter + standard library. Ubuntu noble ships CPython 3.12

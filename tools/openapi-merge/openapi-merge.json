@@ -1,0 +1,72 @@
+{
+    "base": "main.yaml",
+    "inputs": [
+        {
+            "name": "ags",
+            "description": "Asset Graph Service"
+        },
+        {
+            "name": "info",
+            "description": "Info Endpoint"
+        },
+        {
+            "name": "search",
+            "description": "DeepSearch API",
+            "preMergeRewrites": [
+                {
+                    "type": "renamePath",
+                    "from": "/v3/deepsearch/search",
+                    "to": "/search_hybrid",
+                    "operationIdRewrites": {
+                        "search_post_v3_deepsearch_search_post": "search_hybrid_post"
+                    },
+                    "summaryRewrites": {
+                        "post": "Hybrid Search Post"
+                    }
+                },
+                {
+                    "type": "renamePathPrefix",
+                    "from": "/v3/images",
+                    "to": "/images",
+                    "operationIdRewrites": {
+                        "get_image_v3_images_get": "images_get",
+                        "get_image_images_get": "images_get"
+                    }
+                },
+                {
+                    "type": "renamePath",
+                    "from": "/v3/deepsearch/vlm_validate/search_result",
+                    "to": "/vlm_validate/search_result",
+                    "operationIdRewrites": {
+                        "validate_result_endpoint_v3_deepsearch_vlm_validate_search_result_post": "vlm_validate_search_result_post"
+                    }
+                },
+                {
+                    "type": "renamePathPrefix",
+                    "from": "/v3/deepsearch/llm_parse",
+                    "to": "/llm_parse",
+                    "operationIdRewrites": {
+                        "parse_query_v3_deepsearch_llm_parse_query_post": "llm_parse_query_post",
+                        "list_filter_fields_v3_deepsearch_llm_parse_fields_get": "llm_parse_fields_get"
+                    }
+                },
+                {
+                    "type": "renamePath",
+                    "from": "/v3/download/asset",
+                    "to": "/download/asset",
+                    "operationIdRewrites": {
+                        "download_asset_v3_download_asset_get": "download_asset_get",
+                        "download_asset_download_asset_get": "download_asset_get"
+                    }
+                }
+            ],
+            "pathModification": {
+                "stripStart": "/v2/deepsearch"
+            },
+            "operationSelection": {
+                "excludeTags": ["v2_asset_graph_search", "v2_authorization"]
+            }
+        }
+    ],
+    "output": "./openapi.json"
+}

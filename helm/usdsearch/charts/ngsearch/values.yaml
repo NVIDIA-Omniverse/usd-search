@@ -150,7 +150,8 @@ microservices:
     # so the whole block is optional.
     download:
       # Max transitive dependencies to pull from the asset graph for one bundle.
-      # null = unlimited (default); set an integer to cap very large scenes.
+      # 0 = unlimited (the service default, which null also falls back to); set
+      # an integer to cap very large scenes.
       max_dependencies: null
       # Max dependency depth to traverse. null = unbounded (default).
       max_dependency_depth: null
@@ -176,6 +177,13 @@ microservices:
       stored_extensions: null
       # Span per bundle member (null = true) — shows storage body-transfer time.
       trace_files: null
+      # A dependency URL holding udim_token (null = "<UDIM>") is bundled as the
+      # tiles udim_probe_first_tile..udim_probe_last_tile (null = 1001..1099,
+      # inclusive) that exist — one existence check per tile, so keep the range
+      # narrow. Covers asset graphs built before the builder expanded UDIM paths.
+      udim_token: null
+      udim_probe_first_tile: null
+      udim_probe_last_tile: null
 
     # Persistent cache of the asset_url -> image_id[] resolution (Redis). Serving a
     # thumbnail via GET /images normally costs an OpenSearch lookup to map the asset
@@ -251,6 +259,24 @@ microservices:
         # LRU index (never instance maxmemory, which would evict the indexing
         # pipeline's Streams data). 0 disables the cap.
         max_entries: 2000
+
+    # Version-range filtering (`filter_by_properties_version`, see
+    # docs/search-filters.md#version-ranges). Each property's distinct stored
+    # values are fetched with one aggregation and cached in each API process.
+    version_filter:
+      # How long a property's values are cached. Also how long a newly indexed
+      # version can take to start matching. 0 disables the cache.
+      cache_ttl_seconds: 60
+      # A property with more distinct values than this is rejected with a 422
+      # rather than compared against a partial list. Version properties have a
+      # handful of values; this guards against filtering on e.g. a name key.
+      max_distinct_values: 1000
+      # Most distinct properties one request may filter on. Each costs its own
+      # aggregation on a cache miss.
+      max_properties: 10
+      # Longest filter_by_properties_version string a request may send; longer
+      # is rejected with a 422 before it is parsed.
+      max_length: 4096
 
     # In order to verify that client application has access to view certain assets
     # all search results are verified with the Storage backend. While this functionality
@@ -344,6 +370,14 @@ microservices:
       #
       # @notationType -- yaml
       image_max_px: 0
+      # Encoding of every image sent to the VLM (-> USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT): png (default, lossless) or jpeg (quality 90, RGB, transparency composited onto white as vLLM does for a transparent PNG; 55-85 % less image-encoding CPU per verdict at 448 px and a fraction of the upload). Part of the verdict cache identity when jpeg.
+      image_format: png
+      # Prepared asset views kept across checks (-> USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_*): a stored thumbnail is decoded, fitted to image_max_px and re-encoded once, not per check (most of a check's API CPU). Byte-identical to preparing it per check; not part of the verdict cache identity. On by default: the chart mounts the validationImageCacheDir volume at dir (by default an emptyDir of max_mb + 25 % + 512 MiB, counted in resources ephemeral-storage), a directory of its own (other settings' directories in it are removed). dir: "" turns it off. max_mb caps the views and min_free_mb is free disk the cache never writes below: past either, views are prepared per check (nothing is evicted). memory_mb: a per-process in-memory LRU, in front of dir or alone (0 = off). `nice -n 10 python -m deepsearch_api.validation.warm_image_cache` fills dir from the image cache index, in each replica after it starts (an emptyDir is the pod's own); without it the cache fills as checks run.
+      image_cache:
+        dir: /var/tmp/usdsearch-validation-images
+        max_mb: 2048
+        min_free_mb: 1024
+        memory_mb: 0
       # Extra OpenAI request-body fields merged into every validation call, as a
       # JSON object (-> USDSEARCH_VISION_VALIDATION_EXTRA_BODY). Empty by default;
       # the env is only emitted when set. Use it for provider knobs the OpenAI
@@ -425,12 +459,13 @@ microservices:
       requests:
         cpu: 1
         memory: 1Gi
-        # Declared so the scheduler accounts for downloadTmpDir.
-        ephemeral-storage: 10Gi
+        # Declared so the scheduler accounts for downloadTmpDir (10Gi) and the validation image cache's volume
+        # (3Gi at the default validation.image_cache.max_mb).
+        ephemeral-storage: 13Gi
       limits:
         cpu: 2
         memory: 2Gi
-        ephemeral-storage: 12Gi
+        ephemeral-storage: 15Gi
 
     loggingConfig:
       version: 1
@@ -754,6 +789,11 @@ microservices:
     downloadTmpDir:
       emptyDir:
         sizeLimit: 10Gi
+
+    # Backing volume for validation.image_cache.dir, mounted unless that is "". Empty (default): a disk-backed
+    # emptyDir sized from validation.image_cache.max_mb (max_mb + 25 % + 512 MiB). Set it to use another volume
+    # (e.g. a persistentVolumeClaim), larger than that.
+    validationImageCacheDir: {}
 
     ## Hybrid Search default configuration ################
     hybrid_search:

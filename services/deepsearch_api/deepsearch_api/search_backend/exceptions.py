@@ -20,3 +20,11 @@ class ScoringConfigQueryMismatchError(ValueError):
 
 class ImageProcessingError(OSError):
     pass
+
+
+class ImageQueryNotFoundError(FileNotFoundError):
+    """An image-type query names an asset URL with no image to embed (not indexed, no thumbnail, or not visible)."""
+
+
+class ImageCacheReadError(Exception):
+    """Reading the image cache failed (as opposed to the image being absent)."""

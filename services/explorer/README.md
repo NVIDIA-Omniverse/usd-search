@@ -37,8 +37,7 @@ Raising the window is not free — every leg fetches that many documents per que
 and the similarity dedup sweep is quadratic in it — which is why the UI stops well
 short of the server's own 10,000 ceiling. To change the default for everyone
 instead, set Helm `pagination.default_window` (env `PAGINATION_DEFAULT_WINDOW`) on
-the search REST API; `DEFAULT_WINDOW` in `src/utils/pagination.js` mirrors it and
-should be updated to match.
+the search REST API; the Explorer mirrors it and should be updated to match.
 
 ## Quick start (with the rest of the stack)
 
@@ -94,30 +93,3 @@ All configuration is baked in at `npm run build` time — pass values as
 | `REACT_APP_DEFAULT_CUTOFF_THRESHOLD` | `""` (none) | Default "Similarity Cutoff" pre-filled in the search form. Empty = no cutoff sent unless the user enters one. |
 | `REACT_APP_DEFAULT_FILE_EXTENSION_INCLUDE` | `usd*` | Default "Include Extensions" filter (e.g. `usd*`, `usd*,usdz`, `*`). Explicit empty (`""`) = no extension filter (match all). |
 | `REACT_APP_VALIDATION_MAX_CONCURRENT` | `50` | Parallel VLM-validation requests. |
-
-See `src/config.jsx` for the full list.
-
-### Building with overrides (`scripts/build-explorer.sh`)
-
-`scripts/build-explorer.sh` bakes the default search-form values into the image
-and tags it `<VERSION.md>-<short-sha>[-<suffix>]`. `--cutoff` / `--extensions`
-accept both `--flag value` and `--flag=value` forms and allow empty values;
-`--suffix` appends a trailing tag segment; `--push` pushes the image.
-
-```bash
-# CMS team: no extension filter, 0 cutoff, "-cms"-suffixed tag, pushed to the
-# CMS NGC registry
-REGISTRY=nvcr.io/m3sujtetvf5w/usdsearch \
-  ./scripts/build-explorer.sh --extensions "" --cutoff 0 --suffix=cms --push
-```
-
-## Vendored dependencies
-
-`_packages/` contains three NVIDIA Omniverse JS clients referenced as
-`file:_packages/...` in `package.json`:
-
-- `@omniverse/auth` — Nucleus auth client
-- `@omniverse/discovery` — service discovery client
-- `@omniverse/idl` — protobuf/IDL bindings
-
-These are not on any public npm registry and must travel with the source.

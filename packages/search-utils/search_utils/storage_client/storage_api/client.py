@@ -135,9 +135,14 @@ class StorageAPIStorageClient(StorageClient):
         self._event_consumer_service_stub: Optional[EventConsumerServiceStub] = None
         self._listing_finished = asyncio.Event()
         self._services: Optional[List[ServiceEntry]] = None
-        # Namespace roots served by this Storage API, resolved once at connection time via
-        # ListTopLevelAddresses (with a base_uri fallback). See resolve_root_addresses().
+        # Namespace roots served by this Storage API, resolved via ListTopLevelAddresses (with a base_uri
+        # fallback) on first use and re-read every config.top_level_addresses_ttl seconds when that is set.
+        # See resolve_root_addresses() / refresh_root_addresses().
         self._root_addresses: Optional[List[str]] = None
+        self._root_addresses_resolved_at: Optional[float] = None
+        self._root_addresses_lock = asyncio.Lock()
+        # consecutive refreshes each currently-known root has been missing from ListTopLevelAddresses
+        self._root_addresses_misses: Dict[str, int] = {}
         self.events_queue: Optional[asyncio.Queue] = None
         self.subscription_task: Optional[asyncio.Task] = None
         self._openid_token: Optional[Dict[str, str]] = None
@@ -146,6 +151,7 @@ class StorageAPIStorageClient(StorageClient):
         self._file_token_refresh_time: Optional[float] = None
         self._subscription_reconnect_token: Optional[str] = None
         self._channel: Optional[aio.Channel] = None
+        self._channel_users = 0
         self._notification_service_channel: Optional[aio.Channel] = None
         self._subscription_generator: Optional[AsyncIterator[ConsumeNonDurableEventsResponse]] = None
 
@@ -329,43 +335,32 @@ class StorageAPIStorageClient(StorageClient):
     async def connection_context(self, *_, **__) -> AsyncIterator["StorageAPIStorageClient"]:
         """Create asynchronous connection context.
 
+        Contexts entered while a channel is open re-use it; the channel is closed only when the last of
+        them exits, so a short-lived context cannot close a channel a longer-lived one is still using.
+
         Yields:
             Iterator[AsyncIterator["StorageAPIStorageClient"]]: resulting client
         """
-        if self._channel is not None:
-            # Already connected — re-use the existing channel and stubs.
+        if self._channel is None:
+            if self.config.ssl:
+                self._channel = aio.secure_channel(self.config.grpc_endpoint, ssl_channel_credentials())
+            else:
+                self._channel = aio.insecure_channel(self.config.grpc_endpoint)
+            self._file_object_service_stub = FileObjectServiceStub(self._channel)
+            self._capabilities_stub = CapabilitiesServiceStub(self._channel)
+        self._channel_users += 1
+        try:
             yield self
-            return
-
-        if self.config.ssl:
-            creds = ssl_channel_credentials()
-            async with aio.secure_channel(self.config.grpc_endpoint, creds) as channel:
-                self._channel = channel
-                self._file_object_service_stub = FileObjectServiceStub(channel)
-                self._capabilities_stub = CapabilitiesServiceStub(channel)
-
-                try:
-                    yield self
-                finally:
-                    self._channel = None
-                    self._file_object_service_stub = None
-                    self._capabilities_stub = None
-                    self._file_folder_service_stub = None
-                    self._metadata_service_stub = None
-        else:
-            async with aio.insecure_channel(self.config.grpc_endpoint) as channel:
-                self._channel = channel
-                self._file_object_service_stub = FileObjectServiceStub(channel)
-                self._capabilities_stub = CapabilitiesServiceStub(channel)
-
-                try:
-                    yield self
-                finally:
-                    self._channel = None
-                    self._file_object_service_stub = None
-                    self._capabilities_stub = None
-                    self._file_folder_service_stub = None
-                    self._metadata_service_stub = None
+        finally:
+            self._channel_users -= 1
+            if self._channel_users == 0:
+                channel = self._channel
+                self._channel = None
+                self._file_object_service_stub = None
+                self._capabilities_stub = None
+                self._file_folder_service_stub = None
+                self._metadata_service_stub = None
+                await channel.close()
 
     @property
     def file_object_service_stub(self) -> FileObjectServiceStub:
@@ -530,7 +525,9 @@ class StorageAPIStorageClient(StorageClient):
         calling this directly.
         """
         response: ListTopLevelAddressesResponse = await self.capabilities_stub.ListTopLevelAddresses(
-            ListTopLevelAddressesRequest(), metadata=await self.get_grpc_request_metadata()
+            ListTopLevelAddressesRequest(),
+            metadata=await self.get_grpc_request_metadata(),
+            timeout=self.config.top_level_addresses_timeout,
         )
         addresses = [self._convert_from_grpc_string(entry.top_level_address) for entry in response.items]
         return self._apply_allowed_top_level_addresses(addresses)
@@ -578,6 +575,119 @@ class StorageAPIStorageClient(StorageClient):
 
         logger.info("Discovered %d Storage API top level address(es): %s", len(addresses), addresses)
         return addresses
+
+    @property
+    def _root_addresses_refreshable(self) -> bool:
+        """Whether resolved roots are re-read at all (discovery in use and a TTL configured)."""
+        return self.config.base_uri is None and self.config.top_level_addresses_ttl > 0
+
+    def _root_addresses_stale(self) -> bool:
+        if self._root_addresses is None:
+            return True
+        if not self._root_addresses_refreshable or self._root_addresses_resolved_at is None:
+            return False
+        return time.monotonic() - self._root_addresses_resolved_at >= self.config.top_level_addresses_ttl
+
+    async def refresh_root_addresses(self, force: bool = False) -> None:
+        """Resolve the namespace roots on first use, then re-read them once they are older than the TTL.
+
+        ``force`` re-reads them regardless of age (still only when ``top_level_addresses_ttl`` is set and
+        ``base_uri`` is not). Until a non-empty list has been resolved, a resolution simply replaces the
+        list (as the initial one always did). After that, a refresh never makes it worse: a failed or
+        empty answer keeps the last good list, new roots are added at once, and a missing root is
+        dropped only after ``top_level_addresses_drop_after_misses`` consecutive refreshes without it.
+        Concurrent callers share one ListTopLevelAddresses call.
+        """
+        if not force and not self._root_addresses_stale():
+            return
+        seen_resolved_at = self._root_addresses_resolved_at
+        async with self._root_addresses_lock:
+            if self._root_addresses is not None:
+                if self._root_addresses_resolved_at != seen_resolved_at:
+                    return  # another caller refreshed while we waited for the lock
+                if not self._root_addresses_refreshable:
+                    return
+                if not force and not self._root_addresses_stale():
+                    return
+
+            if self._root_addresses is None:
+                # first resolution: a misconfigured allowlist still fails fast at startup
+                self._root_addresses = await self.resolve_root_addresses()
+            elif not self._root_addresses:
+                # retrying an empty initial resolution from a crawler loop: never raise into it
+                try:
+                    self._root_addresses = await self.resolve_root_addresses()
+                except ValueError as e:
+                    logger.warning("Storage API top level address resolution rejected; still none known: %s", e)
+            else:
+                self._root_addresses = await self._refreshed_root_addresses(self._root_addresses)
+            self._root_addresses_resolved_at = time.monotonic()
+
+    async def _refreshed_root_addresses(self, current: List[str]) -> List[str]:
+        """Merge a fresh ListTopLevelAddresses answer into ``current`` (see :meth:`refresh_root_addresses`)."""
+        try:
+            discovered = await self.list_top_level_addresses()
+        except aio.AioRpcError as e:
+            logger.warning(
+                "Storage API ListTopLevelAddresses failed on refresh (status=%s); keeping the %d known top "
+                "level address(es). Details: %s",
+                e.code(),
+                len(current),
+                e,
+            )
+            return current
+        except ValueError as e:
+            logger.warning("Storage API top level address refresh rejected; keeping the known ones: %s", e)
+            return current
+        if not discovered:
+            logger.warning(
+                "Storage API ListTopLevelAddresses returned no addresses on refresh; keeping the %d known "
+                "top level address(es).",
+                len(current),
+            )
+            return current
+
+        drop_after = self.config.top_level_addresses_drop_after_misses
+        discovered_set = set(discovered)
+        kept: List[str] = []
+        dropped: List[str] = []
+        for root in current:
+            if root in discovered_set:
+                self._root_addresses_misses.pop(root, None)
+                kept.append(root)
+                continue
+            misses = self._root_addresses_misses.get(root, 0) + 1
+            if misses >= drop_after:
+                self._root_addresses_misses.pop(root, None)
+                dropped.append(root)
+            else:
+                self._root_addresses_misses[root] = misses
+                kept.append(root)
+                logger.info(
+                    "Storage API top level address %s missing from ListTopLevelAddresses (%d/%d); keeping it "
+                    "for now.",
+                    root,
+                    misses,
+                    drop_after,
+                )
+        current_set = set(current)
+        added = [a for a in discovered if a not in current_set]
+        if added or dropped:
+            logger.info("Storage API top level addresses changed: +%s -%s", added, dropped)
+        return kept + added
+
+    @property
+    def supported_uris_refreshable(self) -> bool:
+        return self._root_addresses_refreshable
+
+    async def refresh_supported_uris(self) -> None:
+        """Re-read the roots :meth:`is_supported_uri` matches against once they are older than the TTL.
+
+        No-op unless ``top_level_addresses_ttl`` is set (and ``base_uri`` is not), so a process that has
+        not resolved its roots keeps today's behaviour without the opt-in.
+        """
+        if self._root_addresses_refreshable:
+            await self.refresh_root_addresses()
 
     @property
     def root_addresses(self) -> List[str]:
@@ -631,8 +741,7 @@ class StorageAPIStorageClient(StorageClient):
         """
         if self._services is None:
             self._services = await self.list_services()
-        if self._root_addresses is None:
-            self._root_addresses = await self.resolve_root_addresses()
+        await self.refresh_root_addresses()
 
     async def list_stat_wrapper(self, uri: RemoteFileUri) -> AsyncIterator[ListStatResponse]:
         try:
@@ -1060,43 +1169,53 @@ class StorageAPIStorageClient(StorageClient):
         # update path to be a full URI
         if ignore_patterns is None:
             ignore_patterns = []
+        first_pass = True
         while True:
-            logger.info(
-                "Scanning Storage API '%s' for path=%s...",
-                self.config.grpc_endpoint,
-                path,
-            )
-            n_items = 0
-            async for item in self.list_items(
-                uri_list=([RemoteFileUri(self.get_uri_from_path(path))] if path is not None and path != "/" else []),
-                logging_timeout=logging_timeout,
-                show_hidden=show_hidden,
-                ignore_patterns=ignore_patterns,
-                raise_on_error=raise_on_error,
-                recursive=recursive,
-                list_type=list_type,
-            ):
-                if self.config.notification_subscription_enabled:
-                    if self.subscription_task is not None and self.subscription_task.done():
-                        raise self.subscription_task.exception()
-                    if self.events_queue is not None and not self.events_queue.empty():
-                        event = self.events_queue.get_nowait()
-                        # the subscription task reports failures by enqueuing the exception; surface it
-                        # as a raise rather than yielding it as if it were a PathType item
-                        if isinstance(event, BaseException):
-                            raise event
-                        yield [event]
+            if not first_pass:
+                # make every re-scan cover the roots served now, not those served at startup
+                await self.refresh_root_addresses(force=True)
+            first_pass = False
+            if self.config.full_listing_enabled:
+                logger.info(
+                    "Scanning Storage API '%s' for path=%s...",
+                    self.config.grpc_endpoint,
+                    path,
+                )
+                n_items = 0
+                async for item in self.list_items(
+                    uri_list=(
+                        [RemoteFileUri(self.get_uri_from_path(path))] if path is not None and path != "/" else []
+                    ),
+                    logging_timeout=logging_timeout,
+                    show_hidden=show_hidden,
+                    ignore_patterns=ignore_patterns,
+                    raise_on_error=raise_on_error,
+                    recursive=recursive,
+                    list_type=list_type,
+                ):
+                    if self.config.notification_subscription_enabled:
+                        if self.subscription_task is not None and self.subscription_task.done():
+                            raise self.subscription_task.exception()
+                        if self.events_queue is not None and not self.events_queue.empty():
+                            event = self.events_queue.get_nowait()
+                            # the subscription task reports failures by enqueuing the exception; surface it
+                            # as a raise rather than yielding it as if it were a PathType item
+                            if isinstance(event, BaseException):
+                                raise event
+                            yield [event]
 
-                n_items += 1
-                logger.debug("Found item %s", item.uri)
-                yield [item]
+                    n_items += 1
+                    logger.debug("Found item %s", item.uri)
+                    yield [item]
 
-            logger.info(
-                "Scan of Storage API backend '%s' for path=%s finished, found %s items",
-                self.config.grpc_endpoint,
-                path,
-                n_items,
-            )
+                logger.info(
+                    "Scan of Storage API backend '%s' for path=%s finished, found %s items",
+                    self.config.grpc_endpoint,
+                    path,
+                    n_items,
+                )
+            else:
+                logger.info("Storage API '%s' full listing disabled, indexing updates only", self.config.grpc_endpoint)
 
             if self.config.notification_subscription_enabled:
                 while True:

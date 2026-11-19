@@ -54,7 +54,7 @@ Results come back as a hybrid-ranked visual grid. An optional vision-model (VLM)
 
 Open any asset to explore its auto-generated captions, tags, USD scene summary, and per-query relevance. Two beta previews go further: an interactive dependency-graph view, and one-click download of the asset with every referenced USD and texture as a self-contained ZIP. See [Beta features](#beta-features) below.
 
-Everything above is also a REST call, so the same flow runs without the UI — hybrid search, thumbnails, query parsing, VLM validation, scene and dependency inspection, and bundled download each map to a documented endpoint. Swagger is served at `/docs/`, and the full hosted [API reference](https://nvidia-omniverse.github.io/usd-search/) documents every route.
+Everything above is also a REST call, so the same flow runs without the UI — hybrid search, thumbnails, query parsing, VLM validation, scene and dependency inspection, and bundled download each map to a documented endpoint. Swagger is served at `/docs/`, and the full hosted [API reference](https://nvidia-omniverse.github.io/usd-search/) documents every route. To call it from code, [generate a client from the OpenAPI spec](docs/api-clients.md); the `usd-search-client` package is deprecated.
 
 <p align="center">
   <img src="examples/explorer_plain_language_filters.webp" alt="USD Search Explorer results for the query 'warehouse shelves', with the parsed constraints shown as removable 'rigid body' and 'file size ≤ 100MB' filter chips and the advanced-filter rail open on the left" width="820">
@@ -124,7 +124,7 @@ The full documentation index lives in [`docs/README.md`](docs/README.md). The es
 
 - **Using** — [search filters](docs/search-filters.md), [VLM validation](docs/vlm-validation.md), [scene queries](services/asset-graph/README.md), [asset download](docs/asset-download.md)
 - **Operating** — [local deployment](docs/local-deployment.md), [Helm / Kubernetes](helm/usdsearch/README.md), [models & config](docs/models-and-config.md)
-- **Contributing & research** — [development guide](docs/development.md), [search research playbook](docs/search_research_playbook.md), [benchmark](benchmark/README.md)
+- **Contributing & research** — [development guide](docs/development.md), [search research playbook](docs/search_research_playbook.md)
 - **Agents** — [Claude Code and Codex skills](docs/agent-skills.md): the most capable path — reformulating queries, comparing multiple searches, chaining in the asset-graph endpoints, and showing thumbnails inline
 
 ---

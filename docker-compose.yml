@@ -127,6 +127,9 @@ x-common-env: &common-env
   STORAGE_API_GRPC_ENDPOINT:
   STORAGE_API_BASE_URI:
   STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES:
+  STORAGE_API_TOP_LEVEL_ADDRESSES_TIMEOUT:
+  STORAGE_API_TOP_LEVEL_ADDRESSES_TTL:
+  STORAGE_API_TOP_LEVEL_ADDRESSES_DROP_AFTER_MISSES:
   STORAGE_API_TOKEN:
   STORAGE_API_SSL:
   STORAGE_API_OPENID_CLIENT_ID:
@@ -336,6 +339,9 @@ services:
       OV_PASSWORD:
       INDEXED_PROPERTY_PREFIXES: "semantic:,isaac:,physics:"
       USE_SEMANTICS_API: "False"
+      # Budget for the downloaded-asset cache (/cache); least-recently-used
+      # files are evicted above it. 0 disables eviction.
+      CACHE_MAX_SIZE_BYTES: ${GRAPH_BUILDER_CACHE_MAX_SIZE_BYTES:-21474836480}
     healthcheck:
       test: ["CMD", "python", "-c",
              "import httpx; httpx.get('http://localhost:8000/openapi.json').raise_for_status()"]

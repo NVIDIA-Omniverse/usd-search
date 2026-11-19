@@ -110,8 +110,8 @@ fields:
 - **`map.kind`** selects the builder that turns an interpreted filter into concrete
   `DeepSearchSearchRequestV2` fields. Built-in kinds include `file_extension`,
   `name`, `path`, `date_range`, `size_range`, `tag`, `passthrough`,
-  `property_exists`, `property_match`, `property_keyvalue`, `property_numeric`, and
-  `bbox`.
+  `property_exists`, `property_match`, `property_keyvalue`, `property_numeric`,
+  `property_version` (maps to `filter_by_properties_version`), and `bbox`.
 - **`map.property`** is the USD property key behind a semantic field. To re-point a
   field at *your* corpus's property key without editing the file, set its
   **`map.property_env`** environment variable
@@ -196,6 +196,40 @@ Combine clauses with commas (AND), or use `filter_by_properties_include_any`
 (OR) and `exclude_filter_by_properties` (NOT); numeric ranges go through
 `filter_by_properties_numeric` (e.g. `__polygon_count<5000`).
 
+Whitespace around those commas is ignored, so `class=lamp, color=red` filters
+the same as `class=lamp,color=red`. Whitespace around the operator is not:
+`class = lamp` looks for the property `class ` with the value ` lamp`.
+
+#### Version ranges
+
+Version strings such as `"3.0.0"` are not numbers, so `filter_by_properties_numeric`
+cannot compare them. Use `filter_by_properties_version`, which compares with
+version ordering (`2.10.0` > `2.9.0`, `2` = `2.0.0`, `3.0.0-rc1` < `3.0.0`, build
+metadata after `+` ignored). Conditions are comma-separated and ANDed; operators
+are `>`, `>=`, `<`, `<=`, `=`:
+
+```bash
+curl -s "${USD_SEARCH_API_URL}/search_hybrid" -H 'Content-Type: application/json' -d '{
+  "filter_by_properties": "simready_metadata_validation__profile=Robot-Body",
+  "filter_by_properties_version": "simready_metadata_validation__profile_version>=2.0.0,simready_metadata_validation__profile_version<=3.0.0",
+  "limit": 50
+}'
+```
+
+The API reads the property's distinct stored values with one terms aggregation,
+keeps those in range, and filters on them exactly, so it works on existing indexes
+without a reindex. Stored values that are not versions never match. Four server
+settings control it (Helm: `ngsearch.microservices.search_rest_api.version_filter`):
+
+| Env var | Helm value | Default | Effect |
+|---|---|---|---|
+| `PROPERTY_VALUES_CACHE_TTL_SECONDS` | `cache_ttl_seconds` | `60` | How long each API process caches a property's values. A newly indexed version can take this long to start matching. `0` disables the cache. |
+| `PROPERTY_VALUES_MAX_COUNT` | `max_distinct_values` | `1000` | A property with more distinct values than this is rejected with `422` rather than compared against a partial list. |
+| `VERSION_FILTER_MAX_PROPERTIES` | `max_properties` | `10` | Most distinct properties one request may filter on (each costs an aggregation on a cache miss); more is rejected with `422`. |
+| `VERSION_FILTER_MAX_LENGTH` | `max_length` | `4096` | Longest `filter_by_properties_version` string a request may send; longer is rejected with `422` before it is parsed. |
+
+Cache outcomes are exported as `search_property_values_cache_events_total{outcome=hit|miss|coalesced}`.
+
 ### Physics and dataset filters (opt-in)
 
 **Physics filters are SimReady/Isaac-only — not in the default catalog.**
@@ -211,10 +245,7 @@ metadata simply never shows the group — no dead filters.
 **Opt-in filters live in a per-deployment catalog.** Physics fields and fields
 tied to a corpus's own metadata conventions (`object_class`, categories,
 profiles, …) only return results where the corpus carries those properties, so
-they belong in a per-deployment catalog. A complete example (physics + SimReady
-fields) ships next to the default as
-[`search_fields.simready.yaml`](../services/deepsearch_api/deepsearch_api/llm_parse/search_fields.simready.yaml);
-the recommended path is **generating** one against your index with the
+they belong in a per-deployment catalog. The recommended path is **generating** one against your index with the
 [`/usd-property-catalog` skill's filter-intent mode](#discovering-your-corpuss-properties),
 which also fixes up the physics keys when your corpus spells them differently
 (e.g. bare `mass` instead of `physics:mass`). Enable a custom catalog per
@@ -255,7 +286,7 @@ coverage. (It requires aggregations enabled; returns `403` otherwise.)
 
 The endpoint takes the same **filter** parameters as `/search` — `search_path`,
 `file_name`, `file_extension_include`, `filter_by_properties`, `filter_by_tags`,
-`filter_by_properties_numeric`, `filter_url_regexp`, the date / size / user
+`filter_by_properties_numeric`, `filter_by_properties_version`, `filter_url_regexp`, the date / size / user
 filters, the bbox dimensions, `vision_metadata`, and `search_in_scene`. Passing
 none inventories the whole corpus, exactly as before.
 
@@ -405,6 +436,12 @@ still constrained to the same size/type filters. The same works
 programmatically with an uploaded image (`image_similarity_search:
 ["<base64>"]`) on `POST /search_hybrid`. Validation, when enabled, judges
 similarity against the reference image instead of the query text.
+
+An asset URL works for any indexed asset, 2D images included: the server embeds
+the asset's first indexed view (the image `GET /images` returns), falling back
+to its `.thumbs` sidecar thumbnail when the asset is not indexed yet. A URL with
+neither, or one the caller cannot see under access verification, returns 404;
+a failed image-cache read with no thumbnail to fall back to returns 503.
 
 ## See also
 

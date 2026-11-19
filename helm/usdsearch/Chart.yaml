@@ -43,7 +43,7 @@ version: 0.0.0-dev
 # Derived from git tags matching `images-X.Y.Z` — defaults to the latest
 # published image set so local installs pull real tags from NGC.
 # CI overrides this at package time via helm/scripts/version.sh.
-appVersion: "1.5.0"
+appVersion: "1.5.1"
 
 # Home page for the documentation of DeepSearch
 home: https://github.com/NVIDIA-omniverse/usd-search

@@ -613,6 +613,22 @@ async def search(
             },
         ),
     ] = "",
+    filter_by_properties_version: Annotated[
+        str,
+        Query(
+            description="Filter assets by version-valued USD attributes using version ordering. Format: `property>=version,property<version`; conditions are ANDed. Supported operators: `>`, `>=`, `<`, `<=`, `=`. Example: `simready_metadata_validation__profile_version>=2.0.0`",
+            openapi_examples={
+                "Profile version at least 2.0.0": {
+                    "summary": "Filter by SimReady profile version >= 2.0.0",
+                    "value": "simready_metadata_validation__profile_version>=2.0.0",
+                },
+                "Profile version range": {
+                    "summary": "Filter by SimReady profile version between 2.0.0 and 3.0.0",
+                    "value": "simready_metadata_validation__profile_version>=2.0.0,simready_metadata_validation__profile_version<=3.0.0",
+                },
+            },
+        ),
+    ] = "",
     filter_by_tags: Annotated[
         str,
         Query(
@@ -823,6 +839,7 @@ async def search(
             filter_by_properties_include_any=filter_by_properties_include_any,
             exclude_filter_by_properties=exclude_filter_by_properties,
             filter_by_properties_numeric=filter_by_properties_numeric,
+            filter_by_properties_version=filter_by_properties_version,
             filter_by_tags=filter_by_tags,
             min_bbox_x=min_bbox_x,
             min_bbox_y=min_bbox_y,

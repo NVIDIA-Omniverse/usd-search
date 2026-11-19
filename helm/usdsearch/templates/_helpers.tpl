@@ -146,6 +146,15 @@ For inline NGC key, create image pull secret
 {{- end -}}
 
 {{/*
+Boolean value with a fallback for when it is not set
+Go templates count `false` as empty, so `default` would discard it
+Usage: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.global.s3.allow_system_writes "default" true) }}
+*/}}
+{{- define "deepsearch-global.boolWithDefault" -}}
+{{- if kindIs "invalid" .value }}{{ .default }}{{ else }}{{ .value }}{{ end }}
+{{- end -}}
+
+{{/*
 Storage API Authentication Environment Variables
 Generates environment variables for storage API authentication based on configuration
 Usage: {{ include "deepsearch-global.storageApiAuth" . }}
@@ -203,6 +212,16 @@ Usage: {{ include "deepsearch-global.storageApiConfig" . }}
 - name: STORAGE_API_ALLOWED_TOP_LEVEL_ADDRESSES
   value: {{ .Values.global.storage_api.allowed_top_level_addresses | toJson | quote }}
 {{- end }}
+{{- if .Values.global.storage_api.top_level_addresses_timeout }}
+- name: STORAGE_API_TOP_LEVEL_ADDRESSES_TIMEOUT
+  value: {{ .Values.global.storage_api.top_level_addresses_timeout | quote }}
+{{- end }}
+{{- if .Values.global.storage_api.top_level_addresses_ttl }}
+- name: STORAGE_API_TOP_LEVEL_ADDRESSES_TTL
+  value: {{ .Values.global.storage_api.top_level_addresses_ttl | quote }}
+- name: STORAGE_API_TOP_LEVEL_ADDRESSES_DROP_AFTER_MISSES
+  value: {{ .Values.global.storage_api.top_level_addresses_drop_after_misses | quote }}
+{{- end }}
 - name: STORAGE_API_SSL
   value: "{{ .Values.global.storage_api.ssl }}"
 - name: STORAGE_API_NOTIFICATION_SUBSCRIPTION_ENABLED
@@ -213,6 +232,8 @@ Usage: {{ include "deepsearch-global.storageApiConfig" . }}
 {{- end }}
 - name: STORAGE_API_IGNORE_FILE_FOLDER_API
   value: {{ .Values.global.storage_api.ignore_filefolder_api | quote }}
+- name: STORAGE_API_FULL_LISTING_ENABLED
+  value: {{ .Values.global.storage_api.full_listing_enabled | quote }}
 - name: STORAGE_API_RE_SCAN_TIMEOUT
   value: {{ .Values.global.storage_api.re_scan_timeout | quote }}
 {{- if .Values.global.storage_api.thumbnail_metadata_fields }}
@@ -396,9 +417,9 @@ Usage: {{ include "deepsearch-global.s3Config" . }}
   value: "{{ .Values.global.s3.aws_endpoint_url | default "" }}"
 {{- end }}
 - name: S3_STORAGE_ALLOW_SYSTEM_WRITES
-  value: {{ .Values.global.s3.allow_system_writes | default "True" | quote }}
+  value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.global.s3.allow_system_writes "default" true) | quote }}
 - name: S3_STORAGE_ALLOW_NON_SYSTEM_WRITES
-  value: {{ .Values.global.s3.allow_non_system_writes | default "True" | quote }}
+  value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.global.s3.allow_non_system_writes "default" true) | quote }}
 - name: OV_USERNAME
   value: ""
 - name: OV_PASSWORD
@@ -500,9 +521,9 @@ Usage: {{ include "deepsearch-global.azureConfig" . }}
 - name: AZURE_STORAGE_CONTAINER_NAME
   value: "{{ .Values.global.azure.container_name }}"
 - name: AZURE_STORAGE_ALLOW_SYSTEM_WRITES
-  value: {{ .Values.global.azure.allow_system_writes | default "True" | quote }}
+  value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.global.azure.allow_system_writes "default" true) | quote }}
 - name: AZURE_STORAGE_ALLOW_NON_SYSTEM_WRITES
-  value: {{ .Values.global.azure.allow_non_system_writes | default "True" | quote }}
+  value: {{ include "deepsearch-global.boolWithDefault" (dict "value" .Values.global.azure.allow_non_system_writes "default" true) | quote }}
 - name: OV_USERNAME
   value: ""
 - name: OV_PASSWORD
@@ -734,3 +755,52 @@ Usage: {{- include "deepsearch-global.urlMappingEnv" . | nindent 12 }}
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Service name of the API gateway, the single endpoint every public route is served from.
+Usage: {{ include "deepsearch-global.apiGatewayName" . }}
+*/}}
+{{- define "deepsearch-global.apiGatewayName" -}}
+{{- printf "%s-api-gateway" (include "deepsearch-global.releaseName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Name of the secret holding the HTTPProxy TLS certificate.
+Honors an explicit override, otherwise derives from the API gateway name.
+Usage: {{ include "deepsearch-global.tlsSecretName" . }}
+*/}}
+{{- define "deepsearch-global.tlsSecretName" -}}
+{{- $default := printf "tls-cert-%s" (include "deepsearch-global.apiGatewayName" .) -}}
+{{- default $default .Values.httpProxy.tls.secretName | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Capabilities REST API v1beta (`GET /v1beta/services`) response the API gateway
+serves for an Omniverse Discovery Service: one `usdsearch.<api>` endpoint at
+version v1 per public API, whose path is the gateway route prefix it is served
+under (clients append operation sub-paths, e.g. /download/asset). Keep the paths
+in step with the gateway locations in api_gateway_config_map.yaml. APIs that
+depend on an optional subchart are listed only when that subchart is deployed.
+*/}}
+{{- define "deepsearch-global.discoveryCapabilities" -}}
+{{- $apis := dict
+      "search" "/search"
+      "search_hybrid" "/search_hybrid"
+      "images" "/images"
+      "download" "/download"
+      "llm_parse" "/llm_parse"
+      "vlm_validate" "/vlm_validate/search_result"
+      "info" "/info"
+      "process" "/process" -}}
+{{- if .Values.asset_graph_service_deployment.enabled -}}
+{{- $_ := set $apis "asset_graph.scene_summary" "/asset_graph/usd/scene_summary" -}}
+{{- $_ := set $apis "asset_graph.prims" "/asset_graph/usd/prims" -}}
+{{- $_ := set $apis "dependency_graph" "/dependency_graph" -}}
+{{- end -}}
+{{- $endpoints := list -}}
+{{- range $name := keys $apis | sortAlpha -}}
+{{- $version := dict "version" "v1" "detail" (dict "path" (get $apis $name)) -}}
+{{- $endpoints = append $endpoints (dict "name" (print "usdsearch." $name) "versions" (list $version)) -}}
+{{- end -}}
+{{- dict "services" (list (dict "service_name" "usdsearch" "rest" (list (dict "endpoints" $endpoints)))) | toJson -}}
+{{- end -}}

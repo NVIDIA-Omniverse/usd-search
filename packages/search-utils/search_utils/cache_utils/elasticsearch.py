@@ -58,8 +58,6 @@ DEBUG_LOGGING = cache_utils_logger.isEnabledFor(logging.DEBUG)
 
 BINARY_DATA = str2bool(os.getenv("EMBEDDING_BINARY_DATA", "True"))
 
-MAX_CHUNK_BYTES = int(os.getenv("MAX_CHUNK_BYTES", 100 * 1024 * 1024))
-
 
 class ReIndexingError(Exception):
     pass
@@ -563,7 +561,7 @@ class NestedMetaCacheDict:
         bulk_content = self.prepare_bulk_update(prepared_update_dict, prepared_meta, update_dict.keys())
         # use bulk API to set item content
         with self.context() as es:
-            self.helpers.bulk(es, bulk_content, max_retries=5)
+            self.helpers.bulk(es, bulk_content, max_retries=5, max_chunk_bytes=eu.MAX_CHUNK_BYTES)
 
     def __getitem__(self, key, raw: bool = False, skip_storage: bool = False) -> dict:
         # key_hash = self.get_hash(key)
@@ -666,7 +664,7 @@ class NestedMetaCacheDict:
         async with self.async_context() as es:
             bg = time.time()
             async for ok, result in self.helpers.async_streaming_bulk(
-                es, bulk_content, max_chunk_bytes=MAX_CHUNK_BYTES
+                es, bulk_content, max_chunk_bytes=eu.MAX_CHUNK_BYTES
             ):
                 action, result = result.popitem()
                 if not ok:
@@ -697,7 +695,7 @@ class NestedMetaCacheDict:
 
         # use bulk API to set item content
         with self.context() as es:
-            self.helpers.bulk(es, bulk_content, max_retries=5)
+            self.helpers.bulk(es, bulk_content, max_retries=5, max_chunk_bytes=eu.MAX_CHUNK_BYTES)
 
     def update_meta(self, key, meta: dict):
         raise NotImplementedError
@@ -746,7 +744,7 @@ class NestedMetaCacheDict:
         async with self.async_context() as es:
             bg = time.time()
             async for ok, result in self.helpers.async_streaming_bulk(
-                es, bulk_content, max_chunk_bytes=MAX_CHUNK_BYTES
+                es, bulk_content, max_chunk_bytes=eu.MAX_CHUNK_BYTES
             ):
                 action, result = result.popitem()
                 if not ok:

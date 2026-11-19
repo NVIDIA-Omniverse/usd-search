@@ -72,6 +72,18 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+KNN_DERIVED_SOURCE_SETTING = "index.knn.derived_source.enabled"
+
+
+def has_nested_knn_vector(index_fields: dict) -> bool:
+    """True when a nested field holds a ``knn_vector``."""
+    return any(
+        isinstance(f, dict)
+        and f.get("type") == "nested"
+        and any(isinstance(s, dict) and s.get("type") == "knn_vector" for s in (f.get("properties") or {}).values())
+        for f in index_fields.values()
+    )
+
 
 class AvailableSerializers(str, Enum):
     orjson = "orjson"
@@ -298,6 +310,32 @@ class OSBackend(ESBackend):
             response = self.es.indices.put_mapping(index=index_name, body=body["mappings"], ignore=[400])
             if response.get("error") is not None:
                 logger.error("Error updating index mappings: %s", response.get("error"))
+        if has_nested_knn_vector(index_fields):
+            self.warn_if_knn_derived_source(index_name)
+
+    def warn_if_knn_derived_source(self, index_name: str) -> bool:
+        """Log an error if k-NN derived source is on (opensearch-project/k-NN#3623); never raises."""
+        try:
+            response = self.es.indices.get_settings(
+                index=index_name, name=KNN_DERIVED_SOURCE_SETTING, include_defaults=True, flat_settings=True
+            )
+        except Exception as exc_info:
+            logger.debug("Could not read %s of %s: %s", KNN_DERIVED_SOURCE_SETTING, index_name, exc_info)
+            return False
+        found = False
+        for name, entry in (response or {}).items():
+            value = (entry.get("settings") or {}).get(KNN_DERIVED_SOURCE_SETTING)
+            if value is None:
+                value = (entry.get("defaults") or {}).get(KNN_DERIVED_SOURCE_SETTING)
+            if str(value).lower() == "true":
+                found = True
+                logger.error(
+                    "Index %s has %s=true: nested vectors can be mixed up between documents "
+                    "(opensearch-project/k-NN#3623). Re-create it with it off and re-embed.",
+                    name,
+                    KNN_DERIVED_SOURCE_SETTING,
+                )
+        return found
 
     def _get_knn_query_exact(self, field_name: str, query_embed: np.ndarray) -> dict:
         return {

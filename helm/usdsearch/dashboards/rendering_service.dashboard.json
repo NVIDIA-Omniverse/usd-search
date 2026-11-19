@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 97,
+  "id": null,
   "links": [],
   "panels": [
     {
@@ -817,11 +817,11 @@
           },
           "disableTextWrap": false,
           "editorMode": "builder",
-          "expr": "usdsearch_rendering_kit_process_memory_percentage{namespace=\"$namespace\"}",
+          "expr": "max by(pod) (usdsearch_rendering_kit_process_memory_percentage{namespace=\"$namespace\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
-          "legendFormat": "{{pod}}-{{worker_id}}",
+          "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A",
           "useBackend": false
@@ -924,12 +924,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "code",
-          "expr": "usdsearch_rendering_kit_process_memory_percentage{release_name=\"$instance\", namespace=\"$namespace\"}",
+          "editorMode": "builder",
+          "expr": "max by(pod) (usdsearch_rendering_kit_process_memory_percentage{release_name=\"$instance\", namespace=\"$namespace\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
-          "legendFormat": "{{pod}}-{{worker_id}}",
+          "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A",
           "useBackend": false
@@ -1032,12 +1032,12 @@
             "uid": "${datasource}"
           },
           "disableTextWrap": false,
-          "editorMode": "code",
-          "expr": "usdsearch_rendering_kit_process_rendering_time_percentage{release_name=\"$instance\", namespace=\"$namespace\"}",
+          "editorMode": "builder",
+          "expr": "max by(pod) (usdsearch_rendering_kit_process_rendering_time_percentage{release_name=\"$instance\", namespace=\"$namespace\"})",
           "fullMetaSearch": false,
           "includeNullMetadata": true,
           "instant": false,
-          "legendFormat": "{{pod}}-{{worker_id}}",
+          "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A",
           "useBackend": false

@@ -17,10 +17,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
-from enum import Enum
 from functools import lru_cache
-from typing import AsyncIterator, Coroutine, Dict, Iterator, List, Optional, Union
+from typing import AsyncIterator, Coroutine, Iterator, List, Optional, Union
 
 from asset_graph_service.db import BaseGraphDB, Prim, PrimCreateModel
 from asset_graph_service.db.models import (
@@ -32,16 +32,17 @@ from asset_graph_service.db.models import (
 )
 from neo4j import AsyncGraphDatabase, AsyncSession
 from neo4j.exceptions import ClientError, ConstraintError, TransientError
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 from tenacity import (
     retry,
     retry_if_exception_type,
+    retry_if_not_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
 
-from .models import PropertiesFilter, PropertiesFilterRelation
+from .models import PropertiesFilter
 from .utils import sanitize_for_cypher
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ def extract_numeric_properties(
 
 MAX_RETRIES = 5
 RETRY_WAIT_STRATEGY = wait_random_exponential(multiplier=2, max=60)
+RETRY_CONDITION = retry_if_exception_type((TransientError, RuntimeError, ClientError)) & retry_if_not_exception_type(
+    ConstraintError
+)
 
 # Naming convention used by _create_prim_property_index / _create_numeric_property_index,
 # duplicated here so seed_property_index_cache() can parse `SHOW INDEXES` results back into
@@ -171,6 +175,33 @@ UNINDEXED_PROPERTY_PREFIX = "raw_property_"
 def property_value_too_large(value: object) -> bool:
     """Return True if a string property value exceeds Neo4j's per-value index size limit."""
     return isinstance(value, str) and len(value.encode("utf-8")) > MAX_INDEXED_PROPERTY_VALUE_BYTES
+
+
+# Some prim property names embed data rather than naming a field, e.g. flattened SimReady
+# validation history keyed by date:
+# `simready_metadata_validation__validated_features__2026-05-29__FET004_BASE_NEUTRAL__passed`.
+# Such names grow without bound (nearly every new asset brings new ones), and each name used to
+# get its own RANGE + TEXT index: ~15k indexes on one deployment, each a schema transaction plus a
+# population scan over every Prim. Names matching this regex are still stored under `property_`
+# and stay filterable, just without an index. An empty value disables the check.
+PROPERTY_INDEX_EXCLUDE_REGEX = os.getenv("PROPERTY_INDEX_EXCLUDE_REGEX", r"(?:^|[_:])\d{4}-\d{2}-\d{2}(?:$|[_:T])")
+_property_index_exclude_pattern = re.compile(PROPERTY_INDEX_EXCLUDE_REGEX) if PROPERTY_INDEX_EXCLUDE_REGEX else None
+
+
+def property_index_excluded(property_name: str) -> bool:
+    """Return True if no Neo4j index should be created for this prim property name."""
+    return _property_index_exclude_pattern is not None and bool(_property_index_exclude_pattern.search(property_name))
+
+
+# Prim property names that also get a TEXT index (Lucene) next to their RANGE index, as a
+# comma-separated list of exact names. Only CONTAINS / ENDS WITH filters use a TEXT index, and
+# AGS's own filters (=, =~, numeric comparisons) never do, while Neo4j updates every touched TEXT
+# index file on every commit: on NFS-backed storage that was most of each store's time. Empty by
+# default; Neo4jDBBackend.sync_text_property_indexes() makes Neo4j match this list at startup.
+PROPERTY_TEXT_INDEX_FIELDS = frozenset(
+    name.strip() for name in os.getenv("PROPERTY_TEXT_INDEX_FIELDS", "").split(",") if name.strip()
+)
+_TEXT_INDEX_PREFIX = f"text_{_STRING_INDEX_PREFIX}"
 
 
 class Neo4jSettings(BaseSettings):
@@ -298,10 +329,37 @@ class Neo4jDBBackend(BaseGraphDB):
             else:
                 self._property_index_cache.mark_string_indexed(remainder)
 
+    async def sync_text_property_indexes(self, fields: frozenset[str] = PROPERTY_TEXT_INDEX_FIELDS) -> None:
+        """Create the TEXT indexes listed in PROPERTY_TEXT_INDEX_FIELDS and drop all other
+        per-property TEXT indexes (older versions created one for every prim property).
+
+        Runs once at process startup (see api/__init__.py's lifespan). A listed property
+        needn't exist yet: Neo4j indexes it as soon as a prim carries it.
+        """
+        # Keyed by the name SHOW INDEXES reports: Neo4j stores a backtick-quoted identifier
+        # with its doubled backticks collapsed.
+        wanted = {f"{_TEXT_INDEX_PREFIX}{sanitize_for_cypher(name)}".replace("``", "`"): name for name in fields}
+        result = await self._session.run("SHOW INDEXES YIELD name, type WHERE type = 'TEXT' RETURN name")
+        existing = {record["name"] async for record in result}
+
+        stale = sorted(name for name in existing if name.startswith(_TEXT_INDEX_PREFIX) and name not in wanted)
+        if stale:
+            logger.info("Dropping %d prim property TEXT indexes not in PROPERTY_TEXT_INDEX_FIELDS", len(stale))
+        for index_name in stale:
+            await self._session.run(f"DROP INDEX `{index_name.replace('`', '``')}` IF EXISTS")
+
+        for index_name, property_name in wanted.items():
+            if index_name in existing:
+                continue
+            safe_name = sanitize_for_cypher(property_name)
+            query = f"CREATE TEXT INDEX `{_TEXT_INDEX_PREFIX}{safe_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{safe_name}`)"
+            logger.info("create text property index query: %s", query)
+            await self._session.run(query)
+
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def _create_prim_property_index(self, session: AsyncSession, property_name: str):
         cache = self._property_index_cache
@@ -314,15 +372,12 @@ class Neo4jDBBackend(BaseGraphDB):
             query = f"CREATE INDEX `prim_property_{safe_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{safe_name}`)"
             logger.debug("create_prim_property_index query: %s", query)
             await session.run(query)
-            query = f"CREATE TEXT INDEX `text_prim_property_{safe_name}` IF NOT EXISTS FOR (p:Prim) ON (p.`property_{safe_name}`)"
-            logger.debug("create_prim_property_index query: %s", query)
-            await session.run(query)
             cache.mark_string_indexed(property_name)
 
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def _create_numeric_property_index(self, session: AsyncSession, property_name: str, numeric_type: str):
         cache = self._property_index_cache
@@ -340,7 +395,7 @@ class Neo4jDBBackend(BaseGraphDB):
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def upsert_asset_nodes(self, nodes: list[Asset | USDAsset], session: Optional[AsyncSession] = None) -> None:
         async with self.driver.session(database=self.db_name) as session:
@@ -357,7 +412,7 @@ class Neo4jDBBackend(BaseGraphDB):
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def upsert_asset_edges(
         self,
@@ -561,11 +616,11 @@ class Neo4jDBBackend(BaseGraphDB):
         default_prim_filter = None
         if root_prim and default_prim:
             # if both are true, we want to match either
-            root_prim_filter = f"(p.root_prim = true OR p.default_prim = true)"
+            root_prim_filter = "(p.root_prim = true OR p.default_prim = true)"
         elif root_prim:
-            root_prim_filter = f"p.root_prim = true"
+            root_prim_filter = "p.root_prim = true"
         elif default_prim:
-            default_prim_filter = f"p.default_prim = true"
+            default_prim_filter = "p.default_prim = true"
 
         dimension_filters = []
 
@@ -883,7 +938,7 @@ class Neo4jDBBackend(BaseGraphDB):
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def delete_assets(self, asset_urls: list[str]) -> None:
         async with self.driver.session(database=self.db_name) as session:
@@ -900,11 +955,11 @@ class Neo4jDBBackend(BaseGraphDB):
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def delete_prims(self, scene_url: str, session: Optional[AsyncSession] = None) -> None:
         session = session or self._session
-        query = f"MATCH (n:Prim {{scene_url:$scene_url}}) CALL {{ WITH n DETACH DELETE n }}"
+        query = "MATCH (n:Prim {scene_url:$scene_url}) CALL { WITH n DETACH DELETE n }"
         logger.debug("delete_prims_subgraph query: %s", query)
         await session.run(query, scene_url=sanitize_for_cypher(scene_url))
 
@@ -954,6 +1009,9 @@ class Neo4jDBBackend(BaseGraphDB):
         await self.upsert_prims(prims, self._session)
         logger.debug("Upserting %s prims done", len(prims))
 
+        await self._create_property_indexes(prims)
+
+    async def _create_property_indexes(self, prims: list[PrimCreateModel]) -> None:
         # Create indices for prim properties
         # Must be run outside of transaction as it is a schema changing operation
         numeric_properties_seen = set()
@@ -961,6 +1019,9 @@ class Neo4jDBBackend(BaseGraphDB):
         for prim in prims:
             # Create string property indexes
             for property_name, property_value in prim.properties.items():
+                if property_index_excluded(property_name):
+                    continue
+
                 # Oversized values are stored unindexed (see _create_multiple_prims), so skip
                 # creating an index that Neo4j would refuse to populate for them.
                 if not property_value_too_large(property_value):
@@ -977,7 +1038,7 @@ class Neo4jDBBackend(BaseGraphDB):
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         wait=RETRY_WAIT_STRATEGY,
-        retry=retry_if_exception_type((TransientError, RuntimeError, ClientError)),
+        retry=RETRY_CONDITION,
     )
     async def upsert_prims(self, prims: list[Prim], session: Optional[AsyncSession] = None) -> None:
         for prims_batch in self.batch(prims, 50000):
@@ -1097,10 +1158,8 @@ class Neo4jDBBackend(BaseGraphDB):
                 "})"
             )
             logger.debug("upsert_prims: add prims query: %s", query)
-            try:
-                await session.run(query, prims=prims_data, timeout=60 * 60 * 2)
-            except ConstraintError:
-                logger.debug("One or more Prims already exist")
+            result = await session.run(query, prims=prims_data, timeout=60 * 60 * 2)
+            await result.consume()
 
     @staticmethod
     def batch(iterable, n=1):
@@ -1141,66 +1200,57 @@ class Neo4jDBBackend(BaseGraphDB):
                         }
                     )
 
+            # One row per connection, each matched through the (scene_url, usd_path) and url indexes.
+            # (Collecting matches per asset node used to connect only the first prim of each
+            # source asset / scene.) MERGE keeps two concurrent stores of one scene from doubling them.
             source_asset_query = (
                 "UNWIND $connections AS connection "
-                "MATCH (a:Asset) WHERE a.url = connection.source_asset_url "
-                "WITH collect(a) AS aNodes, connection "
-                "MATCH (b:Prim) WHERE b.usd_path = connection.usd_path AND b.scene_url = connection.scene_url "
-                "WITH aNodes, collect(b) AS bNodes "
-                "CALL apoc.create.relationship(aNodes[0], 'SOURCE_ASSET', {}, bNodes[0]) YIELD rel "
-                "RETURN rel"
+                "MATCH (a:Asset {url: connection.source_asset_url}) "
+                "MATCH (b:Prim {scene_url: connection.scene_url, usd_path: connection.usd_path}) "
+                "MERGE (a)-[:SOURCE_ASSET]->(b)"
             )
 
             root_prim_query = (
                 "UNWIND $connections AS connection "
-                "MATCH (a:Asset) WHERE a.url = connection.asset_url "
-                "WITH collect(a) AS aNodes, connection "
-                "MATCH (b:Prim) WHERE b.usd_path = connection.usd_path AND b.scene_url = connection.scene_url "
-                "WITH aNodes, collect(b) AS bNodes "
-                "CALL apoc.create.relationship(aNodes[0], 'ROOT_PRIM', {}, bNodes[0]) YIELD rel "
-                "RETURN rel"
+                "MATCH (a:Asset {url: connection.asset_url}) "
+                "MATCH (b:Prim {scene_url: connection.scene_url, usd_path: connection.usd_path}) "
+                "MERGE (a)-[:ROOT_PRIM]->(b)"
             )
 
             parent_prim_query = (
                 "UNWIND $connections AS connection "
-                "MATCH (a:Prim) WHERE a.scene_url = connection.scene_url AND a.usd_path = connection.usd_path "
-                "WITH collect(a) AS aNodes, connection "
-                "MATCH (b:Prim) WHERE b.usd_path = connection.parent_usd_path AND b.scene_url = connection.scene_url "
-                "WITH aNodes, collect(b) AS bNodes "
-                "CALL apoc.create.relationship(aNodes[0], 'PARENT', {}, bNodes[0]) YIELD rel "
-                "RETURN rel"
+                "MATCH (a:Prim {scene_url: connection.scene_url, usd_path: connection.usd_path}) "
+                "MATCH (b:Prim {scene_url: connection.scene_url, usd_path: connection.parent_usd_path}) "
+                "MERGE (a)-[:PARENT]->(b)"
             )
 
             # Due to what appears to be a bug in neo4j, connections must be processed in batches.
             # The bug occurs when neo4j clears the internal query cache during the insert operation, which seems to
             # clear the cache for all the operations in `UNWIND` clause, making it incredibly slow.
             # Using smaller batches doesn't eliminate the issue, but makes it limited to a single batch.
-            try:
-                for batch_connections in self.batch(source_asset_connections, 100):
-                    logger.debug(
-                        "upsert_prims: add source asset connections, batch size: %d, query: %s",
-                        len(batch_connections),
-                        source_asset_query,
-                    )
-                    result = await session.run(source_asset_query, connections=batch_connections)
-                    await result.consume()
+            for batch_connections in self.batch(source_asset_connections, 100):
+                logger.debug(
+                    "upsert_prims: add source asset connections, batch size: %d, query: %s",
+                    len(batch_connections),
+                    source_asset_query,
+                )
+                result = await session.run(source_asset_query, connections=batch_connections)
+                await result.consume()
 
-                for batch_connections in self.batch(root_prim_connections, 100):
-                    logger.debug(
-                        "upsert_prims: add root prim connections, batch size: %d, query: %s",
-                        len(batch_connections),
-                        root_prim_query,
-                    )
-                    result = await session.run(root_prim_query, connections=batch_connections)
-                    await result.consume()
+            for batch_connections in self.batch(root_prim_connections, 100):
+                logger.debug(
+                    "upsert_prims: add root prim connections, batch size: %d, query: %s",
+                    len(batch_connections),
+                    root_prim_query,
+                )
+                result = await session.run(root_prim_query, connections=batch_connections)
+                await result.consume()
 
-                for batch_connections in self.batch(parent_prim_connections, 100):
-                    logger.debug(
-                        "upsert_prims: add parent prim connections, batch size: %d, query: %s",
-                        len(batch_connections),
-                        parent_prim_query,
-                    )
-                    result = await session.run(parent_prim_query, connections=batch_connections)
-                    await result.consume()
-            except ConstraintError:
-                logger.debug("One or more connections already exist")
+            for batch_connections in self.batch(parent_prim_connections, 100):
+                logger.debug(
+                    "upsert_prims: add parent prim connections, batch size: %d, query: %s",
+                    len(batch_connections),
+                    parent_prim_query,
+                )
+                result = await session.run(parent_prim_query, connections=batch_connections)
+                await result.consume()

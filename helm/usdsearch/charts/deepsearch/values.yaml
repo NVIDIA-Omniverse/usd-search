@@ -82,6 +82,9 @@ vision_endpoint:
   # changing any of them (bump the revision after a model/prompt/schema change)
   # makes unchanged assets eligible for reprocessing.
   metadata_revision: ""
+  # The asset's file name and two folders sent with its images as a hint (VLM_ASSET_HINT);
+  # the prompt never lets it override the views. Off by default.
+  asset_hint: false
 
   #
   # Configuration of metadata fields extracted by the VLM-based auto-captioning system
@@ -426,18 +429,19 @@ microservices:
     # each. Without this, both caches fall back to ephemeral paths inside the
     # container and are recreated from scratch on every rendering Job pod.
     usd_cache:
-      # Caps the resolver cache's on-disk footprint (bytes). The shader cache has no
-      # equivalent cap and shares this same volume, so budget the two together against
-      # `persistence`'s size rather than sizing this alone: at the 10Gi
-      # persistence.emptyDir default, 4Gi here (cleanup trips around 3.2Gi, given
-      # cleanup_threshold below) leaves ~6Gi of headroom for shaders before the
-      # kubelet evicts the pod for exceeding the volume's sizeLimit. Raise both
-      # together if either cache needs more room.
+      # Budget for the resolver cache's on-disk footprint (bytes), enforced by the
+      # renderer job itself: once usage exceeds it, least-recently-used files are
+      # evicted down to `cleanup_threshold` of it. "0" disables eviction. The shader
+      # cache has no equivalent cap and shares this same volume, so budget the two
+      # together against `persistence`'s size rather than sizing this alone: at the
+      # 10Gi persistence.emptyDir default, 4Gi here leaves ~6Gi of headroom for
+      # shaders before the kubelet evicts the pod for exceeding the volume's
+      # sizeLimit. Raise both together if either cache needs more room.
       max_size_bytes: "4294967296"  # 4Gi, under the 10Gi persistence.emptyDir default
-      # Fraction of max_size_bytes that triggers cache eviction.
+      # Fraction of max_size_bytes that eviction brings usage down to.
       cleanup_threshold: 0.8
-      # How often (seconds) the resolver checks whether cleanup_threshold is exceeded.
-      garbage_collection_interval_seconds: 300
+      # How often (seconds) the cache size is checked.
+      garbage_collection_interval_seconds: 60
 
     # amount of time pod is kept after completion
     ttlSecondsAfterFinished: 3600
@@ -931,9 +935,20 @@ plugins:
         cache:
           enabled: true
           mount_path: /cache
-          # "" = node disk, "Memory" = tmpfs (counts against the memory limit).
+          # "" = node disk, "Memory" = tmpfs (counts against the memory limit,
+          # so `max_size` has to fit in that too).
           medium: ""
+          # Hard limit of the emptyDir. Exceeding it makes the kubelet evict the
+          # whole plugin-worker pod, so it is a backstop, not a cache budget.
           size_limit: 20Gi
+          # Cache budget the graph builder enforces itself: once usage exceeds
+          # it, least-recently-used files are evicted down to
+          # `cleanup_threshold` of it. Must stay below `size_limit` (rendering
+          # fails otherwise), with headroom for what builds download between two
+          # passes. Empty = 75% of `size_limit`; 0 disables eviction.
+          max_size: ""
+          cleanup_threshold: 0.8
+          gc_interval_seconds: 60
 
         # /dev/shm for the sidecar. The container default is 64Mi, which is small
         # for USD/Kit. "" disables the mount.

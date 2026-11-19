@@ -37,6 +37,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import yaml
+from deepsearch_api.search_backend.property_versions import parse_version
 
 ValueType = Union[str, float, bool, List[str]]
 
@@ -63,7 +64,7 @@ _NUMERIC_OP = {Operator.GT: ">", Operator.GTE: ">=", Operator.LT: "<", Operator.
 # `filter_by_properties` / `filter_by_tags` are exact key=value / value matches:
 # a comparison operator smuggled into the value (e.g. "version>=6.0") can never
 # match, so we drop the fragment rather than emit a guaranteed-empty filter.
-# Numeric comparisons have a dedicated path (filter_by_properties_numeric).
+# Comparisons have dedicated paths (filter_by_properties_numeric / _version).
 _COMPARISON_IN_VALUE = re.compile(r"[<>]")
 
 
@@ -99,6 +100,14 @@ def _numeric_fragment(prop: str, operator: Operator, value: ValueType) -> Dict[s
         return {}
     num_str = str(int(num)) if num == int(num) else repr(num)
     return {"filter_by_properties_numeric": f"{prop}{sym}{num_str}"}
+
+
+def _version_fragment(prop: str, operator: Operator, value: ValueType) -> Dict[str, str]:
+    sym = _NUMERIC_OP.get(operator)
+    version = str(value).strip()
+    if sym is None or parse_version(version) is None:
+        return {}
+    return {"filter_by_properties_version": f"{prop}{sym}{version}"}
 
 
 def _build_file_extension(_map) -> Callable:
@@ -229,6 +238,15 @@ def _build_property_numeric(m) -> Callable:
     return fn
 
 
+def _build_property_version(m) -> Callable:
+    prop = _resolve_property(m)
+
+    def fn(operator, value):
+        return _version_fragment(prop, operator, value)
+
+    return fn
+
+
 def _build_bbox(_map) -> Callable:
     def fn(operator, value):
         try:
@@ -269,6 +287,7 @@ _KIND_BUILDERS: Dict[str, Callable[[dict], Callable]] = {
     "property_exists": _build_property_exists,
     "property_match": _build_property_match,
     "property_numeric": _build_property_numeric,
+    "property_version": _build_property_version,
     "bbox": _build_bbox,
 }
 
@@ -289,6 +308,7 @@ _KIND_PARAM_KEYS: Dict[str, Callable[[dict], List[str]]] = {
     "property_exists": lambda m: ["filter_by_properties", "exclude_filter_by_properties"],
     "property_match": lambda m: ["filter_by_properties"],
     "property_numeric": lambda m: ["filter_by_properties_numeric"],
+    "property_version": lambda m: ["filter_by_properties_version"],
     "bbox": lambda m: ["min_bbox_x", "min_bbox_y", "min_bbox_z", "max_bbox_x", "max_bbox_y", "max_bbox_z"],
 }
 
@@ -322,7 +342,7 @@ class IRField:
 # Kinds backed by a single USD property key (have a resolvable map.property).
 # Other kinds (bbox, size_range, date_range, property_keyvalue, …) legitimately
 # carry no property and must expose ``property=None``.
-_PROPERTY_KINDS = frozenset({"property_exists", "property_match", "property_numeric"})
+_PROPERTY_KINDS = frozenset({"property_exists", "property_match", "property_numeric", "property_version"})
 
 
 def _build_field(spec: dict) -> IRField:

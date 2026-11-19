@@ -36,6 +36,27 @@ ls -la "$DATA_DIR"
 
 find "$DATA_DIR" -type f -name "*.json" || exit 1
 
+# k-NN indexes are created with derived source off (opensearch-project/k-NN#3623); 1.x/2.x have no such setting.
+for _ in $(seq 1 30); do
+	OS_MAJOR=$(curl -sS "http://${OPENSEARCH_HOST}/" | jq -r '(.version.number // "") | split(".")[0]' || true)
+	[ -n "$OS_MAJOR" ] && break
+	sleep 2
+done
+case "$OS_MAJOR" in
+1 | 2) KNN_DERIVED_SOURCE_OFF=false ;;
+3 | [4-9] | [1-9][0-9]) KNN_DERIVED_SOURCE_OFF=true ;;
+*)
+	echo "ERROR: cannot read the OpenSearch version at http://${OPENSEARCH_HOST}/"
+	exit 1
+	;;
+esac
+INDEX_BODY_FILTER='{settings: $settings, mappings: $mappings}
+| del(.settings | .. | objects | (.derived_source, .["knn.derived_source"], .["knn.derived_source.enabled"],
+	.["index.knn.derived_source"], .["index.knn.derived_source.enabled"]))
+| if $derived_source_off and (((.settings.index.knn // "") | tostring | ascii_downcase) == "true"
+	or ([.mappings | .. | objects | select(.type? == "knn_vector")] | length > 0))
+  then .settings.index["knn.derived_source.enabled"] = "false" else . end'
+
 echo "Processing files..."
 # Create indices by combining settings and mappings, and PUT in one request
 find "$DATA_DIR" -maxdepth 1 -type f -name "*.settings.json" | while read -r settings_file; do
@@ -69,12 +90,10 @@ find "$DATA_DIR" -maxdepth 1 -type f -name "*.settings.json" | while read -r set
 	curl -sS -X DELETE "http://${OPENSEARCH_HOST}/$index_name" || true
 
 	echo "Creating index $index_name with settings and mappings in a single PUT..."
+	# Fail on an HTTP error: an index the DELETE left behind would keep its documents and pass the count check below.
 	if jq -n --argjson settings "$settings_obj" --argjson mappings "$mappings_obj" \
-		'{settings: $settings, mappings: $mappings}
-		| (if (.settings|type) == "object" and (.settings|has("index")) then
-				.settings.index |= (del(.["knn.derived_source"]))
-		   else . end)' \
-		| curl -sS -X PUT "http://${OPENSEARCH_HOST}/$index_name" \
+		--argjson derived_source_off "$KNN_DERIVED_SOURCE_OFF" "$INDEX_BODY_FILTER" \
+		| curl -sS --fail-with-body -X PUT "http://${OPENSEARCH_HOST}/$index_name" \
 			-H 'Content-Type: application/json' \
 			--data-binary @-; then
 		echo "Successfully created index $index_name with combined settings and mappings"
@@ -95,9 +114,25 @@ find "$DATA_DIR" -maxdepth 1 -type f -name "*.data.json" | while read -r file; d
         --type=data \
         --limit=1000 \
         --debug=false; then
-        echo "Successfully loaded data from $file"
+        echo "elasticdump finished for $file"
     else
         echo "Failed to load data from $file"
         exit 1
     fi
+
+    # elasticdump exits 0 when its last bulk write fails and skips rejected documents, so count what landed.
+    # grep -c prints 0 and exits 1 for an empty dump, and exits 2 when it cannot read it.
+    expected=$(grep -c . "$file") || [ "$expected" = 0 ] || {
+        echo "ERROR: cannot count the documents in $file"
+        exit 1
+    }
+    if [ "$expected" -gt 0 ]; then
+        curl -sSf -X POST "http://${OPENSEARCH_HOST}/$index_name/_refresh" > /dev/null
+        actual=$(curl -sSf "http://${OPENSEARCH_HOST}/$index_name/_count" | jq -r '.count')
+        if ! [ "$actual" -ge "$expected" ] 2> /dev/null; then
+            echo "ERROR: $index_name has $actual documents after loading $expected from $file"
+            exit 1
+        fi
+    fi
+    echo "Successfully loaded $expected documents from $file into $index_name"
 done

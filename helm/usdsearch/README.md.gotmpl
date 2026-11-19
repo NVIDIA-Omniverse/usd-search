@@ -152,12 +152,23 @@ version.BuildInfo{Version:"v3.2.0", GitCommit:"e11b7ce3b12db2941e90399e874513fbd
 
 # Packages and Access
 
-Generate your NGC helm and container registry API Key prior to fetch helm chart. See onboarding guide [here](https://docs.nvidia.com/ai-enterprise/deployment/spark-rapids-accelerator/latest/appendix-ngc.html).
+This chart is listed in the [NGC catalog](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/usdsearch/helm-charts/usdsearch) and served from `helm.ngc.nvidia.com`; the container images it deploys come from `nvcr.io`. Fetching the chart needs an NGC API key. The images under `nvcr.io/nvidia/usdsearch` are public, so `global.imagePullSecrets` is only needed for an image served from a private registry.
 
-Fetch the latest helm chart from the registry
+Generate your NGC API key prior to fetch helm chart. See the [NGC user guide](https://docs.nvidia.com/ngc/gpu-cloud/ngc-user-guide/index.html) for how to create one.
+
+Add the repository to list the available versions
 
 ```bash
-helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.5.0.tgz \
+helm repo add usdsearch https://helm.ngc.nvidia.com/nvidia/usdsearch \
+	--username='$oauthtoken' \
+	--password=<YOUR API KEY>
+helm search repo usdsearch/usdsearch --versions
+```
+
+Or fetch a specific chart version from the registry
+
+```bash
+helm fetch https://helm.ngc.nvidia.com/nvidia/usdsearch/charts/usdsearch-1.5.1.tgz \
 	--username='$oauthtoken' \
 	--password=<YOUR API KEY>
 ```
@@ -319,6 +330,17 @@ Below you can find several sample configurations for the API gateway endpoint, d
         --set api-gateway.ingress.ingressClassName=<ingress class name, e.g. 'nginx'>
 	```
 	the service will then be accessible at ``http://<service hostname>``
+
+* **HTTPProxy** - If your cluster runs [Contour](https://projectcontour.io/) rather than an Ingress controller, the same endpoint can be exposed through a Contour ``HTTPProxy`` object. The hostname is composed as ``<host>.<domain>``:
+
+	```bash
+		--set httpProxy.enabled=true \
+		--set httpProxy.fqdn.host=<host label, e.g. 'usdsearch'> \
+		--set httpProxy.fqdn.domain=<domain name, e.g. 'example.com'>
+	```
+	the service will then be accessible at ``http://<host>.<domain>``
+
+	TLS, CORS, edge authorization and route timeouts are configured from the same ``httpProxy`` section. Setting ``httpProxy.tls.certManager.enabled=true`` additionally creates a cert-manager ``Certificate`` for that hostname.
 
 ## Monitoring
 
@@ -900,6 +922,30 @@ Each of the above is described in the following sections.
 {{- end }}
 {{- end}}
 
+### Prepared-view cache
+
+{{- range .Values }}
+{{- if (eq "ngsearch.microservices.search_rest_api.validation.image_cache" .Key) }}
+{{ .AutoDescription }}
+
+Default `ngsearch.microservices.search_rest_api.validation.image_cache`:
+
+```yaml
+{{ trimAll "`" (default .Default .AutoDefault) | trim }}
+```
+
+{{- end }}
+{{- end}}
+
+{{- range .Values }}
+{{- if (eq "ngsearch.microservices.search_rest_api.validationImageCacheDir" .Key) }}
+{{ .AutoDescription }}
+
+Default `ngsearch.microservices.search_rest_api.validationImageCacheDir`: `{}`.
+
+{{- end }}
+{{- end}}
+
 ### LLM/VLM provider
 
 {{- range .Values }}
@@ -1178,7 +1224,7 @@ If images have different dimensions - they will be rescaled such that the minimu
 
 If the embedding service container starts on CPU even though the NVIDIA GPU Operator is installed on the cluster, the two most common causes are:
 
-1. **NVIDIA GPU driver version mismatch.** The driver must be version ``595.58.03`` or higher. Verify the installed driver and upgrade it if it is older.
+1. **NVIDIA GPU driver version mismatch.** The driver must be version ``595.58.03`` or higher. Verify the installed driver and upgrade it if it is older. The embedding image is built on Triton 26.10 (CUDA 13.4): R615 drivers run it natively, older supported drivers through CUDA forward compatibility (logged as ``CUDA Forward Compatibility mode ENABLED`` at startup).
 
 2. **Multiple RuntimeClasses defined on the cluster.** When the driver is correct, the GPU may not be exposed because more than one RuntimeClass is defined and the wrong one is selected by default. List the available RuntimeClasses with:
 

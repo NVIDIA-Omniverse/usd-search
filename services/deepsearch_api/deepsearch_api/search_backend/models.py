@@ -29,6 +29,7 @@ from pydantic import (
     conint,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from pydantic.config import ConfigDict
 from pydantic_settings import BaseSettings
@@ -73,6 +74,8 @@ class SearchType(str, Enum):
     - TEXT_TO_VECTOR: Text query converted to embedding for vector search.
     - IMAGE_SIMILARITY: Image-based vector search using visual embeddings.
     - VECTOR: Direct vector search with a pre-computed embedding array.
+
+    New values may be added in minor releases; clients must accept values they do not recognise.
     """
 
     TEXT = "text"
@@ -394,6 +397,13 @@ class FieldScoreConfig(BaseModel):
     )
     match: bool = Field(default=True, description="Whether to run a standard match query on this field")
     case_insensitive: bool = Field(default=True, description="Whether wildcard queries ignore case")
+
+    @model_validator(mode="after")
+    def _reject_a_blank_field_name(self) -> "FieldScoreConfig":
+        """Refuse a name the search backend cannot address, rather than failing the query."""
+        if self.enabled and not (self.field or "").strip():
+            raise ValueError("field must name the field to search")
+        return self
 
 
 class RRFConfig(BaseModel):

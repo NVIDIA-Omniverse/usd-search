@@ -535,10 +535,7 @@ class AssetGraphGeneration(BasePlugin):
                 dimensions[dim_key] = AssetGraphGeneration._enforce_os_limits(abs(bbox_max[i] - bbox_min[i]))
 
         # Scale-adjusted dimensions - check if AGS provided them, otherwise calculate
-        scale_x = default_prim.get("scale_x", 1.0)
-        scale_y = default_prim.get("scale_y", 1.0)
-        scale_z = default_prim.get("scale_z", 1.0)
-        scales = [scale_x, scale_y, scale_z]
+        scene_mpu = graph.get("scene_mpu") if graph.get("scene_mpu") is not None else 1.0
 
         for i, suffix in enumerate(axis_suffixes):
             scaled_dim_key = f"scaled_bbox_dimension{suffix}"
@@ -546,9 +543,9 @@ class AssetGraphGeneration(BasePlugin):
                 # AGS provided the scaled dimension
                 dimensions[scaled_dim_key] = AssetGraphGeneration._enforce_os_limits(default_prim[scaled_dim_key])
             elif isinstance(bbox_max, list) and isinstance(bbox_min, list) and len(bbox_max) > i and len(bbox_min) > i:
-                # Calculate scaled dimension from (max - min) * scale
+                # Calculate scaled dimension from (max - min) * scene_mpu
                 raw_dimension = abs(bbox_max[i] - bbox_min[i])
-                dimensions[scaled_dim_key] = AssetGraphGeneration._enforce_os_limits(raw_dimension * scales[i])
+                dimensions[scaled_dim_key] = AssetGraphGeneration._enforce_os_limits(raw_dimension * scene_mpu)
 
         # Transform data - store scales individually
         if "scale_x" in default_prim:

@@ -198,6 +198,9 @@ class CrawlerService(DeepSearchConsumer, ABC):
                 await asyncio.sleep(self._crawler_config.idle_timeout)
                 return
 
+            # roots served by the backend can change at runtime; keep is_supported_uri current
+            await client.refresh_supported_uris()
+
             item: PathType
             for item in [PathType.model_construct(**dict_item) for dict_item in path_list]:
 

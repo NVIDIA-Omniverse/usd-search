@@ -110,12 +110,16 @@ class CommonPrimFilter(BaseModel):
         )
     )
 
+    @staticmethod
+    def _filter_terms(properties_filter: str) -> List[str]:
+        """Split on commas, treating the whitespace around them as insignificant."""
+        return [term.strip() for term in properties_filter.split(",")]
+
     @field_validator("properties_filter")
     def validate_properties_filter(cls, v):
         if v is None:
             return v
-        parts = v.split(",")
-        for part in parts:
+        for part in cls._filter_terms(v):
             # Check for any valid operator: =~, >=, <=, =, >, <
             has_operator = "=" in part or ">" in part or "<" in part
             if not has_operator:
@@ -144,7 +148,7 @@ class CommonPrimFilter(BaseModel):
     def properties(self) -> Optional[List[PropertiesFilter]]:
         if self.properties_filter is None:
             return None
-        properties_filters = self.properties_filter.split(",")
+        properties_filters = self._filter_terms(self.properties_filter)
 
         # support for equal, almost equal, and numeric comparison functionality
         properties_filter_list: List[PropertiesFilter] = []
@@ -627,6 +631,10 @@ async def scene_summary(
     )
 
 
+def _unbounded_if_zero(limit: int) -> Optional[int]:
+    return limit or None
+
+
 @api_v1_router.get(
     "/dependency_graph/graph",
     tags=["AGS Asset Graph"],
@@ -648,7 +656,7 @@ async def get_dependencies_graph(
     ] = None,
     limit: Annotated[
         int,
-        Query(description="Page size", gt=0),
+        Query(description="Page size (0 = no limit)", ge=0),
     ] = 1000,
 ) -> AssetGraph:
     """Get the full dependency tree of an asset as a graph — use to discover sub-assemblies, textures, and materials.
@@ -661,7 +669,9 @@ async def get_dependencies_graph(
         raise HTTPException(status_code=403, detail=f"Access denied to asset at {root_node_url}")
     if not await database.get_asset(root_node_url):
         raise AssetNotFoundError(target=root_node_url)
-    dependency_graph = await database.get_asset_dependencies_graph(root_node_url, max_level=max_level, limit=limit)
+    dependency_graph = await database.get_asset_dependencies_graph(
+        root_node_url, max_level=max_level, limit=_unbounded_if_zero(limit)
+    )
     dependency_graph.nodes = await filter_objects(verify_access, dependency_graph.nodes, "url")
     dependency_graph.edges = await filter_objects(verify_access, dependency_graph.edges, ["node_1_url", "node_2_url"])
     return rewrite_response_document(dependency_graph)
@@ -688,7 +698,7 @@ async def get_dependencies_flat(
     ] = None,
     limit: Annotated[
         int,
-        Query(description="Page size", gt=0),
+        Query(description="Page size (0 = no limit)", ge=0),
     ] = 1000,
 ) -> list[Asset]:
     """Get a flat list of all files an asset depends on — simpler alternative to the graph endpoint.
@@ -701,7 +711,9 @@ async def get_dependencies_flat(
         raise HTTPException(status_code=403, detail=f"Access denied to asset at {root_node_url}")
     if not await database.get_asset(root_node_url):
         raise AssetNotFoundError(target=root_node_url)
-    asset_dependencies = await database.get_asset_dependencies_flat(root_node_url, max_level=max_level, limit=limit)
+    asset_dependencies = await database.get_asset_dependencies_flat(
+        root_node_url, max_level=max_level, limit=_unbounded_if_zero(limit)
+    )
     return rewrite_response_document(await filter_objects(verify_access, asset_dependencies, "url"))
 
 
@@ -726,7 +738,7 @@ async def get_dependencies_inverse(
     ] = None,
     limit: Annotated[
         int,
-        Query(description="Page size", gt=0),
+        Query(description="Page size (0 = no limit)", ge=0),
     ] = 1000,
 ) -> list[Asset]:
     """Find which scenes or assets reference a given asset — use for impact analysis.
@@ -740,7 +752,7 @@ async def get_dependencies_inverse(
     if not await database.get_asset(root_node_url):
         raise AssetNotFoundError(target=root_node_url)
     asset_dependencies = await database.get_inverse_asset_dependencies_flat(
-        root_node_url, max_level=max_level, limit=limit
+        root_node_url, max_level=max_level, limit=_unbounded_if_zero(limit)
     )
     return rewrite_response_document(await filter_objects(verify_access, asset_dependencies, "url"))
 
@@ -766,7 +778,7 @@ async def get_inverse_dependencies_graph(
     ] = None,
     limit: Annotated[
         int,
-        Query(description="Page size", gt=0),
+        Query(description="Page size (0 = no limit)", ge=0),
     ] = 1000,
 ) -> AssetGraph:
     """Get the full reverse dependency graph — all assets that directly or transitively reference the specified asset.
@@ -780,7 +792,7 @@ async def get_inverse_dependencies_graph(
     if not await database.get_asset(root_node_url):
         raise AssetNotFoundError(target=root_node_url)
     dependency_graph = await database.get_inverse_asset_dependencies_graph(
-        root_node_url, max_level=max_level, limit=limit
+        root_node_url, max_level=max_level, limit=_unbounded_if_zero(limit)
     )
     dependency_graph.nodes = await filter_objects(verify_access, dependency_graph.nodes, "url")
     dependency_graph.edges = await filter_objects(verify_access, dependency_graph.edges, ["node_1_url", "node_2_url"])

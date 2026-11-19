@@ -43,6 +43,13 @@ data:
       {{- end }}
     }
     {{- end }}
+    # Ingress prefix the HTTPProxy strips (httpProxy.path), sent as
+    # X-Forwarded-Prefix so root redirects stay under it. Only a plain path is
+    # honoured, so the header cannot point a redirect at another host.
+    map $http_x_forwarded_prefix $usdsearch_ingress_prefix {
+      default "";
+      "~^(/[A-Za-z0-9._~-]+)+$" $http_x_forwarded_prefix;
+    }
     server {
       listen 0.0.0.0:8080;
       http2 on;
@@ -60,6 +67,17 @@ data:
       gzip_vary on;
       gzip_min_length 1024;
       gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+      {{- if (.Values.global.omniverse_discovery).enabled }}
+
+      # Capabilities REST API v1beta for an Omniverse Discovery Service. The
+      # Discovery Service queries it over plain HTTP on the Service port, so it
+      # must stay unauthenticated.
+      location = /v1beta/services {
+        default_type application/json;
+        return 200 '{{ include "deepsearch-global.discoveryCapabilities" . }}';
+      }
+      {{- end }}
 
       location / {
           if ($request_method = OPTIONS) {
@@ -528,16 +546,16 @@ data:
 
       {{ if $apiGateway.extraSettings.redirectToUIWhenAvailable }}
       location = / {
-          return 301 /ui;
+          return 301 $usdsearch_ingress_prefix/ui;
         }
       {{ else }}
         location = / {
-          return 301 /docs;
+          return 301 $usdsearch_ingress_prefix/docs;
         }
       {{ end }}
     {{ else }}
       location = / {
-          return 301 /docs;
+          return 301 $usdsearch_ingress_prefix/docs;
         }
     {{ end }}
       }

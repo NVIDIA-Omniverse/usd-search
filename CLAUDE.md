@@ -2,8 +2,8 @@
 
 Guidance for Claude Code (claude.ai/code) in this repository. This file points
 to the right skill for using the repo (searching, inspecting, deploying assets);
-development work on the repo itself is covered by
-[`docs/development.md`](docs/development.md).
+development work on the repo itself is covered by every
+[`docs/development*.md`](docs/development.md).
 
 ## Searching for assets
 
@@ -26,7 +26,7 @@ properties.
 
 ## Developing this repository
 
-**When you are working _on_ the repo itself** — building, testing, linting, debugging, editing source, touching Docker / Helm / CI / the compose stack, regenerating clients or third-party notices, or otherwise modifying the codebase — read **[`docs/development.md`](docs/development.md)** first.
+**When you are working _on_ the repo itself** — building, testing, linting, debugging, editing source, touching Docker / Helm / CI / the compose stack, regenerating clients or third-party notices, or otherwise modifying the codebase — read every **[`docs/development*.md`](docs/development.md)** first.
 
 It is the source of truth for development work and covers:
 

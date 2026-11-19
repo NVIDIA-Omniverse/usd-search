@@ -31,6 +31,7 @@ from fastapi import APIRouter, FastAPI, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, Response
 
+from .cache_gc import run_cache_gc
 from .failures import (
     GraphBuildError,
     GraphBuildReason,
@@ -68,6 +69,15 @@ KIT_WORKER_MEMORY_LIMIT_MB = int(os.getenv("KIT_WORKER_MEMORY_LIMIT_MB", "0"))
 # /cache is created (writable by nvs) in docker/Dockerfile.usdsearch.
 CACHE_LOCATION = os.getenv("CACHE_LOCATION", "/cache")
 
+# Size budget for CACHE_LOCATION, in bytes. The client library never evicts from
+# it, so without a budget it grows until the volume's sizeLimit gets the pod
+# evicted. Set it comfortably below that limit; once usage exceeds it, the
+# least-recently-used files are removed down to CACHE_CLEANUP_THRESHOLD of it.
+# 0 / unset disables eviction.
+CACHE_MAX_SIZE_BYTES = int(os.getenv("CACHE_MAX_SIZE_BYTES", "0"))
+CACHE_CLEANUP_THRESHOLD = float(os.getenv("CACHE_CLEANUP_THRESHOLD", "0.8"))
+CACHE_GC_INTERVAL_SECONDS = float(os.getenv("CACHE_GC_INTERVAL_SECONDS", "60"))
+
 n_parallel_processes = int(os.getenv("N_PARALLEL_PROCESSES", "1"))
 
 semaphore = asyncio.Semaphore(n_parallel_processes)
@@ -85,7 +95,16 @@ if SENTRY_DSN:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _init_kit_process_registry(app)
-    yield
+    cache_gc = None
+    if CACHE_MAX_SIZE_BYTES > 0:
+        cache_gc = asyncio.create_task(
+            run_cache_gc(CACHE_LOCATION, CACHE_MAX_SIZE_BYTES, CACHE_CLEANUP_THRESHOLD, CACHE_GC_INTERVAL_SECONDS)
+        )
+    try:
+        yield
+    finally:
+        if cache_gc is not None:
+            cache_gc.cancel()
 
 
 def _init_kit_process_registry(app: FastAPI) -> None:

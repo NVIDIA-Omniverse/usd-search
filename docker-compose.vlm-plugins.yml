@@ -59,6 +59,7 @@ x-vlm-output-env: &vlm-output-env
   VLM_MAX_IMAGES: ${VLM_MAX_IMAGES:-16}
   VLM_MAX_REQUEST_BYTES: ${VLM_MAX_REQUEST_BYTES:-8388608}
   VLM_METADATA_REVISION: ${VLM_METADATA_REVISION:-}
+  VLM_ASSET_HINT: ${VLM_ASSET_HINT:-false}
 
 x-vlm-worker-env: &vlm-worker-env
   # Storage backend — overridable from the host shell (kept in sync with the
@@ -127,6 +128,17 @@ services:
       # Longest edge (px) of images sent to the VLM; 0 = stored size, 448 = the
       # evaluated view (~4x fewer prompt tokens; part of the verdict cache identity).
       USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX: ${USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX:-0}
+      # png (default, lossless) or jpeg: quality 90, transparency on white, 55-85 % less image-encoding CPU
+      # (part of the verdict cache identity when jpeg).
+      USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT: ${USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT:-png}
+      # Keep each asset view prepared once (decoded, fitted, re-encoded) instead of per check, in a directory the
+      # API processes share (in the container's own filesystem: no volume needed) and/or a per-process memory LRU.
+      # On by default; set *_IMAGE_CACHE_DIR= (empty) on the host to turn it off. It never holds more than MAX_MB
+      # of views nor writes below MIN_FREE_MB free on the disk (past either, views are prepared per check).
+      USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_DIR: ${USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_DIR-/var/tmp/usdsearch-validation-images}
+      USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MAX_MB: ${USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MAX_MB:-2048}
+      USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MIN_FREE_MB: ${USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MIN_FREE_MB:-1024}
+      USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MEMORY_MB: ${USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MEMORY_MB:-0}
       USDSEARCH_VISION_VALIDATION_MODEL:
       # Verdict method (generative | logprob), null pass-through: forwarded only
       # when set on the host, otherwise the code default applies (see

@@ -65,14 +65,6 @@ def _cache_root() -> str:
     return os.getenv("OVRTX_USD_CACHE_DIR") or os.path.join(_config_dir(), "cache")
 
 
-# Bounds the resolver cache's on-disk footprint. Without a cap the client library never
-# evicts downloaded layers, so a long-lived renderer process (or a shared cache volume)
-# grows unbounded. Defaults to 20GiB; deployments should size this under their mounted
-# cache volume's capacity.
-_CACHE_MAX_SIZE_BYTES = os.getenv("OVRTX_CACHE_MAX_SIZE_BYTES", str(20 * 1024**3))
-_CACHE_CLEANUP_THRESHOLD = os.getenv("OVRTX_CACHE_CLEANUP_THRESHOLD", "0.8")
-_CACHE_GC_INTERVAL_SECONDS = os.getenv("OVRTX_CACHE_GC_INTERVAL_SECONDS", "300")
-
 _STAGE_PROBE = os.path.join(os.path.dirname(__file__), "_stage_probe.py")
 _STAGE_PROBE_TIMEOUT = 60
 
@@ -93,29 +85,26 @@ class StageProbe:
 
 
 def _base_omni_config() -> str:
-    """``[paths]``/``[cache]`` config shared by every backend, S3 or not.
+    """``[paths]`` config shared by every backend, S3 or not.
 
     A per-host ``[s3]`` table is appended on top of this by ``_write_s3_config``;
     Nucleus and public-URL renders never call that, so this must stand on its own
-    for the cache root and size cap to apply to them too.
+    for the cache root to apply to them too.  No ``[cache]`` size cap: the client
+    library leaves that to the Hub's cleaner, which no render process runs, so the
+    parent bounds the shared cache itself (``deepsearch_rendering_job.cache_gc``).
     """
     cache_root = _cache_root()
     logs_root = os.path.join(_config_dir(), "logs")
-    return (
-        f'[paths]\ncache_root = "{cache_root}"\nlogs_root = "{logs_root}"\n\n'
-        f'[cache]\npath = "{cache_root}"\nmax_size = {_CACHE_MAX_SIZE_BYTES}\n'
-        f"cleanup_threshold = {_CACHE_CLEANUP_THRESHOLD}\n"
-        f"garbage_collection_interval = {_CACHE_GC_INTERVAL_SECONDS}\n\n"
-    )
+    return f'[paths]\ncache_root = "{cache_root}"\nlogs_root = "{logs_root}"\n\n'
 
 
 def init_omni_config_path() -> None:
     """Point the bundled client library at a private, writable config directory.
 
     The library captures ``OMNI_CONFIG_PATH`` when it initializes, so this must
-    run before ``ovrtx`` is imported.  Writes the base ``[paths]``/``[cache]``
-    config up front so the cache root and size cap apply to every backend, not
-    just credentialed S3 requests; per-request S3 credentials are then written
+    run before ``ovrtx`` is imported.  Writes the base ``[paths]`` config up front
+    so the cache root applies to every backend, not just credentialed S3
+    requests; per-request S3 credentials are then written
     on top of it into this directory's ``omniverse.toml`` for the resolver to
     sign requests and resolve referenced layers natively.
 
@@ -212,7 +201,7 @@ def _nucleus_overrides(url: str, auth: Authentication) -> Dict[str, str]:
 def _write_s3_config(url: str, auth: Authentication) -> None:
     """Write per-host S3 credentials into the client library's ``omniverse.toml``.
 
-    Mirrors the Kit worker's config: the shared ``[paths]``/``[cache]`` base plus
+    Mirrors the Kit worker's config: the shared ``[paths]`` base plus
     a per-host ``[s3]`` table keyed by the virtual-hosted bucket endpoint, so the
     resolver signs requests for the asset and every layer it references.
     """
@@ -241,7 +230,7 @@ def _write_s3_config(url: str, auth: Authentication) -> None:
 def _clear_s3_config() -> None:
     """Drop the per-request ``[s3]`` credentials, restoring the base config.
 
-    Not a plain delete: the base ``[paths]``/``[cache]`` config must keep
+    Not a plain delete: the base ``[paths]`` config must keep
     applying to whatever request (S3 or not) comes after this one on the same
     long-lived renderer process.
     """

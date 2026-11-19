@@ -516,6 +516,14 @@ spec:
             {{- if $kitWorkerCache.enabled }}
             - name: CACHE_LOCATION
               value: {{ $kitWorkerCache.mount_path | default "/cache" | quote }}
+            {{- with include "deepsearch.kitWorkerCacheBudget" $kitWorkerCache }}
+            - name: CACHE_MAX_SIZE_BYTES
+              value: {{ . | quote }}
+            - name: CACHE_CLEANUP_THRESHOLD
+              value: {{ $kitWorkerCache.cleanup_threshold | default 0.8 | quote }}
+            - name: CACHE_GC_INTERVAL_SECONDS
+              value: {{ $kitWorkerCache.gc_interval_seconds | default 60 | quote }}
+            {{- end }}
             {{- end }}
             {{- if $kitWorker.sidecar_metadata_catalog }}
             - name: SIDECAR_METADATA_CONFIG_PATH

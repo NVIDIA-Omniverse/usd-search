@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+services:
+  # DeepSearch API service — built from the unified docker/Dockerfile.
+  # mocked mode (default): MOCK_EMBEDDING=true, no embeddings container needed.
+  # integration mode: layer deepsearch-api-embeddings.yml on top.
+  deepsearch-api:
+    build:
+      context: ../../
+      dockerfile: docker/Dockerfile.usdsearch
+    container_name: deepsearch-api
+    command: ["uvicorn", "deepsearch_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - ENABLE_ACCESS_VERIFICATION=True
+      - PYTHONUNBUFFERED=0
+      - NUCLEUS_DEPLOYMENT_LOOKUP=external
+      - BASE_LOGGING_ENABLE_JSON_LOGGING=False
+      - TRITON_SERVER_URL=${TRITON_SERVER_URL:-localhost:8001}
+      - ENABLE_LLM_SERVICE=${ENABLE_LLM_SERVICE:-false}
+      - LLM_SERVER_ENDPOINT=${LLM_SERVER_ENDPOINT:-}
+      - OV_USERNAME=${OV_USERNAME:-}
+      - OV_PASSWORD=${OV_PASSWORD:-}
+      - OV_SERVER=${OV_SERVER:-localhost}
+      - DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY=${DEEPSEARCH_BACKEND_ADMIN_ACCESS_KEY:-admin-key}
+      - DEEPSEARCH_BACKEND_ASSET_GRAPH_SERVICE_URL=${ASSET_GRAPH_SERVICE_ENDPOINT:-http://asset-graph-service:8000}
+      - ASSET_GRAPH_SERVICE_ENDPOINT=${ASSET_GRAPH_SERVICE_ENDPOINT:-http://asset-graph-service:8000}
+      - LOGGING_CONFIG=/logging.yml
+      - OTEL_SDK_DISABLED=False
+      - OTEL_TRACES_EXPORTER=none
+      - USE_SEARCH_TELEMETRY=True
+      - opensearch_host=opensearch:9200
+      - opensearch_index_name=ds-ci-rc-r15-ov-clip-ver5.0
+      - opensearch_image_cache_index_name=ds-ci-rc-r15-ov-clip-ver4.0-image-cache
+      - REAL_EMBEDDING=${REAL_EMBEDDING:-false}
+      - REAL_STORAGE=${REAL_STORAGE:-false}
+      - MOCK_EMBEDDING=${MOCK_EMBEDDING:-true}
+      - MOCK_STORAGE=${MOCK_STORAGE:-true}
+      - SEARCH_TELEMETRY_STDOUT=True
+      - USDSEARCH_VISION_VALIDATION_ENABLED=${USDSEARCH_VISION_VALIDATION_ENABLED:-true}
+      - USDSEARCH_VISION_VALIDATION_MODE=${USDSEARCH_VISION_VALIDATION_MODE:-filter}
+      - USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT=${USDSEARCH_VISION_VALIDATION_MAX_CONCURRENT:-50}
+      - USDSEARCH_VISION_VALIDATION_MAX_TRIES=${USDSEARCH_VISION_VALIDATION_MAX_TRIES:-1}
+      - USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION=${USDSEARCH_VISION_VALIDATION_MAX_IMAGES_PER_VALIDATION:-1}
+      - USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX=${USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX:-0}
+      - USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT=${USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT:-png}
+      - USDSEARCH_LLM_API_KEY=${USDSEARCH_LLM_API_KEY}
+      - DEFAULT_CUTOFF_THRESHOLD=${DEFAULT_CUTOFF_THRESHOLD:-0}
+      - "BACKEND_CONFIG_STR=backend_name: es-sample"
+      - S3_STORAGE_BUCKET_NAME=${S3_STORAGE_BUCKET_NAME:-deepsearch-test-bucket}
+      - S3_STORAGE_REGION_NAME=${S3_STORAGE_REGION_NAME:-eu-central-1}
+      - S3_STORAGE_AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - S3_STORAGE_AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+    volumes:
+      - ../../services/deepsearch_api/tests:/app/services/deepsearch_api/tests:ro
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  opensearch-loader:
+    image: node:20-alpine
+    environment:
+      OPENSEARCH_HOST: opensearch:9200
+    volumes:
+      - ../../services/deepsearch_api/tests/opensearch-data:/data
+      - ../../services/deepsearch_api/loader.sh:/loader.sh
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    command: sh -c 'chmod +x /loader.sh && /loader.sh'

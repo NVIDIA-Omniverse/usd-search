@@ -129,7 +129,8 @@ class LLMClient:
         model: model id to call (e.g. ``gcp/google/gemini-3.5-flash``).
         connection: shared connection config; defaults to ``LLMConnectionConfig()``.
         max_tokens: response cap (keep >= 4096 — reasoning models burn budget).
-        temperature: sampling temperature; 0 = deterministic.
+        temperature: sampling temperature; 0 = deterministic. ``None`` sends none
+            (Claude Opus 5.x on the Inference Hub rejects the field).
         max_retries: ChatOpenAI client-level retries (0 = fail fast; retries are
             usually handled at the role level).
         reasoning_effort: when set, sent as ``extra_body={"reasoning_effort": ...}``
@@ -144,7 +145,7 @@ class LLMClient:
         *,
         connection: Optional[LLMConnectionConfig] = None,
         max_tokens: int = 4096,
-        temperature: float = 0.0,
+        temperature: Optional[float] = 0.0,
         max_retries: int = 0,
         reasoning_effort: Optional[str] = "none",
         extra_body: Optional[dict] = None,
@@ -201,9 +202,16 @@ class LLMClient:
         """
         return self._base
 
-    def with_structured_output(self, schema: BaseModel) -> None:
-        """Constrain output to ``schema`` (re-derives from the base model each call)."""
-        self._llm = self._base.with_structured_output(schema=schema)
+    def with_structured_output(self, schema: BaseModel, method: Optional[str] = None) -> None:
+        """Constrain output to ``schema`` (re-derives from the base model each call).
+
+        ``method`` is langchain's: ``json_schema`` (its default), ``function_calling``
+        or ``json_mode``. Claude on the Inference Hub needs ``json_mode``: the Hub
+        turns a JSON schema into a forced tool call, which Claude Opus 5.x refuses."""
+        if method:
+            self._llm = self._base.with_structured_output(schema=schema, method=method)
+        else:
+            self._llm = self._base.with_structured_output(schema=schema)
 
     @staticmethod
     def _image_media_type(base64_image: str) -> str:
@@ -226,19 +234,26 @@ class LLMClient:
         prompt: str,
         system_prompt: Optional[str],
         label_images: bool = False,
+        image_labels: Optional[list[str]] = None,
     ) -> list[dict]:
         """Build an OpenAI chat message list with optional inline base64 images.
 
         With ``label_images`` each image is preceded by a "View i of N" text part
         so the model can reference and reconcile views (used by the metadata role,
-        which sends many views of one asset).
+        which sends many views of one asset). ``image_labels`` (one per image,
+        e.g. "front", "spin 2", "open") names each view: "View i of N (front):".
+        Without labels the text is unchanged.
         """
+        if image_labels is not None and (base64_images is None or len(image_labels) != len(base64_images)):
+            raise ValueError("image_labels must name every image, in order")
         user_content: list[dict] = [{"type": "text", "text": prompt}]
         if base64_images is not None:
             n = len(base64_images)
             for i, image in enumerate(base64_images, start=1):
                 if label_images:
-                    user_content.append({"type": "text", "text": f"View {i} of {n}:"})
+                    label = " ".join(str(image_labels[i - 1]).split()) if image_labels else ""
+                    view = f"View {i} of {n} ({label}):" if label else f"View {i} of {n}:"
+                    user_content.append({"type": "text", "text": view})
                 user_content.append(
                     {
                         "type": "image_url",
@@ -306,11 +321,15 @@ class LLMClient:
         system_prompt: str = None,
         base64_images: list[str] = None,
         label_images: bool = False,
+        image_labels: Optional[list[str]] = None,
         **kwargs,
     ) -> Any:
         try:
             return await self._llm.ainvoke(
-                input=self._messages(base64_images, prompt, system_prompt, label_images=label_images), **kwargs
+                input=self._messages(
+                    base64_images, prompt, system_prompt, label_images=label_images, image_labels=image_labels
+                ),
+                **kwargs,
             )
         except Exception as e:
             self._raise_llm_error(e)

@@ -4,11 +4,10 @@ USD asset rendering service powered by ovrtx.
 
 ## Run
 
+Build from the repository root, which the Dockerfile needs as its context:
+
 ```bash
-pip install poetry==1.6.1
-poetry install
-./build.sh
-docker build -t deepsearch-rendering-job:local .
+docker build -f docker/Dockerfile.rendering-job -t deepsearch-rendering-job:local .
 ```
 
 **CLI mode:**
@@ -46,19 +45,28 @@ can opt out with `render_settings.render_existing_views=false`.
 
 ## Test locally
 
+Mount the repository root, so the workspace `uv.lock` is available inside the
+container:
+
 ```bash
 docker run -it --rm --gpus=all \
-  -v "${PWD}":/deepsearch-rendering-job \
+  -v "${PWD}":/workspace \
   -v /usr/share/nvidia/nvoptix.bin:/usr/share/nvidia/nvoptix.bin \
   -u root --entrypoint=bash \
   deepsearch-rendering-job:local
 ```
 
-Inside the container:
+Inside the container, add the `test` dependency group to the image's
+environment. `deepsearch-utils` is installed from source, and `pytinyexr` is
+left as the image built it:
+
 ```bash
-cd /deepsearch-rendering-job
-python -m pip install "poetry<2"
-python -m poetry config virtualenvs.create false
-python -m poetry install --with main,test
-python -m pytest ./tests/ -s -v -n 0
+cd /workspace
+uv export --directory services/rendering-job --frozen --only-group test \
+  --no-emit-project --no-hashes --format requirements-txt -o /tmp/test-requirements.txt
+sed -i "/^-e \.\/packages\/deepsearch-utils$/d; /^pytinyexr/d" /tmp/test-requirements.txt
+python -m pip install -r /tmp/test-requirements.txt
+python -m pip install --no-deps -e packages/deepsearch-utils
+cd services/rendering-job
+python -m pytest tests/ -s -v -n 0
 ```

@@ -46,6 +46,11 @@ graphdb:
   # passwordFromSecret: Use this to get password from a Kubernetes secret instead of neo4jPassword
   passwordFromSecret:
   n_workers: 5
+  # Prim property names that also get a Neo4j TEXT index, published to the pod as
+  # PROPERTY_TEXT_INDEX_FIELDS. AGS's own filters never use TEXT indexes and keeping them up to
+  # date slows every write, so the default is none. At startup AGS creates the listed ones and
+  # drops every other per-property TEXT index.
+  textIndexProperties: []
 
 # Info endpoint base URL, published to the pod as INFO_ENDPOINT_URL. The service
 # itself does not call it; the admin tools do, to ask for an asset to be

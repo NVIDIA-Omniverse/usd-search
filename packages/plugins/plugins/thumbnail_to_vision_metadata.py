@@ -27,6 +27,7 @@ from .config import ThumbnailToEmbeddingConfig, VisionMetadataPluginConfig
 from .image_to_vision_metadata import ImageToVisionMetadata
 from .models import GenericPluginErrorItem
 from .thumbnail_to_embedding import ThumbnailToEmbedding
+from .vision_metadata_utils import carry_view_inputs
 
 # third-party modules
 
@@ -91,12 +92,15 @@ class ThumbnailToVisionMetadata(ImageToVisionMetadata, ThumbnailToEmbedding, Bas
         batch_data_dict: Optional[dict] = None,
         storage_client: Optional[StorageClient] = None,
     ) -> Tuple[list, list, Dict[int, GenericPluginErrorItem]]:
-        return await ThumbnailToEmbedding.preprocess(
+        batch_data, indices, error_indices = await ThumbnailToEmbedding.preprocess(
             self,
             data=data,
             batch_data_dict=batch_data_dict,
             storage_client=storage_client,
         )
+        # Optional view labels and name hint ride along (see vision_metadata_utils).
+        carry_view_inputs(data, batch_data, indices, self.batch_data_field)
+        return batch_data, indices, error_indices
 
     def verify_data(
         self, batch_data: list, indices: list, error_indices: Dict[str, Any]

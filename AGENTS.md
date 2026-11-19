@@ -1,7 +1,7 @@
 # USD Search workspace
 
 This is the consolidated USD Search / Omniverse asset-search repo
-(see `docs/development.md` for the full project map, architecture, and
+(see every `docs/development*.md` for the full project map, architecture, and
 per-package guidance, and `CLAUDE.md` for skill-usage pointers).
 Skills live under `skills/` — the single source
 of truth, shared with Claude; `.codex/skills` is a compat symlink →

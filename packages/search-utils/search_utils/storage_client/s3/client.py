@@ -706,6 +706,16 @@ class S3StorageClient(StorageClient):
         ):
             yield result.uri
 
+    async def list_uris_with_prefix(
+        self,
+        *,
+        literal_prefix_uri: RemoteFileUri,
+        folder_uri: RemoteFileUri,
+    ) -> AsyncIterator[RemoteFileUri]:
+        """List only the keys under `literal_prefix_uri` (``ListObjectsV2`` ``Prefix``)."""
+        async for result in self.list_items(uri_list=[literal_prefix_uri], ignore_patterns=None):
+            yield result.uri
+
     def get_path_from_uri(self, uri: str) -> RemoteFilePath:
         try:
             return RemoteFilePath("/" + self._key_from_uri(uri))

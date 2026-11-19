@@ -51,6 +51,13 @@ SIMILARITY_SCORE_DESCRIPTION = (
 ASSET_FACT_NAMES = ("path", "vlm_metadata_caption")
 
 
+def image_cache_path(value: Optional[str]) -> Optional[str]:
+    """``image_cache_dir`` as every reader takes it: blank -> ``None`` (off), else one absolute path (~ expanded),
+    so the API, the warm-up and direct callers name the same directory."""
+    value = (value or "").strip()
+    return os.path.abspath(os.path.expanduser(value)) if value else None
+
+
 class ValidationConfig(BaseSettings):
     """VISION-validation role config; model + tuning only (connection is shared)."""
 
@@ -170,10 +177,47 @@ class ValidationConfig(BaseSettings):
         "sends them at their stored size. Part of the verdict cache identity when > 0. "
         "Env: USDSEARCH_VISION_VALIDATION_IMAGE_MAX_PX.",
     )
+    image_format: Literal["png", "jpeg"] = Field(
+        default="png",
+        description="Encoding of every image sent to the VLM, query and asset views alike. png (default) is "
+        "lossless; jpeg is RGB at quality 90, transparency composited onto white (what vLLM shows the model for a "
+        "transparent PNG): 55-85 % less image-encoding CPU per verdict at 448 px and a fraction of the upload. "
+        "Part of the verdict cache identity when jpeg. Env: USDSEARCH_VISION_VALIDATION_IMAGE_FORMAT.",
+    )
+    image_cache_dir: Optional[str] = Field(
+        default=None,
+        description="Directory where the prepared asset views (a stored image decoded, fitted to image_max_px and "
+        "re-encoded as image_format) are kept across checks, shared by every process on the host. Unset or empty "
+        "(default) = off. A kept view is byte-identical to one prepared per check; not part of the verdict cache "
+        "identity. Env: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_DIR.",
+    )
+    image_cache_max_mb: int = Field(
+        default=2048,
+        ge=1,
+        description="MiB of prepared views kept in image_cache_dir; past it new views are prepared per check. "
+        "Env: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MAX_MB.",
+    )
+    image_cache_min_free_mb: int = Field(
+        default=1024,
+        ge=0,
+        description="MiB the disk of image_cache_dir keeps free: no view is written below it. "
+        "Env: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MIN_FREE_MB.",
+    )
+    image_cache_memory_mb: int = Field(
+        default=0,
+        ge=0,
+        description="MiB of prepared views each process also keeps in memory (an LRU), in front of image_cache_dir "
+        "or alone without a writable disk. 0 (default) = off. Env: USDSEARCH_VISION_VALIDATION_IMAGE_CACHE_MEMORY_MB.",
+    )
 
     model_config = SettingsConfigDict(
         env_prefix="usdsearch_vision_validation_", populate_by_name=True, protected_namespaces=()
     )
+
+    @field_validator("image_cache_dir")
+    @classmethod
+    def _blank_image_cache_dir_is_off(cls, value: Optional[str]) -> Optional[str]:
+        return image_cache_path(value)
 
     @field_validator("logprob_asset_facts")
     @classmethod

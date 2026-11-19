@@ -61,6 +61,8 @@ logger = logging.getLogger(__name__)
 
 
 MAX_INLINE_CHUNK_SIZE = 3 * (2**20)
+#: Read size for a redirected (presigned URL) download.
+REDIRECT_READ_CHUNK_SIZE = 2**20
 
 
 class SupportsRead(Protocol):
@@ -153,7 +155,13 @@ async def download(
             elif reply.HasField("redirect"):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(reply.redirect.redirect_target_url) as redirected_response:
-                        async for chunk in redirected_response.content:
+                        # An error body (e.g. an expired presigned URL's 403) must not
+                        # come back as the file's contents.
+                        redirected_response.raise_for_status()
+                        # Fixed-size chunks, not `async for ... in .content`: that yields
+                        # *lines*, and a binary file (USDC mesh data) with a long run
+                        # free of b"\n" fails with LineTooLong.
+                        async for chunk in redirected_response.content.iter_chunked(REDIRECT_READ_CHUNK_SIZE):
                             data += chunk
                 logger.debug("Download finished")
             else:

@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -83,7 +84,24 @@ async def lifespan(app: FastAPI):
         await session.setup()
         await session.seed_property_index_cache()
         await session.close()
+    # In the background: on upgrade this drops every old per-property TEXT index, which on
+    # NFS-backed Neo4j can outlast the liveness probe's startup budget.
+    text_index_sync = asyncio.create_task(sync_text_property_indexes(app.neo4j_settings))
     yield
+    text_index_sync.cancel()
+    await asyncio.gather(text_index_sync, return_exceptions=True)
+
+
+async def sync_text_property_indexes(settings: Neo4jSettings) -> None:
+    db = Neo4jDBBackend(settings)
+    try:
+        async with db.session() as session:
+            await session.sync_text_property_indexes()
+    except Exception:
+        # Not fatal: an index left behind costs write time, not correctness; the next start retries.
+        logger.exception("Syncing prim property TEXT indexes failed")
+    finally:
+        await db.close()
 
 
 class AppConfig(BaseSettings):

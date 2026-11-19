@@ -389,6 +389,8 @@ async def search_backend_client_v2(
         ags_client=async_ags_client,
         storage_client=storage_client,
         validate_access=request.app.global_settings.storage_require_auth,
+        image_loader=await image_loader(request),
+        image_resolution_cache=getattr(request.app, "image_resolution_cache", None),
     )
 
 

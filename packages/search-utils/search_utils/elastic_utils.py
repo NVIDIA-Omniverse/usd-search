@@ -44,6 +44,7 @@ ES_MAX_INNER_RESULT_WINDOW = int(os.getenv("ES_MAX_INNER_RESULT_WINDOW", "100"))
 
 ES_TIMEOUT = float(os.getenv("ES_TIMEOUT", "30"))
 ES_MAX_RETRIES = int(os.getenv("ES_MAX_RETRIES", "5"))
+MAX_CHUNK_BYTES = int(os.getenv("MAX_CHUNK_BYTES", 100 * 1024 * 1024))
 # gzip request/response bodies. Disable via ``ES_HTTP_COMPRESS=false`` if an intermediary
 # mangles the compressed payload (see OSBackendSettings.os_http_compress).
 ES_HTTP_COMPRESS = str2bool(os.getenv("ES_HTTP_COMPRESS", "True"))
@@ -209,12 +210,17 @@ class ESBackend:
         return [{"_index": index_name, "_id": k, "_source": v} for k, v in update_dict.items()]
 
     def update(self, index_name: str, update_dict: dict):
-        self.helpers.bulk(self.es, self.prepare_bulk_insert(index_name, update_dict), max_retries=5)
+        self.helpers.bulk(
+            self.es,
+            self.prepare_bulk_insert(index_name, update_dict),
+            max_retries=5,
+            max_chunk_bytes=MAX_CHUNK_BYTES,
+        )
 
     async def update_async(self, index_name: str, update_dict: dict, context=None):
         async with self.async_context(context) as es:
             async for ok, result in self.helpers.async_streaming_bulk(
-                es, self.prepare_bulk_insert(index_name, update_dict)
+                es, self.prepare_bulk_insert(index_name, update_dict), max_chunk_bytes=MAX_CHUNK_BYTES
             ):
                 action, result = result.popitem()
                 if not ok:

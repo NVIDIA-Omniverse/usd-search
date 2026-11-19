@@ -81,14 +81,12 @@ Rules that keep results interpretable:
 
 Two existing layers, plus the gap between them:
 
-- **Agent-level benchmark** — [`benchmark/`](../benchmark/README.md):
-  `isaac-benchmark.yaml` holds ~30 natural-language queries with
-  expected-asset ground truth; `run.py` drives a sandboxed agent through the
-  `/search` skill and scores precision / recall / MRR (plus cost and latency).
+- **Agent-level benchmark** — ~30 natural-language queries with
+  expected-asset ground truth drive a sandboxed agent through the
+  `/search` skill, scored on precision / recall / MRR (plus cost and latency).
   This measures the *whole journey* (agent + skill + API + ranking) — great
-  for release sign-off, too noisy and too slow for ranking iteration. Mind the
-  sandbox-masking rules in its README (ground truth must stay invisible to the
-  agent).
+  for release sign-off, too noisy and too slow for ranking iteration. Ground
+  truth must stay invisible to the agent.
 - **API-level evaluation** — for ranking work, hit `POST /search_hybrid`
   directly with a config matrix over the same labeled query set and compute
   recall@k / MRR / NDCG@10 per query class. No agent variance, seconds per
@@ -96,8 +94,7 @@ Two existing layers, plus the gap between them:
   `expected:` lists are directly reusable as ground truth.
 - **Fusion-level unit tests** — pin ranking *semantics* (leg weights applied,
   fusion order) with stubbed OpenSearch responses so refactors can't silently
-  change scoring. MR !98 introduces this pattern
-  (`services/deepsearch_api/tests/test_rrf_scoring.py`).
+  change scoring. MR !98 introduces this pattern.
 
 When reporting a ranking change, always include: baseline vs candidate config
 (full JSON), per-class metric deltas, and 2–3 example queries where the

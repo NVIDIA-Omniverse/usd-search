@@ -75,8 +75,36 @@ class StorageAPIStorageClientConfig(StorageClientConfig):
             "warning) when base_uri is set."
         ),
     )
+    top_level_addresses_ttl: float = Field(
+        default=0,
+        description=(
+            "Seconds after which the discovered top-level addresses are re-read via ListTopLevelAddresses, "
+            "so roots the server starts serving later are picked up without a restart. 0 (default) resolves "
+            "them once per process. Ignored when base_uri is set."
+        ),
+    )
+    top_level_addresses_drop_after_misses: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Drop a known top-level address only after this many consecutive refreshes (see "
+            "top_level_addresses_ttl) without it, so a Storage API restarting with a partially loaded "
+            "catalog cannot shrink the list -- which, with unsupported-URI removal enabled in the storage "
+            "cron, would delete that root's assets from the index. 1 drops it at the first miss."
+        ),
+    )
+    top_level_addresses_timeout: float = Field(
+        default=30,
+        gt=0,
+        description=(
+            "Deadline in seconds for a ListTopLevelAddresses call. A call that exceeds it is treated like "
+            "any other failed discovery: the initial resolution leaves the roots unresolved, a refresh "
+            "keeps the known ones, so a hung Storage API cannot stall callers waiting on the refresh."
+        ),
+    )
     upload_preference: Optional[str] = Field(default=None, description="Upload preference for the Storage API")
     download_preference: Optional[str] = Field(default=None, description="Download preference for the Storage API")
+    full_listing_enabled: bool = Field(default=True, description="List the whole backend on startup and every re-scan")
     re_scan_timeout: Optional[float] = 86400  # in seconds (equivalent to 1 day)
     apply_url_quote: Optional[bool] = Field(default=False, description="Apply URL quote to the URI")
     storage_api_type: Optional[KnownStorageAPITypes] = Field(default=None, description="Storage API type")
@@ -145,6 +173,16 @@ class StorageAPIStorageClientConfig(StorageClientConfig):
                 "rendering) cannot reach this deployment. Serve plaintext on another port, or "
                 "enable ssl.",
                 self.grpc_endpoint,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _warn_no_source_of_items(self) -> "StorageAPIStorageClientConfig":
+        """Flag the combination that leaves the crawler with nothing to index."""
+        if not self.full_listing_enabled and not self.notification_subscription_enabled:
+            logger.warning(
+                "Storage API full_listing_enabled and notification_subscription_enabled are both off, so the "
+                "crawler has no source of items. Enable one of them, or index by hand."
             )
         return self
 
