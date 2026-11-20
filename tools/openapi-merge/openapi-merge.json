@@ -14,6 +14,16 @@
             "description": "DeepSearch API",
             "preMergeRewrites": [
                 {
+                    "type": "renamePathPrefix",
+                    "from": "/v2/deepsearch/search",
+                    "to": "/search",
+                    "operationIdRewrites": {
+                        "search_v2_deepsearch_search_get": "search_get",
+                        "search_post_v2_deepsearch_search_post": "search_post",
+                        "stats_usd_properties_v2_deepsearch_search_stats_usd_properties_get": "search_stats_usd_properties_get"
+                    }
+                },
+                {
                     "type": "renamePath",
                     "from": "/v3/deepsearch/search",
                     "to": "/search_hybrid",
@@ -34,11 +44,12 @@
                     }
                 },
                 {
-                    "type": "renamePath",
-                    "from": "/v3/deepsearch/vlm_validate/search_result",
-                    "to": "/vlm_validate/search_result",
+                    "type": "renamePathPrefix",
+                    "from": "/v3/deepsearch/vlm_validate",
+                    "to": "/vlm_validate",
                     "operationIdRewrites": {
-                        "validate_result_endpoint_v3_deepsearch_vlm_validate_search_result_post": "vlm_validate_search_result_post"
+                        "validate_result_endpoint_v3_deepsearch_vlm_validate_search_result_post": "vlm_validate_search_result_post",
+                        "validate_result_batch_endpoint_v3_deepsearch_vlm_validate_search_result_batch_post": "vlm_validate_search_result_batch_post"
                     }
                 },
                 {

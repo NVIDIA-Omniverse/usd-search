@@ -159,7 +159,7 @@ The nginx gateway (config at `infra/quickstart/gateway.conf`, or
   `helm/usdsearch/docs/openapi.json` (regenerate via
   `scripts/build-openapi-docs.sh`)
 - `/search`, `/search_hybrid`, `/llm_parse/...`, `/vlm_validate/...`,
-  `/images`, `/download/...` -> deepsearch-api
+  `/images`, `/download/...`, `/metrics` -> deepsearch-api
 - `/info`, `/process` -> info-endpoint
 - `/asset_graph/`, `/dependency_graph` -> asset-graph-service
 

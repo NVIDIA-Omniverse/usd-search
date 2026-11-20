@@ -86,6 +86,8 @@ else
 fi
 [ "$(curl "${CURL_AUTH[@]}" -so/dev/null -w'%{http_code}' "$BASE"/docs/)" = 200 ]              && check OK "GET /docs/ → 200"                || check FAIL "GET /docs/"      "expected 200"
 [ "$(curl "${CURL_AUTH[@]}" -so/dev/null -w'%{http_code}' "$BASE"/docs/openapi.json)" = 200 ]  && check OK "GET /docs/openapi.json → 200"    || check FAIL "openapi.json"    "expected 200"
+# Body check, not status: with WEB_UI=on the explorer catch-all would answer an unrouted /metrics with 200 HTML.
+curl "${CURL_AUTH[@]}" -sf "$BASE"/metrics | grep -q '^# HELP'                                && check OK "GET /metrics (Prometheus text)"  || check FAIL "GET /metrics"    "no Prometheus metrics from deepsearch-api"
 
 echo "── 2. info-endpoint ──"
 curl "${CURL_AUTH[@]}" -sf "$BASE"/info/backend/storage | grep -q '"storage_backend_type"' \

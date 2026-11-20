@@ -610,7 +610,7 @@ class VectorQuery(BaseModel):
 class DeepSearchSearchRequestV2(DeepSearchSearchRequest):
     """Extended search request with hybrid text+vector search and advanced scoring configuration.
 
-    This is the request body for POST /search_hybrid (recommended) and POST /v3/deepsearch/search.
+    This is the request body for POST /search_hybrid.
     It extends the base search request with scoring configuration, vector queries, and additional
     response control flags.
 

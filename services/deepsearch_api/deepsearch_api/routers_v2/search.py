@@ -768,7 +768,7 @@ async def search(
     How deep you can go depends on the query shape: filter-only queries are unbounded, a text query
     is capped by the deployment's `pagination_max_offset`, and a multi-leg query is capped by the RRF
     fusion window. `validate_results=true` is single-page and cannot be combined with `offset`/`cursor`.
-    The richer envelope — including why paging stopped — is on `POST /v3/deepsearch/search`.
+    The richer envelope — including why paging stopped — is on `POST /search_hybrid`.
     """
     telemetry_context = get_default_telemetry_context()
     telemetry_extra_fields = None
@@ -956,7 +956,7 @@ async def search_post(
     How deep you can go depends on the query shape: filter-only queries are unbounded, a text query
     is capped by the deployment's `pagination_max_offset`, and a multi-leg query is capped by the RRF
     fusion window. `validate_results=true` is single-page and cannot be combined with `offset`/`cursor`.
-    The richer envelope — including why paging stopped — is on `POST /v3/deepsearch/search`.
+    The richer envelope — including why paging stopped — is on `POST /search_hybrid`.
     """
     # Force return_images when validate_results=True (images are needed for validation)
     if req.validate_results:
